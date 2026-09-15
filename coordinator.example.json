@@ -1,0 +1,8 @@
+{
+  "host": "127.0.0.1",
+  "port": 4310,
+  "db": ".agent-team-coordinator/queue.sqlite",
+  "projects": {
+    "myntbase": { "repository": "git@github.com:fumbleforce/stockapp.git" }
+  }
+}

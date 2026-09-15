@@ -1,0 +1,218 @@
+# Agent Team
+
+Reusable OpenCode delivery teams for multiple repositories. One copy of the roles and execution engine serves every project; each project supplies only its own product goals, engineering instructions and Linear routing.
+
+Status: working initial implementation with synthetic automated tests. Real model/Linear/GitHub delivery and Tailscale service deployment require an integration pilot. No service is enabled merely by checking out this package.
+
+## Architecture
+
+```text
+Laptop / phone / workstation
+          | Tailscale private network
+          v
+One coordinator API + local SQLite job database
+          | atomic job claims, leases, heartbeat, results
+          +---------------------+
+          v                     v
+Worker on host A          Worker on host B
+Project A, Project B      Project C, Project D
+          |                     |
+   disposable worktrees    disposable worktrees
+          |                     |
+   OpenCode coordinator -> PM -> UX -> developer -> tester -> reviewer
+          |                     |
+       Linear evidence + optional GitHub PRs
+```
+
+Different projects can execute concurrently (configurable worker concurrency). One job per project executes at a time across workers. Role sessions are independent but writers within a job are sequenced. Parallel developers within one project are deliberately not implemented yet; that needs issue-level dependency/conflict management and an integration queue.
+
+### What synchronizes what
+
+| Data | System of record / transport |
+| --- | --- |
+| Shared roles and runner versions | This Git repository, pinned to the same revision on workers |
+| Project source, charter and instructions | Each project's Git repository |
+| Product backlog and review evidence | Linear, scoped by workspace/team/project IDs |
+| Job ownership, execution status, leases | One coordinator API and its SQLite database |
+| Source changes delivered between hosts | Git branches/PRs, when publishing is authorized |
+| Detailed logs and uncommitted changes | Worker-local run directories; access the worker over Tailscale/SSH |
+| Network connectivity | Tailscale; it does not synchronize files, Git, credentials or execution state |
+
+Do not copy a live SQLite database or synchronize active Git worktrees with Syncthing/Dropbox. Back up coordinator state using SQLite's online backup facilities or with the coordinator stopped, including consistent WAL state. Workers contact the one coordinator over HTTP(S); they do not open its DB remotely.
+
+## Why these tools
+
+- **OpenCode CLI:** already installed/authenticated, supports named agents, independent subagents, structured run output and headless execution. A thin CLI adapter avoids introducing another agent framework. An OpenCode server/SDK can later provide streamed sessions and richer UI without changing the queue contract.
+- **Linear:** product planning and human-visible workflow. It is not the execution lock; check-then-update issue status is not an atomic distributed claim.
+- **Git/GitHub CLI:** reproducible bases, worktree isolation and optional PR delivery. Worktrees are not security sandboxes. Dedicated worker accounts/containers are the next isolation layer.
+- **SQLite on one coordinator:** transactional claims and durable state without provisioning another service. Node 22.21.1+ includes the experimental `node:sqlite` API used here. Multiple workers/projects do not require multiple database writers on different hosts.
+- **Tailscale:** private access to the coordinator and worker evidence. Use existing tailnet ACLs to limit access; the API also requires a bearer token. Keep the coordinator on loopback behind Tailscale Serve HTTPS, or bind explicitly to its Tailscale IPv4 address.
+- **systemd user services/timers:** startup, restart and regular queue triggers on an always-on Linux host. GitHub Actions remains the independent PR validation lane, not an indefinite interactive worker.
+
+We do not yet need Redis, Kubernetes, Temporal or a second agent framework. Revisit PostgreSQL/Temporal when requiring coordinator high availability, rich resumable workflows, hundreds of jobs, or event-driven retry policies. Replace the queue persistence/orchestration layer then rather than copying per-project runners.
+
+## Prerequisites
+
+- Linux workers with Node >=22.21.1, Git and OpenCode; authenticate the model provider and Linear on each worker.
+- GitHub CLI (`gh auth login`) and Git push access only for jobs explicitly submitted with publishing enabled.
+- Per-project toolchains and synthetic test data. Dependency installation happens in the worktree, not the user's normal checkout.
+- A machine that stays awake. A sleeping laptop cannot execute jobs; another online worker can claim new jobs, but uncertain expired jobs remain quarantined.
+
+There are no npm runtime dependencies. Run `npm test` and `npm run check` to validate the toolkit.
+
+## Add any project
+
+1. Add `.agent-team.json` based on `project.example.json` to that repository.
+2. Write its charter and engineering instructions; specify their relative paths in the manifest. Do not copy role files or runner code.
+3. Add `.agent-team/` and `.agent-team-result.json` to its `.gitignore`.
+4. Create the scoped Linear project and the `agent:ready`/`agent:blocked` labels. The current adapter expects Todo, In Progress and In Review states; other workflows require an adapter/configuration extension.
+5. Register a project key in coordinator configuration, and map that key to a local checkout in each eligible worker's config. Local paths can differ per machine.
+6. Verify the actual Linear workspace identity before writes. Separate workspaces currently require separately authenticated OpenCode worker profiles/accounts; do not swap one shared OAuth connection while jobs are running.
+
+The `repository` field in coordinator configuration is registry metadata, not automatic cloning or remote verification. Provision the intended clone yourself. Run code must be trusted: project instructions, scripts and OpenCode plugins execute under the worker's account.
+
+## One local cycle
+
+```sh
+node runner.mjs --project /path/to/project --dry-run
+node runner.mjs --project /path/to/project --execute --issue TEAM-123
+node runner.mjs --project /path/to/project --status
+```
+
+Use `--model provider/model-id`, `--timeout-minutes 45`, and optionally `--base origin/main`. Bases are local refs: nothing is fetched automatically. For repeatable cross-machine jobs, fetch the repository separately and enqueue an immutable commit SHA as `--base` available on every worker. The default HEAD may differ between machines.
+
+The runner overlays only manifest/charter/instruction files from the configured checkout, supporting initial uncommitted setup. Ordinary uncommitted application changes, node_modules, databases and local secrets are not copied. Before initial checkout, tracked filenames are inspected and known environment, database/sidecar and private-key filenames are excluded using sparse checkout. Examples/templates remain available. Dry-run and journals list excluded paths without reading contents. Unrecognized committed secrets can still be present: this is not a secret scanner or OS sandbox. Common inherited database/profile environment overrides are filtered.
+
+Shared agent prompts are loaded once from this toolkit and injected into the child OpenCode configuration. Existing global/project OpenCode settings still merge; inspect them before sustained unattended use. The runner does not modify global config or require copied agents. To inspect roles interactively:
+
+```sh
+OPENCODE_CONFIG=/absolute/path/to/agent-team/opencode.json opencode debug agent team-coordinator
+```
+
+To use shared roles in a new interactive OpenCode instance, launch with that same `OPENCODE_CONFIG` variable from a configured project. Restart OpenCode after config/role changes; existing instances do not reload them.
+
+Alternatively, register the shared plugin once in global OpenCode configuration:
+
+```json
+{ "plugin": ["file:///absolute/path/to/agent-team/opencode-plugin.mjs"] }
+```
+
+It loads the same role definitions and owner preferences for every project, adds `/team` as the owner-facing command, and preserves explicit user agent overrides and the existing MCP/default-agent settings. The local x3d installation now has this reference; restart its OpenCode server to load it. Other machines install one reference to their own toolkit checkout, not copies of the role files.
+
+## Owner interaction and visibility
+
+Use `/team what is happening?`, `/team prioritize the upload issue`, or `/team ask me before changing the import flow` in the existing remote OpenCode interface. The owner agent reads the current project manifest and records messages in Linear. A plain chat with the normal agent can do the same when explicitly asked.
+
+Each project's `ownerInboxIssue` is a durable message thread. Coordinators check it and active-issue comments at start and before implementation, review and publishing; actionable messages are acknowledged once by comment ID. This is checkpoint-based delivery, not an instantaneous interrupt. `queueProjectId` maps the project to the shared execution queue.
+
+`OWNER_PREFERENCES.md` is the shared style/communication policy: concise notes, code consistent with its surroundings, no meta commentary, and docs describing current behavior rather than patches. Consequential decisions get a recommendation and focused question, labeled owner:decision, with dependent work paused.
+
+Publishing-enabled work uses coherent checkpoint commits and early draft PRs for visibility. Drafts report unrun/failed checks; they become ready only after independent testing/review. UI work includes inspected screenshots and reproducible preview instructions where feasible. Local-only artifacts are identified as such; automatic preview deployment is not implemented.
+
+## Shared coordinator and workers
+
+Copy the example configs into private local config files (for example `coordinator.local.json` and `worker.local.json`). Register every project once on the coordinator and map eligible projects on each worker. `concurrency` limits simultaneous projects per worker.
+
+Provide `AGENT_TEAM_TOKEN` through a private environment/service file on the coordinator and clients. Use a cryptographically generated token of at least 24 characters, not a committed example token. This is a single-owner/trusted-worker control plane; the token grants queue administration, not per-user permissions. It is removed from the model runner environment.
+
+```sh
+# Coordinator machine; token already in environment
+node queue.mjs --config coordinator.local.json
+
+# Any eligible worker; token already in environment
+node worker.mjs --config worker.local.json
+
+# A client on the same host, or set URL to the Tailscale HTTPS endpoint
+export AGENT_TEAM_URL=http://127.0.0.1:4310
+node cli.mjs enqueue myntbase --issue FUM-6 --key myntbase-first-pilot
+node cli.mjs list
+```
+
+Omit `--issue` to let the PM select from Todo + agent:ready in that project's Linear queue. PM can add at most two scoped supporting issues per cycle and maintains at most five ready issues. Ineligible pinned issues fail rather than silently substituting work.
+
+Publishing is off by default. `enqueue ... --publish` explicitly authorizes the job's coordinator to commit only issue files, push the job branch and create a PR. It never authorizes merge/deployment. Without publishing, changes remain in the worker-local worktree and Linear moves accepted work to In Review with its location.
+
+### Automatic merge
+
+For an authorized project, submit `enqueue PROJECT --publish --auto-merge`, or use both flags with `runner.mjs`. The project manifest must contain:
+
+```json
+{
+  "delivery": {
+    "repository": "owner/repository",
+    "baseBranch": "main",
+    "requiredChecks": ["Agent verification"],
+    "checkEnforcement": "github-required",
+    "autoMergeAuthorized": true
+  }
+}
+```
+
+The developer implements, the tester verifies behavior, one reviewer approves the code, and the PM approves spec compliance and product value. The owner is consulted on consequential decisions rather than routine PR review. All final verdicts identify the same pushed commit. The coordinator records `approvals.tester`, `approvals.reviewer` and `approvals.pm`, each with `verdict`, `headSha` and its actual task `sessionId`; tester verdict is PASS and the others APPROVE. Distinct session IDs provide traceability, not cryptographic proof of independent reasoning.
+
+The model cannot merge. After it exits, `delivery.mjs` validates local/remote HEAD, exact assigned branch, configured repository/base, clean source changes and the approvals. It requires every configured check to pass, re-reads immediately before one squash-merge attempt, and uses `--match-head-commit` without administrative bypass. The default `github-required` enforcement additionally requires GitHub-protected checks; unavailable protected-check lookup blocks delivery. Explicit `checkEnforcement: "runner"` uses configured checks without protected-check lookup, for owner-approved repositories whose plans lack branch protection. It does not prevent manual pushes and never activates as an automatic fallback.
+
+Missing/stale approvals, new commits, pending/failed/skipped/missing required checks, GitHub refusal and uncertain merge results all block delivery. A confirmed MERGED state and actual merge commit are required for success. Logs retain the PR and recovery reason; there is no automatic CI-wait/retry loop yet. The next PM/coordinator cycle can reconcile confirmed merged PRs to Done; approval alone never closes an issue. Existing merge-triggered deployment follows each project's explicit authorization and is reported separately from merge success.
+
+Myntbase authorizes runner-enforced checks on master and retains its existing Fly web deployment. Its `Agent verification` workflow contract is tracked by FUM-6. Activation requires authenticated GitHub CLI and the end-to-end delivery pilot.
+
+### Tailscale access
+
+The existing x3d host can serve as the initial coordinator/worker. Keep the API bound to loopback and configure a dedicated Tailscale Serve HTTPS endpoint for port 4310. Inspect `tailscale serve status` first and preserve any existing remote-access service routes; do not replace them blindly. Set each remote worker/client `coordinatorUrl`/`AGENT_TEAM_URL` to that endpoint.
+
+An alternative is binding the API directly to the host's Tailscale IPv4 address and accessing port 4310 over the encrypted tailnet. Do not expose it on `0.0.0.0` or Tailscale Funnel. The implementation accepts loopback or CGNAT-range IPv4 binds; it does not verify actual tailnet membership. No network/ACL changes are installed by this package.
+
+### Persistent services and cadence
+
+Use `install-local.mjs` to create private local configuration, a reusable token, and coordinator/worker user units with the actual Node/OpenCode paths:
+
+```sh
+node install-local.mjs --project /path/to/project --key project-key --repository owner/repository --dry-run
+node install-local.mjs --project /path/to/project --key project-key --repository owner/repository --install
+systemctl --user daemon-reload
+systemctl --user start agent-team-coordinator.service agent-team-worker.service
+```
+
+The installer does not start services or install/enable timers. It preserves existing project mappings and tokens, and refuses conflicting settings. The private service environment can be supplied to a one-off CLI invocation through `systemd-run --user --wait --pipe --collect -p EnvironmentFile=/absolute/path/to/service.env /absolute/path/to/node /absolute/path/to/cli.mjs list`.
+
+`systemd/` contains coordinator, worker and per-project enqueue timer examples. Adjust executable paths, toolkit location and environment before installing as user units. `%h/repo/agent-team` is an example location, not a requirement. Service files expect private configs and `service.env` under `~/.config/agent-team/` with `AGENT_TEAM_TOKEN`, `AGENT_TEAM_URL`, and a PATH containing OpenCode, Git and optionally gh. Credentials themselves remain outside repositories.
+
+Enable the worker/coordinator after a successful pilot, then enable `agent-team-enqueue@myntbase.timer` to submit an unpinned cycle hourly. Add timer instances for other registered projects. An active overlapping job produces HTTP 409; the timer submission fails without creating a duplicate. A sleeping/offline coordinator cannot enqueue or grant leases. User services may require login lingering for execution after logout.
+
+Do not enable schedules before deciding model-provider spending limits. The system bounds concurrency, role steps, cycle count and elapsed time, but does not enforce a dollar budget. An idle PM cycle can still consume model tokens.
+
+## Leases, failures and recovery
+
+- SQLite transactions atomically claim jobs; a unique index allows one running job per project.
+- Workers renew leases every third of the 90-second TTL. A failed heartbeat stops the runner; the worker allows the runner to terminate its detached child processes before escalation.
+- Expired jobs become blocked, never automatically reassigned. Blocked/failed jobs quarantine the whole project from new claims while other projects continue.
+- `node cli.mjs requeue JOB_UUID` is an explicit recovery action after inspecting the old worker's processes, retained changes and Linear state. Reconcile In Progress work before rerunning; the PM will not steal it.
+- Requeue preserves the job ID/request but resets its result and lease; worker log files append across attempts. This is not a full attempt audit trail yet.
+- New invocations create fresh worktrees; model sessions are not automatically resumed after a crash. Recovery is deliberate to avoid duplicate edits or publishing.
+- Direct `runner.mjs` calls bypass the central queue and must not run on multiple hosts for the same project. Use workers for distributed operation.
+
+Detailed evidence lives under each checkout's `.agent-team/runs/<id>/` (journal, events, stderr, summary). New worktrees live outside that checkout at `<project-parent>/.agent-team-worktrees/<project-root-hash>/<id>/`, preventing Node from resolving the primary checkout's dependencies through ancestor directories. Workers need write permission to that sibling container. Existing runs retain their recorded paths; journals are authoritative. Worker logs live in its configured state directory. The queue exposes bounded outcome/evidence references, not full model logs. No artifact upload, web dashboard, per-user authorization or automatic PR-merge observation is implemented yet.
+
+## API
+
+All routes require `Authorization: Bearer ...`; JSON request bodies are limited to 64 KiB.
+
+| Route | Purpose |
+| --- | --- |
+| `GET /health` | Authenticated liveness |
+| `GET /jobs` | Job summaries (never lease tokens) |
+| `POST /jobs` | Validated enqueue; optional idempotency key |
+| `POST /claim` | Atomic claim for registered worker project keys |
+| `POST /jobs/:id/heartbeat` | Renew with current worker ID and lease token |
+| `POST /jobs/:id/complete` | Record ready/idle using current lease |
+| `POST /jobs/:id/fail` | Record blocked/failed using current lease |
+| `POST /jobs/:id/requeue` | Explicit recovery of blocked/failed work |
+
+## Next stages
+
+1. Run an end-to-end real-model pilot and confirm exact Linear scope, role handoffs, checks and evidence.
+2. Publish this toolkit in its own Git repository and pin revisions on workers. Add a second project to exercise reuse.
+3. Enable user services and periodic triggers on the chosen always-on host; optionally expose a mobile-friendly status UI over Tailscale.
+4. Add durable attempt history, artifact upload and application-level budget accounting.
+5. Add containerized workers and per-worker credentials before untrusted/multi-user execution.
+6. Add per-project parallel issue lanes and dependency-aware integration only after one-worker delivery is reliable.

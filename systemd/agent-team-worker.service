@@ -1,0 +1,18 @@
+[Unit]
+Description=Shared agent-team execution worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/repo/agent-team
+EnvironmentFile=%h/.config/agent-team/service.env
+ExecStart=/usr/bin/node %h/repo/agent-team/worker.mjs --config %h/.config/agent-team/worker.json
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=45
+KillMode=mixed
+UMask=0077
+
+[Install]
+WantedBy=default.target

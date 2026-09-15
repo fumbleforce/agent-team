@@ -1,0 +1,14 @@
+{
+  "name": "@fumbleforce/agent-team",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Shared OpenCode delivery teams with a durable multi-project queue and Tailscale-accessible workers",
+  "engines": { "node": ">=22.21.1" },
+  "scripts": {
+    "test": "node --test runner.test.mjs queue.test.mjs worker.test.mjs opencode-plugin.test.mjs delivery.test.mjs install-local.test.mjs",
+    "coordinator": "node queue.mjs --config coordinator.example.json",
+    "worker": "node worker.mjs --config worker.example.json",
+    "check": "node --check runner.mjs && node --check queue.mjs && node --check worker.mjs && node --check cli.mjs && node --check delivery.mjs && node --check install-local.mjs && node --check opencode-plugin.mjs"
+  }
+}

@@ -1,0 +1,10 @@
+[Unit]
+Description=Hourly agent-team queue trigger for %i
+
+[Timer]
+OnBootSec=10min
+OnUnitActiveSec=1h
+Unit=agent-team-enqueue@%i.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,5 @@
+.agent-team-coordinator/
+.agent-team-worker/
+*.local.json
+*.env
+node_modules/
