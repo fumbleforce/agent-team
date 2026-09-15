@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, readdirSync, rmSync, statSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -48,8 +49,8 @@ test('private atomic installation is idempotent, paths are quoted, no schedules 
   for (const [role, script] of [['coordinator', 'queue'], ['worker', 'worker']]) {
     const text = f.read(path.join(f.unitDir, `agent-team-${role}.service`));
     assert.ok(text.includes(`ExecStart="${f.options.nodePath}" "${f.options.toolkit}/${script}.mjs" --config "${f.configDir}/${role}.json"`));
-    assert.ok(text.includes(`WorkingDirectory="${f.options.toolkit}"`));
-    assert.ok(text.includes(`EnvironmentFile="${envFile}"`));
+    assert.ok(text.includes(`WorkingDirectory=${f.options.toolkit}\n`));
+    assert.ok(text.includes(`EnvironmentFile=${envFile}\n`));
     assert.ok(text.includes('Environment="AGENT_TEAM_URL=http://127.0.0.1:4310"'));
     assert.ok(!text.includes('[Install]'));
   }
@@ -66,6 +67,19 @@ test('adds registrations preserving other projects and unknown configuration fie
   f.run({ key: 'second', repository: 'example/second' });
   assert.deepEqual(JSON.parse(f.read(file)), { ...config, projects: { ...config.projects, second: { repository: 'example/second' } } });
   assert.deepEqual(JSON.parse(f.read(path.join(f.configDir, 'worker.json'))).projects, { myntbase: f.options.project, second: f.options.project });
+});
+
+test('generated units pass systemd validation with a space in the working directory', {
+  skip: spawnSync('systemd-analyze', ['--version']).status !== 0
+}, t => {
+  const f = fixture(t);
+  mkdirSync(f.options.toolkit);
+  f.run({ nodePath: process.execPath });
+  const result = spawnSync('systemd-analyze', ['verify',
+    path.join(f.unitDir, 'agent-team-coordinator.service'),
+    path.join(f.unitDir, 'agent-team-worker.service')], { encoding: 'utf8' });
+  assert.equal(result.status, 0, result.stderr);
+  assert.doesNotMatch(result.stderr, /ignoring|not absolute|fatal error/i);
 });
 
 test('conflicts and foreign or edited units are refused before any writes', t => {
