@@ -58,10 +58,11 @@ export function createLinearClient({ apiKey = process.env.LINEAR_API_KEY, fetchI
     if (!teams.some(team => team.id === manifest.teamId)) throw new Error('Linear project team membership mismatch');
     const connections = {};
     for (const field of ['states', 'labels']) connections[field] = await collect(data.team[field], async after => (await request(`query TeamConnection($id: String!, $after: String!) { team(id: $id) { ${field}(first: 100, after: $after) { nodes { id name ${field === 'states' ? 'type' : ''} } ${page} } } }`, { id: manifest.teamId, after })).team[field]);
-    const resolve = (items, name) => { const matches = items.filter(item => item.name === name); if (matches.length !== 1) throw new Error('Required Linear state/label missing or ambiguous'); return matches[0]; };
-    const states = Object.fromEntries(['proposedState', 'approvedState', 'rejectedState'].map(key => [key, resolve(connections.states, config[key])]));
+    // Names come from the manifest, not from Linear responses, so they are safe to report.
+    const resolve = (items, name, kind) => { const matches = items.filter(item => item.name === name); if (matches.length !== 1) throw new Error(`Required Linear ${kind} "${name}" is ${matches.length ? 'ambiguous' : 'missing'} in the configured team`); return matches[0]; };
+    const states = Object.fromEntries(['proposedState', 'approvedState', 'rejectedState'].map(key => [key, resolve(connections.states, config[key], 'workflow state')]));
     if (states.proposedState.type !== 'backlog' || states.approvedState.type !== 'unstarted' || states.rejectedState.type !== 'canceled') throw new Error('Unsafe Linear approval workflow state types');
-    const ideaLabel = resolve(connections.labels, config.ideaLabel); const readyLabel = resolve(connections.labels, manifest.readyLabel);
+    const ideaLabel = resolve(connections.labels, config.ideaLabel, 'label'); const readyLabel = resolve(connections.labels, manifest.readyLabel, 'label');
     if (ideaLabel.id === readyLabel.id) throw new Error('Idea and ready labels must differ');
     return { workspaceId: org.organization.id, projectId: data.project.id, teamId: data.team.id, config, states, ideaLabel, readyLabel };
   }

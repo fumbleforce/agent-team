@@ -104,6 +104,11 @@ test('unfinished blocking relations prevent approval; completed blockers free it
   blocker.issue.state = states[3];
   assert.equal((await client.checkApproved(manifest, 'TEAM-1')).allowed, true);
 });
+test('missing states or labels are named without echoing Linear data', async () => {
+  const { client } = fake();
+  await assert.rejects(client.context({ ...manifest, ideation: { ...ideation, ideaLabel: 'Proposal' } }), /label "Proposal" is missing/);
+  await assert.rejects(client.context({ ...manifest, ideation: { ...ideation, approvedState: 'Ready' } }), /workflow state "Ready" is missing/);
+});
 test('no credential or remote message escapes errors', async () => {
   for (const fetchImpl of [async () => { throw new Error('secret-test-key'); }, async () => ({ ok: false, status: 'secret-test-key' }), async () => ({ ok: true, json: async () => ({ errors: [{ message: 'secret-test-key' }] }) })]) {
     const client = createLinearClient({ apiKey: 'secret-test-key', fetchImpl });
