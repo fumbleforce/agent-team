@@ -43,7 +43,7 @@ test('engine selection requires that engine on PATH and records the worker defau
 test('dry-run writes nothing and reports only paths and start commands', t => {
   const f = fixture(t); const result = install(f.options);
   assert.equal(result.installed, false); assert.deepEqual(readdirSync(f.home), []);
-  assert.deepEqual(f.logs, [...result.paths, 'systemctl --user daemon-reload', 'systemctl --user start agent-team-coordinator.service agent-team-worker.service']);
+  assert.deepEqual(f.logs, [...result.paths, 'systemctl --user daemon-reload', 'systemctl --user start agent-team-coordinator.service agent-team-worker.service agent-team-dashboard.service']);
 });
 
 test('private atomic installation is idempotent, paths are quoted, no schedules or token output', t => {
@@ -56,9 +56,10 @@ test('private atomic installation is idempotent, paths are quoted, no schedules 
   assert.ok(!f.logs.join('\n').includes(token));
   for (const file of result.paths) assert.equal(statSync(file).mode & 0o777, 0o600);
   for (const dir of [f.configDir, path.join(f.home, '.local/state/agent-team'), path.join(f.home, '.local/state/agent-team/worker')]) assert.equal(statSync(dir).mode & 0o777, 0o700);
-  assert.deepEqual(readdirSync(f.configDir).sort(), ['coordinator.json', 'service.env', 'worker.json']);
-  assert.deepEqual(readdirSync(f.unitDir).sort(), ['agent-team-coordinator.service', 'agent-team-worker.service']);
-  for (const [role, script] of [['coordinator', 'queue'], ['worker', 'worker']]) {
+  assert.deepEqual(readdirSync(f.configDir).sort(), ['coordinator.json', 'dashboard.json', 'service.env', 'worker.json']);
+  assert.deepEqual(readdirSync(f.unitDir).sort(), ['agent-team-coordinator.service', 'agent-team-dashboard.service', 'agent-team-worker.service']);
+  assert.deepEqual(JSON.parse(f.read(path.join(f.configDir, 'dashboard.json'))), { host: '127.0.0.1', port: 4311, coordinator: path.join(f.configDir, 'coordinator.json'), worker: path.join(f.configDir, 'worker.json') });
+  for (const [role, script] of [['coordinator', 'queue'], ['worker', 'worker'], ['dashboard', 'dashboard']]) {
     const text = f.read(path.join(f.unitDir, `agent-team-${role}.service`));
     assert.ok(text.includes(`ExecStart="${f.options.nodePath}" "${f.options.toolkit}/${script}.mjs" --config "${f.configDir}/${role}.json"`));
     assert.ok(text.includes(`WorkingDirectory=${f.options.toolkit}\n`));
@@ -110,7 +111,7 @@ test('leaves existing web service and timers untouched', t => {
   for (const name of names) writeFileSync(path.join(f.unitDir, name), `existing ${name}\n`);
   f.run(); f.run();
   for (const name of names) assert.equal(f.read(path.join(f.unitDir, name)), `existing ${name}\n`);
-  assert.deepEqual(readdirSync(f.unitDir).sort(), [...names, 'agent-team-coordinator.service', 'agent-team-worker.service'].sort());
+  assert.deepEqual(readdirSync(f.unitDir).sort(), [...names, 'agent-team-coordinator.service', 'agent-team-dashboard.service', 'agent-team-worker.service'].sort());
 });
 
 test('rejects symlinked secret ancestors and secret files without touching targets', t => {

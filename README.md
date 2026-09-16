@@ -225,6 +225,19 @@ Enable the worker/coordinator after a successful pilot, then enable `agent-team-
 
 Do not enable schedules before deciding model-provider spending limits. The system bounds concurrency, role steps, cycle count and elapsed time, but does not enforce a dollar budget. An idle PM cycle can still consume model tokens. On the Claude engine, subscription limits apply instead of a bill; a limit stops the affected job rather than retrying.
 
+## Dashboard and everyday commands
+
+`dashboard.mjs` serves a read-only status page (default `http://127.0.0.1:4311`): service states, Claude subscription window usage as reported by the last run, what the running coordinator and its subagents are doing right now, the job queue with quarantine warnings, and every run with its delivery result, PR link and a detail page of model steps, summary and stderr. It reads the coordinator database and run journals; it never writes, executes or exposes lease tokens, prompts or credentials. `install-local.mjs` installs it as `agent-team-dashboard.service`. To reach it from another device, add a Tailscale Serve route for port 4311 yourself; do not bind it beyond loopback or the tailnet.
+
+`cli.mjs` finds the control-plane token in `~/.config/agent-team/service.env` when `AGENT_TEAM_TOKEN` is not exported, so the everyday commands are short:
+
+```sh
+node cli.mjs list
+node cli.mjs enqueue myntbase --issue FUM-5 --publish --auto-merge --engine claude --base origin/master --fetch
+node cli.mjs requeue JOB_UUID      # only after inspecting a blocked or failed job
+node cli.mjs cancel JOB_UUID       # queued jobs only
+```
+
 ## Leases, failures and recovery
 
 - SQLite transactions atomically claim jobs; a unique index allows one running job per project.

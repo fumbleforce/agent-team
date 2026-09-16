@@ -1,0 +1,6 @@
+{
+  "host": "127.0.0.1",
+  "port": 4311,
+  "coordinator": "coordinator.example.json",
+  "worker": "worker.example.json"
+}

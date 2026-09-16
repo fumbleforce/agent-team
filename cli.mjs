@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { createClient } from './worker.mjs';
@@ -33,8 +35,15 @@ export function parseEnqueueArgs(target, flags = []) {
   return body;
 }
 
+// Without an exported token, use the private service environment written by install-local.mjs.
+export function localToken(env = process.env, home = homedir()) {
+  if (env.AGENT_TEAM_TOKEN) return env.AGENT_TEAM_TOKEN;
+  try { return /^AGENT_TEAM_TOKEN=(\S+)$/m.exec(readFileSync(path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'agent-team', 'service.env'), 'utf8'))?.[1]; }
+  catch { return undefined; }
+}
+
 export async function main(args = process.argv.slice(2)) {
-  const request = createClient(process.env.AGENT_TEAM_URL ?? 'http://127.0.0.1:4310', process.env.AGENT_TEAM_TOKEN);
+  const request = createClient(process.env.AGENT_TEAM_URL ?? 'http://127.0.0.1:4310', localToken());
   const [command, target, ...flags] = args;
   let result;
   if (command === 'list' && args.length === 1) result = await request('/jobs');
