@@ -21,13 +21,14 @@ export function tail(file, bytes = 262144) {
 // One line per model step for either engine: what the coordinator said or which tool it
 // called, and whether a subagent did it. Claude emits assistant/result/rate_limit events;
 // OpenCode emits text/tool_use/step_finish parts.
-export function eventSteps(text, limit = 40, worktree = null) {
+export function eventSteps(text, limit = 40, worktree = null, { results = false, handoffs = {} } = {}) {
   const local = value => worktree ? String(value).split(`${worktree}/`).join('') : String(value);
   const steps = []; let usage = null; let engineResult = null; let tokens = 0;
   // Subagent events carry the Agent call's id; that call named the role, so steps are attributed by member.
-  const handoffs = {}; const members = {};
+  // Callers streaming batch by batch pass the same handoffs map so attribution survives across batches.
+  const members = {};
   const push = (scope, kind, value, member = null) => {
-    steps.push({ scope, kind, member, text: clip(local(value), kind === 'text' ? 300 : 200) });
+    steps.push({ scope, kind, member, text: kind === 'delta' ? String(value) : clip(local(value), kind === 'text' ? 300 : kind === 'result' ? 240 : 200) });
     if (member) members[member] = (members[member] ?? 0) + 1;
   };
   for (const line of text.split('\n')) {
@@ -45,7 +46,14 @@ export function eventSteps(text, limit = 40, worktree = null) {
           push(scope, 'tool', `${block.name}${input.subagent_type ? ` → ${input.subagent_type}` : ''}${detail ? `: ${detail}` : ''}`, member);
         }
       }
-    } else if (event.type === 'rate_limit_event' && event.rate_limit_info) {
+    } else if (results && event.type === 'user' && Array.isArray(event.message?.content)) {
+      for (const block of event.message.content) {
+        if (block.type !== 'tool_result') continue;
+        const content = typeof block.content === 'string' ? block.content : Array.isArray(block.content) ? block.content.map(part => part.text ?? '').join(' ') : '';
+        if (content.trim()) push(scope, 'result', content, member);
+      }
+    } else if (results && event.type === 'chat_delta' && typeof event.text === 'string') push('coordinator', 'delta', event.text, null);
+    else if (event.type === 'rate_limit_event' && event.rate_limit_info) {
       const windows = event.rate_limit_info.unifiedWindows ?? {};
       usage = { status: event.rate_limit_info.status, fiveHour: windows.five_hour ?? null, sevenDay: windows.seven_day ?? null };
     } else if (event.type === 'result') {

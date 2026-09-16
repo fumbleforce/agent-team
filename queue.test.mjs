@@ -206,6 +206,21 @@ test('evidence is stored per lease and listed newest first; manifests register p
     assert.deepEqual(q.projectsList().map(p => [p.id, p.manifest?.name ?? null, p.workerId]), [['a', 'A', 'w'], ['b', null, null]]);
   } finally { q.close(); }
 });
+test('event streams append under the lease and page by sequence', () => {
+  const q = createQueue(':memory:', { projects });
+  try {
+    q.enqueue({ projectId: 'a', issue: 'FUM-1' }); const job = claim(q, 'w', ['a']);
+    assert.throws(() => q.appendEvents(job.id, { ...credentials(job), events: ['x'.repeat(9000)] }), /Invalid events/);
+    assert.deepEqual(q.appendEvents(job.id, { ...credentials(job), events: ['{"a":1}', '{"a":2}'] }), { seq: 2 });
+    assert.deepEqual(q.appendEvents(job.id, { ...credentials(job), events: ['{"a":3}'] }), { seq: 3 });
+    const page = q.eventsAfter(job.id, { after: 1 });
+    assert.equal(page.jobState, 'running'); assert.deepEqual(page.events.map(e => [e.seq, e.line]), [[2, '{"a":2}'], [3, '{"a":3}']]);
+    assert.throws(() => q.eventsAfter(job.id, { after: -1 }));
+    q.complete(job.id, { ...credentials(job), result: { outcome: 'ready', summary: 'done' } });
+    assert.throws(() => q.appendEvents(job.id, { ...credentials(job), events: ['late'] }), /Lease/);
+    assert.equal(q.eventsAfter(job.id).jobState, 'completed');
+  } finally { q.close(); }
+});
 test('startup registry requires registered IDs and repository strings', () => {
   for (const registry of [undefined, null, {}, [], { a: {} }, { a: { repository: '' } }, { '../a': { repository: 'repo' } }]) assert.throws(() => validateRegistry(registry));
   assert.doesNotThrow(() => validateRegistry({ myntbase: { repository: 'git@github.com:fumbleforce/stockapp.git' } }));

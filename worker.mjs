@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, closeSync, readFileSync, writeSync, renameSync, readdirSync, existsSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, readFileSync, writeSync, renameSync, readdirSync, existsSync, fstatSync, readSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -110,7 +110,7 @@ export function validateConfig(config) {
 export async function runWorker(config, { once = false, signal = new AbortController().signal,
   request = createClient(config.coordinatorUrl, process.env.AGENT_TEAM_TOKEN), run = runProcess, chatAnswer = answer,
   linear = createLinearClient, loadManifest = checkout => JSON.parse(readFileSync(path.join(checkout, '.agent-team.json'), 'utf8')),
-  pollMs = 2000, evidenceMs = 20_000, registerMs = 60_000, onError = error => console.error(error.message) } = {}) {
+  pollMs = 2000, evidenceMs = 20_000, streamMs = 2000, registerMs = 60_000, onError = error => console.error(error.message) } = {}) {
   validateConfig(config);
   const projectIds = Object.keys(config.projects);
   // Manifests registered here let a remote coordinator, intake and dashboard work without checkouts.
@@ -130,8 +130,26 @@ export async function runWorker(config, { once = false, signal = new AbortContro
         await request(`/jobs/${job.id}/evidence`, { ...credentials, evidence: runEvidence(job.projectId, dir, runId, { stepLimit: 200 }) });
       } catch { /* evidence is best effort; the job result is authoritative */ }
     };
-    const timer = setInterval(report, evidenceMs);
-    return { stop: async () => { clearInterval(timer); await report(); } };
+    // Raw stream lines go up as they appear; long lines (tool results) are clipped, never dropped.
+    let offset = 0; let partial = ''; let streaming = false;
+    const stream = async () => {
+      if (streaming || !runId) return; streaming = true;
+      try {
+        const file = path.join(checkout, '.agent-team', 'runs', runId, 'events.jsonl');
+        const fd = openSync(file, 'r');
+        let chunk;
+        try { const size = fstatSync(fd).size; if (size <= offset) return; chunk = Buffer.alloc(Math.min(size - offset, 2_000_000)); readSync(fd, chunk, 0, chunk.length, offset); offset += chunk.length; } finally { closeSync(fd); }
+        const pieces = (partial + chunk.toString('utf8')).split('\n'); partial = pieces.pop();
+        const lines = pieces.filter(Boolean).map(line => line.length > 8000 ? clipLine(line) : line);
+        for (let i = 0; i < lines.length; i += 400) await request(`/jobs/${job.id}/events`, { ...credentials, events: lines.slice(i, i + 400) });
+      } catch { /* best effort */ } finally { streaming = false; }
+    };
+    const timer = setInterval(report, evidenceMs); const streamTimer = setInterval(stream, streamMs);
+    return { stop: async () => { clearInterval(timer); clearInterval(streamTimer); await report(); await stream(); } };
+  }
+  function clipLine(line) {
+    try { const event = JSON.parse(line); return JSON.stringify({ type: event.type, parent_tool_use_id: event.parent_tool_use_id, clipped: true, message: { content: [{ type: 'text', text: `[${line.length} bytes clipped]` }] } }); }
+    catch { return line.slice(0, 8000); }
   }
   async function execute(job) {
     if (!Object.hasOwn(config.projects, job.projectId) || !/^[a-f0-9-]{36}$/.test(job.id) || !Number.isFinite(job.leaseMs) || job.leaseMs < 1) throw new Error('Invalid claimed job');
@@ -208,7 +226,14 @@ export async function runWorker(config, { once = false, signal = new AbortContro
         const work = memberActivity({ projects: { [job.projectId]: checkout }, role: job.role, runLimit: 6 }).flatMap(item => [
           `${item.run.issue ?? 'ideation'} run ${item.run.id}: ${item.run.state}${item.run.delivery ? `, delivery ${item.run.delivery}` : ''}${item.run.prUrl ? ` (${item.run.prUrl})` : ''}`,
           ...item.steps.slice(-3).map(step => `${item.run.issue ?? 'ideation'}: ${step.text}`)]).slice(0, 18);
-        const replied = await chatAnswer({ linear: client, manifest, role: job.role, issue: job.issue, message: job.message, cwd: latestWorktree(checkout) ?? checkout, work, runDir: path.join(stateDir, 'chat'), signal: control.signal });
+        let pending = []; let flushing = null;
+        const flush = async () => { if (!pending.length || flushing) return; const batch = pending; pending = []; flushing = request(`/jobs/${job.id}/events`, { ...credentials, events: batch }).catch(() => {}); await flushing; flushing = null; };
+        const deltaTimer = setInterval(flush, 1000);
+        let replied;
+        try {
+          replied = await chatAnswer({ linear: client, manifest, role: job.role, issue: job.issue, message: job.message, cwd: latestWorktree(checkout) ?? checkout, work, runDir: path.join(stateDir, 'chat'), signal: control.signal,
+            onDelta: text => { pending.push(JSON.stringify({ type: 'chat_delta', text })); } });
+        } finally { clearInterval(deltaTimer); await flush(); }
         execution = { code: 0, journal: { outcome: 'ready' } }; apiSummary = replied.reply.slice(0, 1900);
       } else if (skip) execution = { code: 0, journal: { outcome: 'idle' } };
       else {

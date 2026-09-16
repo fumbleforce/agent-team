@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,6 +14,14 @@ let projects;
 try { projects = JSON.parse(process.env.AGENT_TEAM_PROJECTS ?? ''); } catch { throw new Error('AGENT_TEAM_PROJECTS must be a JSON registry such as {"myntbase":{"repository":"owner/repo"}}'); }
 if (!process.env.AGENT_TEAM_TOKEN) throw new Error('AGENT_TEAM_TOKEN secret is required');
 if (!process.env.AGENT_TEAM_DASHBOARD_PASSWORD) throw new Error('AGENT_TEAM_DASHBOARD_PASSWORD secret is required for a public dashboard');
+
+// A database uploaded as queue-import.sqlite replaces the live one on the next start (migration).
+const live = path.join(data, 'queue.sqlite'); const imported = path.join(data, 'queue-import.sqlite');
+if (existsSync(imported)) {
+  for (const suffix of ['', '-wal', '-shm']) if (existsSync(live + suffix)) unlinkSync(live + suffix);
+  renameSync(imported, live);
+  console.error('Imported queue-import.sqlite as the live queue database');
+}
 
 const write = (name, value) => { const file = path.join(configDir, name); writeFileSync(file, JSON.stringify(value, null, 2), { mode: 0o600 }); return file; };
 const coordinator = write('coordinator.json', { host: '0.0.0.0', port: 4310, db: path.join(data, 'queue.sqlite'), projects });

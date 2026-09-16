@@ -32,6 +32,7 @@ function fixture(t) {
       if (url.pathname === '/projects') return q.projectsList();
       if (url.pathname === '/evidence') return q.evidenceList({ limit: Number(url.searchParams.get('limit') ?? 40) });
       const m = /^\/jobs\/([^/]+)\/evidence$/.exec(url.pathname); if (m) { const e = q.evidenceFor(m[1]); if (!e) throw new Error('404'); return e; }
+      const ev = /^\/jobs\/([^/]+)\/events$/.exec(url.pathname); if (ev) return q.eventsAfter(ev[1], { after: Number(url.searchParams.get('after') ?? 0), limit: Number(url.searchParams.get('limit') ?? 500) });
       throw new Error('unknown route');
     }
     if (url.pathname === '/jobs') return q.enqueue(body);
@@ -117,4 +118,28 @@ test('configuration takes a coordinator URL or borrows it from a worker config a
     assert.equal(config.password, 'long enough password'); assert.equal(config.hostname, 'agent-team');
   } finally { delete process.env.AGENT_TEAM_PUBLIC_BIND; }
   mkdirSync(path.join(dir, 'unused'));
+});
+
+test('the stream endpoint relays formatted steps as server-sent events and closes when the job ends', async t => {
+  const f = fixture(t);
+  f.q.requeue(f.held.id);
+  const claimed = f.q.claim({ workerId: 'x3d', projectIds: ['myntbase'] }); const job = claimed;
+  f.q.appendEvents(claimed.id, { workerId: 'x3d', leaseToken: claimed.leaseToken, events: [
+    JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id: 't1', name: 'Agent', input: { subagent_type: 'team-tester', description: 'Verify' } }] } }),
+    JSON.stringify({ type: 'assistant', parent_tool_use_id: 't1', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } }),
+    JSON.stringify({ type: 'user', parent_tool_use_id: 't1', message: { content: [{ type: 'tool_result', content: '8 passing' }] } })] });
+  const server = createDashboardServer({ request: f.request });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
+  const response = await fetch(`http://127.0.0.1:${server.address().port}/runs/${job.id}/stream`);
+  assert.equal(response.headers.get('content-type'), 'text/event-stream');
+  const reader = response.body.getReader(); let text = '';
+  while (!text.includes('event: steps')) { const { value, done } = await reader.read(); if (done) break; text += Buffer.from(value).toString(); }
+  const payload = JSON.parse(text.split('event: steps')[1].split('data: ')[1].split('\n')[0]);
+  assert.equal(payload.after, 3);
+  assert.deepEqual(payload.steps.map(step => [step.kind, step.member, step.text]), [['tool', null, 'Agent → team-tester: Verify'], ['tool', 'team-tester', 'Bash: npm test'], ['result', 'team-tester', '8 passing']]);
+  f.q.complete(claimed.id, { workerId: 'x3d', leaseToken: claimed.leaseToken, result: { outcome: 'ready', summary: 'ok' } });
+  while (!text.includes('event: done')) { const { value, done } = await reader.read(); if (done) break; text += Buffer.from(value).toString(); }
+  assert.ok(text.includes('"reason":"completed"'));
+  const page = await (await fetch(`http://127.0.0.1:${server.address().port}/team/team-tester`)).text();
+  assert.ok(page.includes('Joker'));
 });

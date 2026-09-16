@@ -42,8 +42,15 @@ export function localToken(env = process.env, home = homedir()) {
   catch { return undefined; }
 }
 
+// Without an exported URL, talk to the coordinator the local worker is configured for.
+export function localUrl(env = process.env, home = homedir()) {
+  if (env.AGENT_TEAM_URL) return env.AGENT_TEAM_URL;
+  try { return JSON.parse(readFileSync(path.join(env.XDG_CONFIG_HOME || path.join(home, '.config'), 'agent-team', 'worker.json'), 'utf8')).coordinatorUrl ?? 'http://127.0.0.1:4310'; }
+  catch { return 'http://127.0.0.1:4310'; }
+}
+
 export async function main(args = process.argv.slice(2)) {
-  const request = createClient(process.env.AGENT_TEAM_URL ?? 'http://127.0.0.1:4310', localToken());
+  const request = createClient(localUrl(), localToken());
   const [command, target, ...flags] = args;
   let result;
   if (command === 'list' && args.length === 1) result = await request('/jobs');

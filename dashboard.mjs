@@ -7,7 +7,7 @@ import { validBind } from './queue.mjs';
 import { createClient } from './worker.mjs';
 import { localToken } from './cli.mjs';
 import { ROSTER } from './roster.mjs';
-import { clip } from './evidence.mjs';
+import { clip, eventSteps } from './evidence.mjs';
 
 const PORTRAITS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'portraits');
 const ACTIVE = ['queued', 'running', 'blocked', 'failed'];
@@ -91,7 +91,7 @@ h2{font:600 12px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;col
 .pulse{width:9px;height:9px;border-radius:50%;background:var(--run);animation:breathe 2.2s ease-in-out infinite;flex:none;display:inline-block}@keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(229,165,58,.5)}50%{box-shadow:0 0 0 7px rgba(229,165,58,0)}}
 @media(prefers-reduced-motion:reduce){.pulse{animation:none}.ticker,.chat{scroll-behavior:auto}}
 .ticker{font:12px/1.5 var(--mono);border-top:1px solid var(--line);padding-top:8px;max-height:380px;overflow-y:auto;scroll-behavior:smooth}.ticker.full{max-height:none}.ticker div{display:grid;grid-template-columns:28px minmax(0,1fr);gap:8px;padding:1px 0}.ticker i{font-style:normal;color:var(--dim);text-align:right}
-.ticker .t{color:var(--text)}.ticker .agent{color:var(--muted)}.ticker .agent::before{content:'↳ '}.ticker b{color:var(--text);font-weight:500}.ticker .say{color:var(--wait);font-family:var(--sans);font-size:13px}
+.ticker .t{color:var(--text)}.ticker .agent{color:var(--muted)}.ticker .agent::before{content:'↳ '}.ticker b{color:var(--text);font-weight:500}.ticker .say{color:var(--wait);font-family:var(--sans);font-size:13px}.ticker .res{color:var(--dim)}.ticker .res::before{content:'← '}
 .empty{color:var(--muted);font-size:13px;padding:8px 0}
 .list{border-top:1px solid var(--line)}.row{display:grid;grid-template-columns:40px minmax(90px,130px) minmax(0,1fr) auto;gap:4px 12px;padding:7px 0;border-bottom:1px solid var(--line);align-items:baseline}
 .row .at{font:11.5px var(--mono);color:var(--dim)}.row .who{font:12.5px var(--mono)}.row .who small{display:block;color:var(--dim);font-size:11px}.row .what{font-size:12.5px;color:var(--muted)}.row .what b{color:var(--text);font-weight:500}.row .what ul{margin:4px 0 0;padding-left:16px}
@@ -134,7 +134,7 @@ export function renderIndex(state, flash = null, hostname = 'fly') {
 ${ideas || release ? `<form method="post" action="/actions"><input type="hidden" name="project" value="${escape(p.project)}">${p.held[0] ? `<input type="hidden" name="job" value="${escape(p.held[0].id)}">` : ''}${ideas}${release}</form>` : ''}</div>`;
   }).join('') || '<p class="empty">No projects registered. Start a worker with a mapped checkout and it registers its manifest here.</p>';
   const now = state.live.length ? state.live.map(run => `<div class="now"><h3><span class="pulse"></span><a href="/runs/${escape(run.jobId)}">${escape(run.issue ?? (run.ideation ? 'Proposing ideas' : 'Unpinned cycle'))}</a></h3>
-<div class="sub"><span>${escape(run.project)}</span><span>${escape(run.engine)}</span><span>started ${escape(clock(run.startedAt))} UTC · ${minutes(run.startedAt)} min</span><span>reported ${escape(ago(Date.now() - run.updatedAt))}</span></div>${ticker(run.steps, run.jobId)}</div>`).join('')
+<div class="sub"><span>${escape(run.project)}</span><span>${escape(run.engine)}</span><span>started ${escape(clock(run.startedAt))} UTC · ${minutes(run.startedAt)} min</span><span>reported ${escape(ago(Date.now() - run.updatedAt))}</span></div>${ticker(run.steps, run.jobId)}</div>${streamScript(run.jobId, run.jobId)}`).join('')
     : '<div class="now"><p class="empty">Nothing running. The team is idle until a card is approved or a job is queued.</p></div>';
   const upcoming = [];
   for (const p of state.overview) {
@@ -170,8 +170,17 @@ export function renderRun(detail) {
 <main><section><h2>Steps <small>${detail.steps.length} shown</small></h2><div class="now">${ticker(detail.steps, detail.jobId, true)}</div></section>
 <section><h2>Summary</h2><pre>${escape(detail.summary || 'Not written yet.')}</pre></section>
 ${detail.stderr?.trim() ? `<section><h2>Errors and warnings</h2><pre>${escape(detail.stderr)}</pre></section>` : ''}</main>`;
-  return page(`${run.issue ?? 'run'} · ${run.id}`, body, run.state === 'running' ? 10_000 : 0);
+  return page(`${run.issue ?? 'run'} · ${run.id}`, body + (run.state === 'running' ? streamScript(detail.jobId, detail.jobId) : ''), run.state === 'running' ? 10_000 : 0);
 }
+
+// Appends streamed steps to a ticker without waiting for the next full refresh.
+const streamScript = (jobId, tickerId, mode = 'steps') => `<script>(function(){var t=document.querySelector('[data-ticker="${escape(tickerId)}"]');if(!t||!window.EventSource)return;
+var seen=t.querySelectorAll('div').length;var es=new EventSource('/runs/${escape(jobId)}/stream');var esc=function(s){return String(s).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})};
+es.addEventListener('steps',function(e){var d=JSON.parse(e.data);var near=t.scrollHeight-t.scrollTop-t.clientHeight<48;d.steps.forEach(function(s){
+ if('${mode}'==='chat'){if(s.kind!=='delta')return;var last=t.querySelector('.msg.member.running div:last-child');if(last)last.textContent+=s.text;return;}
+ seen++;var row=document.createElement('div');row.innerHTML='<i>'+seen+'</i><span class="'+(s.kind==='text'?'say':s.kind==='result'?'res':s.scope==='subagent'?'agent':'t')+'">'+(s.member?'<b>'+esc(s.member)+'</b> ':'')+esc(s.text)+'</span>';t.appendChild(row);});
+ if(near)t.scrollTo({top:t.scrollHeight,behavior:'smooth'})});
+es.addEventListener('done',function(){es.close()});})();</script>`;
 
 export function renderMember({ role, state, activity, selected, thread, flash }) {
   const member = ROSTER[role];
@@ -180,7 +189,9 @@ export function renderMember({ role, state, activity, selected, thread, flash })
   const label = { queued: 'queued for a worker', running: 'thinking', blocked: 'failed', failed: 'failed', canceled: 'canceled' };
   const bubbles = thread.flatMap(job => [
     `<div class="msg owner"><div><div class="who">You <span>${escape(when(new Date(job.createdAt).toISOString()))}</span>${['queued', 'running'].includes(job.state) ? ` · ${label[job.state]}${job.state === 'running' ? ' <span class="pulse"></span>' : ''}` : ''}</div>${escape(job.message)}</div></div>`,
-    job.state === 'completed' || ['blocked', 'failed'].includes(job.state) ? `<div class="msg member ${job.state}">${avatar(role, 22)}<div><div class="who">${escape(member.name)} <span>${escape(when(new Date(job.updatedAt).toISOString()))}</span>${job.state !== 'completed' ? ` · ${label[job.state]}` : ''}</div>${escape(job.summary)}</div></div>` : '']);
+    job.state === 'completed' || ['blocked', 'failed'].includes(job.state) ? `<div class="msg member ${job.state}">${avatar(role, 22)}<div><div class="who">${escape(member.name)} <span>${escape(when(new Date(job.updatedAt).toISOString()))}</span>${job.state !== 'completed' ? ` · ${label[job.state]}` : ''}</div>${escape(job.summary)}</div></div>`
+      : job.state === 'running' ? `<div class="msg member running">${avatar(role, 22)}<div><div class="who">${escape(member.name)} <span class="pulse"></span> writing</div><div></div></div></div>` : '']);
+  const running = thread.find(job => job.state === 'running');
   const body = `<div class="crumb"><a href="/">← Agent team</a></div>
 <header class="mh">${avatar(role, 96)}<div><h1>${escape(member.name)} <span>${escape(member.title)}</span></h1><p class="voice">${escape(member.voice)}</p><p class="n">${working ? `Working on <a href="/runs/${escape(working.jobId)}">${escape(working.issue)}</a> in ${escape(working.project)}` : 'Idle right now'}</p></div></header>
 <main><div class="cols"><section><h2>Conversation <small>${escape(selected.issue || 'choose a card')} · ${escape(state.overview.find(p => p.project === selected.project)?.name ?? selected.project ?? '')}</small></h2>
@@ -188,7 +199,7 @@ ${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}<
 <div class="chat" data-ticker="chat">${bubbles.join('') || `<p class="empty">No messages yet. What you write is posted on ${escape(selected.issue || 'the card')} in Linear by the project's worker; ${escape(member.name)} answers there and here.</p>`}</div>
 ${state.overview.length ? `<form method="post" action="/chat" class="compose"><input type="hidden" name="role" value="${escape(role)}"><select name="project">${options}</select><input name="issue" value="${escape(selected.issue ?? '')}" pattern="[A-Z][A-Z0-9]*-[1-9][0-9]*" title="Linear issue, e.g. the owner inbox" required><textarea name="message" rows="3" maxlength="4000" placeholder="Ask ${escape(member.name)} something, or give direction. It lands on the Linear card." required></textarea><button type="submit">Send to ${escape(member.name)}</button></form>` : '<p class="empty">No project is registered yet, so there is nowhere to send a message.</p>'}</section>
 <section><h2>Recent work <small>${activity.length} runs</small></h2>${activity.map(item => `<div class="now"><h3><a href="/runs/${escape(item.jobId)}">${escape(item.issue ?? (item.ideation ? 'Proposing ideas' : 'cycle'))}</a> ${tag(item.state)}</h3><div class="sub"><span>${escape(item.project)}</span><span>${escape(when(item.startedAt))}</span><span>${item.count} steps</span>${item.prUrl ? `<span><a href="${escape(item.prUrl)}">${short(item.prUrl)}</a></span>` : ''}</div>${ticker(item.steps, item.jobId, true)}</div>`).join('') || '<p class="empty">No reported steps yet.</p>'}</section></div></main>`;
-  return page(`${member.name} · ${member.title}`, body, 10_000);
+  return page(`${member.name} · ${member.title}`, body + (running ? streamScript(running.id, 'chat', 'chat') : ''), 10_000);
 }
 
 function memberActivity(state, role) {
@@ -273,6 +284,27 @@ export function createDashboardServer(config) {
         const issue = url.searchParams.get('issue') || project?.inbox || '';
         const thread = current.jobs.filter(job => job.kind === 'chat' && job.role === role && job.projectId === project?.project && job.issue === issue).sort((a, b) => a.createdAt - b.createdAt).slice(-30);
         return reply(200, 'text/html; charset=utf-8', renderMember({ role, state: current, activity: memberActivity(current, role), selected: { project: project?.project ?? null, issue }, thread, flash }));
+      }
+      // Live stream: relay the coordinator's raw event lines as formatted steps over server-sent events.
+      const streamMatch = /^\/runs\/([a-f0-9-]{36})\/stream$/.exec(url.pathname);
+      if (streamMatch) {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive', 'x-accel-buffering': 'no' });
+        let after = Number(url.searchParams.get('after') ?? 0) || 0; const handoffs = {}; let open = true; let idle = 0;
+        req.on('close', () => { open = false; });
+        const send = (event, data) => res.write(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`);
+        while (open) {
+          let batch;
+          try { batch = await request(`/jobs/${streamMatch[1]}/events?after=${after}&limit=400`); } catch { send('done', { reason: 'unavailable' }); break; }
+          if (batch.events.length) {
+            after = batch.events.at(-1).seq;
+            const parsed = eventSteps(batch.events.map(event => event.line).join('\n'), 400, null, { results: true, handoffs });
+            send('steps', { after, steps: parsed.steps });
+            idle = 0;
+          } else if (++idle % 15 === 0) send('ping', { after });
+          if (!['queued', 'running'].includes(batch.jobState) && !batch.events.length) { send('done', { reason: batch.jobState, after }); break; }
+          await new Promise(resolve => setTimeout(resolve, batch.events.length ? 200 : 1500));
+        }
+        return res.end();
       }
       const runMatch = /^\/runs\/([a-f0-9-]{36})$/.exec(url.pathname);
       if (runMatch) {

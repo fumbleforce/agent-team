@@ -1,7 +1,7 @@
 # Control plane only: coordinator API, Linear intake and dashboard. Workers stay on your own
 # machines and connect outbound. Set secrets before the first deploy:
 #   fly secrets set AGENT_TEAM_TOKEN=... AGENT_TEAM_DASHBOARD_PASSWORD=... LINEAR_API_KEY=...
-app = "agent-team"
+app = "agent-team-fumbleforce"
 primary_region = "arn"
 
 [build]

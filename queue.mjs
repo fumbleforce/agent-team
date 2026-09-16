@@ -42,7 +42,8 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
       idempotencyKey TEXT UNIQUE, state TEXT NOT NULL, workerId TEXT, leaseToken TEXT,
       leaseUntil INTEGER, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, result TEXT);
     CREATE TABLE IF NOT EXISTS evidence (jobId TEXT PRIMARY KEY, projectId TEXT NOT NULL, updatedAt INTEGER NOT NULL, payload TEXT NOT NULL);
-    CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, manifest TEXT NOT NULL, workerId TEXT, updatedAt INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, manifest TEXT NOT NULL, workerId TEXT, updatedAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS events (jobId TEXT NOT NULL, seq INTEGER NOT NULL, createdAt INTEGER NOT NULL, line TEXT NOT NULL, PRIMARY KEY(jobId, seq));`);
   // Chat jobs are read-only conversations and run beside builds, so the kind is a column.
   if (!db.prepare('PRAGMA table_info(jobs)').all().some(column => column.name === 'kind')) {
     db.exec(`ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'development'`);
@@ -189,6 +190,28 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
         return { ok: true };
       });
     },
+    // Raw engine stream lines, appended by the owning worker while it holds the lease.
+    appendEvents(id, input) {
+      object(input, ['workerId', 'leaseToken', 'events']);
+      text(input.workerId, 'workerId'); text(input.leaseToken, 'leaseToken');
+      if (!Array.isArray(input.events) || input.events.length > 500 || input.events.some(line => typeof line !== 'string' || line.length > 8192)) reject('Invalid events');
+      return tx(() => {
+        const row = get(id);
+        if (row.state !== 'running' || row.workerId !== input.workerId || row.leaseToken !== input.leaseToken) reject('Lease lost or invalid', 409);
+        let seq = db.prepare('SELECT COALESCE(MAX(seq), 0) AS seq FROM events WHERE jobId=?').get(id).seq;
+        const insert = db.prepare('INSERT INTO events(jobId,seq,createdAt,line) VALUES(?,?,?,?)');
+        for (const line of input.events) insert.run(id, ++seq, now(), line);
+        // Streams are for watching, not archiving: drop lines of jobs finished more than 14 days ago.
+        db.prepare(`DELETE FROM events WHERE jobId IN (SELECT id FROM jobs WHERE state NOT IN ('queued','running') AND updatedAt < ?)`).run(now() - 14 * 86_400_000);
+        return { seq };
+      });
+    },
+    eventsAfter(id, { after = 0, limit = 500 } = {}) {
+      const row = get(id);
+      if (!Number.isInteger(after) || after < 0 || !Number.isInteger(limit) || limit < 1 || limit > 2000) reject('Invalid cursor');
+      const events = db.prepare('SELECT seq, createdAt, line FROM events WHERE jobId=? AND seq>? ORDER BY seq LIMIT ?').all(id, after, limit);
+      return { jobState: row.state, events };
+    },
     evidenceFor(id) { get(id); const row = db.prepare('SELECT * FROM evidence WHERE jobId=?').get(id); return row ? { jobId: id, projectId: row.projectId, updatedAt: row.updatedAt, ...JSON.parse(row.payload) } : null; },
     evidenceList({ limit = 40 } = {}) {
       if (!Number.isInteger(limit) || limit < 1 || limit > 200) reject('Invalid limit');
@@ -233,14 +256,17 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (req.method === 'GET' && url.pathname === '/evidence') return reply(200, queue.evidenceList({ limit: url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 40 }));
       const evidenceMatch = /^\/jobs\/([a-f0-9-]+)\/evidence$/.exec(url.pathname);
       if (req.method === 'GET' && evidenceMatch) { const found = queue.evidenceFor(evidenceMatch[1]); return found ? reply(200, found) : reject('No evidence yet', 404); }
+      const eventsMatch = /^\/jobs\/([a-f0-9-]+)\/events$/.exec(url.pathname);
+      if (req.method === 'GET' && eventsMatch) return reply(200, queue.eventsAfter(eventsMatch[1], { after: Number(url.searchParams.get('after') ?? 0), limit: Number(url.searchParams.get('limit') ?? 500) }));
       if (req.method !== 'POST') reject('Not found', 404);
-      const limit = evidenceMatch ? 700_000 : 65536;
+      const limit = evidenceMatch ? 700_000 : eventsMatch ? 4_200_000 : 65536;
       let size = 0; const chunks = [];
       for await (const chunk of req) { size += chunk.length; if (size > limit) { reply(413, { error: `JSON body exceeds ${limit} bytes` }); req.resume(); return; } chunks.push(chunk); }
       let body; try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { reject('Invalid JSON'); }
       if (url.pathname === '/jobs') return reply(201, queue.enqueue(body));
       if (url.pathname === '/claim') return reply(200, queue.claim(body));
       if (evidenceMatch) return reply(200, queue.evidence(evidenceMatch[1], body));
+      if (eventsMatch) return reply(200, queue.appendEvents(eventsMatch[1], body));
       const project = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/manifest$/.exec(url.pathname);
       if (project) return reply(200, queue.registerProject(project[1], body));
       const match = /^\/jobs\/([a-f0-9-]+)\/(heartbeat|complete|fail|requeue|cancel)$/.exec(url.pathname);
