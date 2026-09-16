@@ -62,6 +62,7 @@ test('worker ideation preflight, bounded publication and fail-closed gates', asy
           if (mode === 'unavailable') throw new Error('Offline');
           return { remaining: mode === 'full' ? 0 : 2, existing: ['Existing feature'], ideas: [{ title: 'Existing feature', description: 'Task data', secretField: 'not copied' }] };
         },
+        inboxComments: async () => [{ id: 'c1', createdAt: '2026-09-16T08:14:00Z', author: 'Owner', body: 'Build a Fastgraphs-style chart' }],
         publishProposals: async (manifest, proposals, options) => {
           publishes++; assert.equal(options.limit, 2); assert.equal(proposals.length, 1); assert.ok(options.jobId);
           return { created: mode === 'dedup' ? [] : [{ identifier: 'TEST-2' }], skipped: mode === 'dedup' ? 1 : 0 };
@@ -74,6 +75,7 @@ test('worker ideation preflight, bounded publication and fail-closed gates', asy
           const contextPath = args[args.indexOf('--idea-context') + 1];
           assert.ok(path.isAbsolute(contextPath)); assert.equal(statSync(contextPath).mode & 0o777, 0o600);
           const context = JSON.parse(readFileSync(contextPath)); assert.equal(context.proposalLimit, 2);
+          assert.deepEqual(context.ownerRequests, [{ at: '2026-09-16T08:14:00Z', author: 'Owner', text: 'Build a Fastgraphs-style chart' }]);
           assert.ok(!JSON.stringify(context).includes('not copied'));
           if (mode === 'aborted') control.abort();
           return { code: mode === 'failed' ? 1 : 0, journal: { outcome: 'ready', issue: null, prUrl: null, summary: 'Evidence', proposals: mode === 'malformed' ? [{}] : [proposal] } };

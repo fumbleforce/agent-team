@@ -101,6 +101,15 @@ export function createLinearClient({ apiKey = process.env.LINEAR_API_KEY, fetchI
     }
     return { created, skipped };
   }
+  // Owner inbox comments are product direction for ideation; the team is the only other reader.
+  async function inboxComments(manifest, { limit = 30 } = {}) {
+    if (typeof manifest.ownerInboxIssue !== 'string' || !/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(manifest.ownerInboxIssue)) return [];
+    const data = await request(`query Inbox($id: String!) { issue(id: $id) { id team { id } comments(first: 100) { nodes { id createdAt body user { name } } ${page} } } }`, { id: manifest.ownerInboxIssue });
+    if (!data.issue || data.issue.team?.id !== manifest.teamId) return [];
+    const nodes = await collect(data.issue.comments, async after => (await request(`query InboxMore($id: String!, $after: String!) { issue(id: $id) { comments(first: 100, after: $after) { nodes { id createdAt body user { name } } ${page} } } }`, { id: manifest.ownerInboxIssue, after })).issue.comments);
+    return nodes.filter(node => typeof node.body === 'string' && node.body.trim()).sort((a, b) => String(a.createdAt).localeCompare(String(b.createdAt))).slice(-limit)
+      .map(node => ({ id: node.id, createdAt: node.createdAt, author: node.user?.name ?? 'unknown', body: node.body.slice(0, 1500) }));
+  }
   async function checkApproved(manifest, identifier) {
     const current = await snapshot(manifest);
     return approvalStatus(manifest, current.ideas.find(issue => issue.identifier === identifier || issue.id === identifier));
@@ -118,5 +127,5 @@ export function createLinearClient({ apiKey = process.env.LINEAR_API_KEY, fetchI
     }
     return issue;
   }
-  return { context, snapshot, publishProposals, prepareApproved, checkApproved };
+  return { context, snapshot, publishProposals, prepareApproved, checkApproved, inboxComments };
 }

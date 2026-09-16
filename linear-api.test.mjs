@@ -33,7 +33,8 @@ function fake({ issues = [], workspace = 'workspace', membership = 'team', pageS
       const target = issues.find(item => item.id === variables.id);
       target.labels = connection(variables.input.labelIds.map(id => labels.find(label => label.id === id) ?? { id, name: id }));
       data = { issueUpdate: { success: true } };
-    } else throw new Error('Unexpected fake operation');
+    } else if (query.includes('query Inbox(')) data = { issue: { id: 'inbox', team: { id: 'team' }, comments: connection([{ id: 'c2', createdAt: '2026-09-16T08:17:00Z', body: 'Second request', user: { name: 'Owner' } }, { id: 'c1', createdAt: '2026-09-16T08:14:00Z', body: 'First request', user: { name: 'Owner' } }, { id: 'c3', createdAt: '2026-09-16T08:18:00Z', body: '   ', user: null }]) } };
+    else throw new Error('Unexpected fake operation');
     return { ok: true, json: async () => ({ data }) };
   };
   return { client: createLinearClient({ apiKey: 'secret-test-key', fetchImpl }), calls, issues };
@@ -87,6 +88,13 @@ test('approval is read-only; preparation preserves labels and is idempotent', as
   approved.state = states[0];
   assert.equal((await client.checkApproved(manifest, 'TEAM-1')).allowed, false);
   await assert.rejects(client.prepareApproved(manifest, 'TEAM-1'), /approval/);
+});
+test('owner inbox comments are returned in order and ignored outside the configured team', async () => {
+  const { client } = fake();
+  const comments = await client.inboxComments({ ...manifest, ownerInboxIssue: 'TEAM-10' });
+  assert.deepEqual(comments.map(c => [c.id, c.author, c.body]), [['c1', 'Owner', 'First request'], ['c2', 'Owner', 'Second request']]);
+  assert.deepEqual(await client.inboxComments({ ...manifest, ownerInboxIssue: 'TEAM-10', teamId: 'other' }), []);
+  assert.deepEqual(await client.inboxComments(manifest), []);
 });
 test('decision and repair labels hold an approved idea until removed', () => {
   const approved = { id: 'id', identifier: 'TEAM-1', projectId: 'project', teamId: 'team', parentId: null, archivedAt: null, state: states[1], labels: [labels[0]], blocked: false };

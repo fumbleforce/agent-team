@@ -149,9 +149,12 @@ export async function runWorker(config, { once = false, signal = new AbortContro
             boundedJob = { ...boundedJob, proposalLimit: limit };
             // The context becomes one prompt argument; keep it far below the 128 KiB argv limit.
             const issues = (snapshot.allIssues ?? snapshot.ideas ?? []).slice(0, 200);
+            const inbox = typeof client.inboxComments === 'function' ? await client.inboxComments(manifest) : [];
+            active();
             const context = { remaining: snapshot.remaining, proposalLimit: limit,
               existing: (snapshot.existing ?? []).filter(value => typeof value === 'string').slice(0, 400).map(value => value.slice(0, 200)),
-              ideas: issues.map(issue => ({ title: String(issue.title ?? '').slice(0, 200), description: String(issue.description ?? '').slice(0, 400) })) };
+              ideas: issues.map(issue => ({ title: String(issue.title ?? '').slice(0, 200), description: String(issue.description ?? '').slice(0, 400) })),
+              ownerRequests: inbox.map(comment => ({ at: String(comment.createdAt ?? ''), author: String(comment.author ?? ''), text: String(comment.body ?? '').slice(0, 1500) })) };
             mkdirSync(stateDir, { recursive: true, mode: 0o700 });
             ideaContext = path.join(stateDir, `${job.id}.ideas.json`);
             // Atomic replacement supports inspected requeues without following symlinks.
