@@ -25,7 +25,7 @@ function fixture(t) {
     writeFileSync(path.join(runs, id, 'summary.md'), `# Agent run ${id}\n${MARKER}`);
   };
   write('2026-09-16T06-00-00-000Z-aaaaaaaa', { id: 'a', state: 'ready', engine: 'claude', issue: 'FUM-1', prUrl: 'https://github.com/o/r/pull/1', delivery: { state: 'merged' }, startedAt: '2026-09-16T06:00:00.000Z', finishedAt: '2026-09-16T06:10:00.000Z', baseCommit: 'abcdef1234567890', summary: MARKER });
-  write('2026-09-16T07-00-00-000Z-bbbbbbbb', { id: 'b', state: 'running', engine: 'claude', issue: null, startedAt: '2026-09-16T07:00:00.000Z', proposals: [] });
+  write('2026-09-16T07-00-00-000Z-bbbbbbbb', { id: 'b', state: 'running', engine: 'claude', options: { issue: 'FUM-2' }, worktree: '/wt/run-b', startedAt: '2026-09-16T07:00:00.000Z' });
   mkdirSync(path.join(runs, 'not-a-run-id'));
   const dbPath = path.join(root, 'queue.sqlite');
   const q = createQueue(dbPath, { projects: { myntbase: {} } });
@@ -45,6 +45,7 @@ test('event steps summarize coordinator and subagent activity, usage and engine 
   assert.equal(parsed.usage.fiveHour.utilization, 0.15);
   assert.deepEqual(parsed.engineResult, { subtype: 'success', isError: false, durationMs: 120000, turns: 7 });
   assert.deepEqual(eventSteps('garbage\n{"type":"x"}\n'), { steps: [], usage: null, engineResult: null });
+  assert.equal(eventSteps(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/wt/run-b/src/a.ts' } }] } }), 5, '/wt/run-b').steps[0].text, 'Read: src/a.ts');
 });
 
 test('state aggregates services, queue, runs, live steps, usage and quarantine without lease tokens', t => {
@@ -53,9 +54,11 @@ test('state aggregates services, queue, runs, live steps, usage and quarantine w
   assert.deepEqual(state.services, { 'agent-team-coordinator': 'active', 'agent-team-worker': 'active', 'agent-team-intake': 'inactive' });
   assert.equal(state.jobs.length, 1); assert.equal(state.jobs[0].state, 'blocked'); assert.equal(state.jobs[0].engine, 'claude');
   assert.deepEqual(state.quarantined, ['myntbase']);
+  assert.deepEqual(state.overview.map(p => [p.project, p.status, p.blocked, p.delivered?.issue]), [['myntbase', 'on hold', 1, 'FUM-1']]);
   assert.deepEqual(state.runs.map(run => run.state), ['running', 'ready']);
   assert.equal(state.runs[1].delivery, 'merged'); assert.equal(state.runs[1].baseCommit, 'abcdef12');
-  assert.equal(state.live.length, 1); assert.equal(state.live[0].steps.length, 3);
+  assert.equal(state.live.length, 1); assert.equal(state.live[0].steps.length, 3); assert.equal(state.live[0].issue, 'FUM-2');
+  assert.equal(state.overview[0].running.issue, 'FUM-2');
   assert.equal(state.usage.sevenDay.utilization, 0.4);
   assert.ok(!JSON.stringify(state).includes(f.leaseToken));
   assert.deepEqual(collectState({ dbPath: path.join(f.root, 'missing.sqlite'), projects: { other: path.join(f.root, 'nowhere') }, systemctl: () => 'unknown' }).jobs, []);
@@ -76,7 +79,7 @@ test('HTTP pages escape content, serve JSON, and reject writes and unknown paths
   const base = `http://127.0.0.1:${server.address().port}`;
   const index = await fetch(base + '/'); const html = await index.text();
   assert.equal(index.status, 200); assert.ok(!html.includes(MARKER)); assert.ok(html.includes('&lt;script&gt;'));
-  assert.ok(html.includes('Quarantined') && html.includes('15%') && html.includes('Agent → team-pm'));
+  assert.ok(html.includes('is on hold') && html.includes('15% used') && html.includes('Agent → team-pm'));
   const api = await (await fetch(base + '/api/state')).json();
   assert.equal(api.jobs[0].outcome, 'blocked');
   const run = await fetch(base + '/runs/myntbase/2026-09-16T06-00-00-000Z-aaaaaaaa');
@@ -86,7 +89,7 @@ test('HTTP pages escape content, serve JSON, and reject writes and unknown paths
   assert.equal((await fetch(base + '/runs/myntbase/..%2F..%2Fx')).status, 404);
   assert.equal((await fetch(base + '/runs/other/2026-09-16T06-00-00-000Z-aaaaaaaa')).status, 404);
   assert.equal((await fetch(base + '/', { method: 'POST' })).status, 405);
-  assert.ok(renderIndex({ generatedAt: new Date().toISOString(), services: {}, jobs: [], runs: [], live: [], locks: {}, usage: null, quarantined: [] }).includes('No jobs yet'));
+  assert.ok(renderIndex({ generatedAt: new Date().toISOString(), services: {}, overview: [], jobs: [], runs: [], live: [], locks: {}, usage: null, quarantined: [] }).includes('No jobs yet'));
 });
 
 test('configuration resolves the coordinator database and worker projects and validates the bind', t => {
@@ -96,7 +99,7 @@ test('configuration resolves the coordinator database and worker projects and va
   writeFileSync(path.join(dir, 'worker.json'), JSON.stringify({ workerId: 'x3d', projects: f.projects, stateDir: '/tmp/state' }));
   writeFileSync(path.join(dir, 'dashboard.json'), JSON.stringify({ port: 4311, coordinator: path.join(dir, 'coordinator.json'), worker: path.join(dir, 'worker.json') }));
   const config = loadConfig(path.join(dir, 'dashboard.json'));
-  assert.deepEqual(config, { host: '127.0.0.1', port: 4311, db: f.dbPath, projects: f.projects, stateDir: '/tmp/state' });
+  assert.deepEqual(config, { host: '127.0.0.1', port: 4311, db: f.dbPath, projects: f.projects, stateDir: '/tmp/state', defaultEngine: 'opencode' });
   writeFileSync(path.join(dir, 'dashboard.json'), JSON.stringify({ host: '0.0.0.0', coordinator: path.join(dir, 'coordinator.json'), worker: path.join(dir, 'worker.json') }));
   assert.throws(() => loadConfig(path.join(dir, 'dashboard.json')), /loopback or Tailscale/);
 });
