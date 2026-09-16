@@ -6,6 +6,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { ENGINES } from './engines.mjs';
 import { remoteBase } from './git-base.mjs';
+import { ROSTER } from './roster.mjs';
+
+const KINDS = ['development', 'ideation', 'chat'];
+const ISSUE = /^[A-Z][A-Z0-9]*-[1-9][0-9]*$/;
 
 export class QueueError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -37,7 +41,15 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
       id TEXT PRIMARY KEY, projectId TEXT NOT NULL, issue TEXT, request TEXT NOT NULL,
       idempotencyKey TEXT UNIQUE, state TEXT NOT NULL, workerId TEXT, leaseToken TEXT,
       leaseUntil INTEGER, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL, result TEXT);
-    CREATE UNIQUE INDEX IF NOT EXISTS one_running_project ON jobs(projectId) WHERE state='running';`);
+    CREATE TABLE IF NOT EXISTS evidence (jobId TEXT PRIMARY KEY, projectId TEXT NOT NULL, updatedAt INTEGER NOT NULL, payload TEXT NOT NULL);
+    CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, manifest TEXT NOT NULL, workerId TEXT, updatedAt INTEGER NOT NULL);`);
+  // Chat jobs are read-only conversations and run beside builds, so the kind is a column.
+  if (!db.prepare('PRAGMA table_info(jobs)').all().some(column => column.name === 'kind')) {
+    db.exec(`ALTER TABLE jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'development'`);
+    for (const row of db.prepare('SELECT id, request FROM jobs').all()) db.prepare('UPDATE jobs SET kind=? WHERE id=?').run(JSON.parse(row.request).kind ?? 'development', row.id);
+  }
+  db.exec(`DROP INDEX IF EXISTS one_running_project;
+    CREATE UNIQUE INDEX IF NOT EXISTS one_running_build ON jobs(projectId) WHERE state='running' AND kind<>'chat';`);
   const expire = () => db.prepare(`UPDATE jobs SET state='blocked', leaseToken=NULL, leaseUntil=NULL,
     updatedAt=?, result=? WHERE state='running' AND leaseUntil<=?`).run(now(), JSON.stringify({ outcome: 'blocked', summary: 'Lease expired; inspect execution before manual requeue' }), now());
   const tx = fn => {
@@ -52,9 +64,21 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
   };
   const get = id => { const row = db.prepare('SELECT * FROM jobs WHERE id=?').get(id); if (!row) reject('Job not found', 404); return row; };
   const normalize = input => {
-    object(input, ['projectId', 'issue', 'base', 'fetch', 'engine', 'model', 'timeoutMinutes', 'publish', 'autoMerge', 'idempotencyKey', 'kind', 'proposalLimit', 'approvalRequired']);
+    object(input, ['projectId', 'issue', 'base', 'fetch', 'engine', 'model', 'timeoutMinutes', 'publish', 'autoMerge', 'idempotencyKey', 'kind', 'proposalLimit', 'approvalRequired', 'role', 'message']);
     const kind = input.kind ?? 'development';
-    if (!['development', 'ideation'].includes(kind)) reject('Invalid kind');
+    if (!KINDS.includes(kind)) reject('Invalid kind');
+    if (kind !== 'chat' && (input.role !== undefined || input.message !== undefined)) reject('role and message require chat');
+    if (kind === 'chat') {
+      if (['publish', 'autoMerge', 'approvalRequired', 'proposalLimit', 'base', 'fetch', 'model'].some(key => input[key] !== undefined)) reject('Chat accepts only role, issue and message');
+      if (!Object.hasOwn(ROSTER, input.role)) reject('Invalid role');
+      if (!ISSUE.test(input.issue ?? '')) reject('Chat requires a Linear issue');
+      text(input.message, 'message', 4000);
+      registered(input.projectId);
+      const timeoutMinutes = input.timeoutMinutes ?? 5;
+      if (!Number.isInteger(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 15) reject('Invalid timeoutMinutes');
+      if (input.idempotencyKey !== undefined) text(input.idempotencyKey, 'idempotencyKey');
+      return { projectId: input.projectId, kind, issue: input.issue, role: input.role, message: input.message, timeoutMinutes, ...(input.engine === undefined ? {} : { engine: input.engine }) };
+    }
     if (kind === 'ideation') {
       if (['issue', 'publish', 'autoMerge', 'approvalRequired'].some(key => input[key] !== undefined)) reject('Ideation forbids issue, publish, autoMerge and approvalRequired');
       if (!Number.isInteger(input.proposalLimit) || input.proposalLimit < 1 || input.proposalLimit > 10) reject('Ideation requires proposalLimit from 1 to 10');
@@ -112,22 +136,29 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
           const prior = db.prepare('SELECT * FROM jobs WHERE idempotencyKey=?').get(input.idempotencyKey);
           if (prior) { if (JSON.stringify(normalize(JSON.parse(prior.request))) !== encoded) reject('Idempotency key reused with different request', 409); return view(prior); }
         }
-        const duplicate = db.prepare(`SELECT id FROM jobs WHERE projectId=? AND state IN ('queued','running') AND (issue IS NULL OR ? IS NULL OR issue=?)`).get(request.projectId, request.issue ?? null, request.issue ?? null);
-        if (duplicate) reject('Active overlapping job already exists', 409);
+        if (request.kind !== 'chat') {
+          const duplicate = db.prepare(`SELECT id FROM jobs WHERE projectId=? AND kind<>'chat' AND state IN ('queued','running') AND (issue IS NULL OR ? IS NULL OR issue=?)`).get(request.projectId, request.issue ?? null, request.issue ?? null);
+          if (duplicate) reject('Active overlapping job already exists', 409);
+        }
         const id = randomUUID();
-        db.prepare(`INSERT INTO jobs(id,projectId,issue,request,idempotencyKey,state,createdAt,updatedAt) VALUES(?,?,?,?,?,'queued',?,?)`).run(id, request.projectId, request.issue ?? null, encoded, input.idempotencyKey ?? null, now(), now());
+        db.prepare(`INSERT INTO jobs(id,projectId,issue,request,idempotencyKey,state,kind,createdAt,updatedAt) VALUES(?,?,?,?,?,'queued',?,?,?)`).run(id, request.projectId, request.issue ?? null, encoded, input.idempotencyKey ?? null, request.kind, now(), now());
         return view(get(id));
       });
     },
     list: () => tx(() => db.prepare('SELECT * FROM jobs ORDER BY createdAt,rowid').all().map(view)),
     claim(input) {
-      object(input, ['workerId', 'projectIds']); text(input.workerId, 'workerId');
+      object(input, ['workerId', 'projectIds', 'kinds']); text(input.workerId, 'workerId');
       if (!Array.isArray(input.projectIds) || !input.projectIds.length || input.projectIds.length > 100) reject('Invalid projectIds');
       input.projectIds.forEach(registered);
+      const kinds = input.kinds ?? ['development', 'ideation'];
+      if (!Array.isArray(kinds) || !kinds.length || kinds.some(kind => !KINDS.includes(kind))) reject('Invalid kinds');
       return tx(() => {
         // Expired/crashed workers may still be executing on another host. Quarantine
         // the entire project until an operator inspects execution and requeues.
-        const row = db.prepare(`SELECT * FROM jobs j WHERE state='queued' AND projectId IN (${input.projectIds.map(() => '?').join(',')}) AND NOT EXISTS (SELECT 1 FROM jobs r WHERE r.projectId=j.projectId AND r.state IN ('running','blocked','failed')) ORDER BY createdAt,rowid LIMIT 1`).get(...input.projectIds);
+        // Chat jobs are read-only and stay claimable beside builds and held projects.
+        const params = [...input.projectIds, ...kinds];
+        const row = db.prepare(`SELECT * FROM jobs j WHERE state='queued' AND projectId IN (${input.projectIds.map(() => '?').join(',')}) AND kind IN (${kinds.map(() => '?').join(',')})
+          AND (j.kind='chat' OR NOT EXISTS (SELECT 1 FROM jobs r WHERE r.projectId=j.projectId AND r.kind<>'chat' AND r.state IN ('running','blocked','failed'))) ORDER BY createdAt,rowid LIMIT 1`).get(...params);
         if (!row) return null;
         const leaseToken = randomUUID();
         db.prepare(`UPDATE jobs SET state='running',workerId=?,leaseToken=?,leaseUntil=?,updatedAt=? WHERE id=?`).run(input.workerId, leaseToken, now() + leaseMs, now(), row.id);
@@ -145,12 +176,42 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
         return view(get(id));
       });
     },
+    evidence(id, input) {
+      object(input, ['workerId', 'leaseToken', 'evidence']);
+      text(input.workerId, 'workerId'); text(input.leaseToken, 'leaseToken');
+      if (!input.evidence || typeof input.evidence !== 'object' || Array.isArray(input.evidence)) reject('Invalid evidence');
+      const payload = JSON.stringify(input.evidence);
+      if (payload.length > 600_000) reject('Evidence exceeds 600KB', 413);
+      return tx(() => {
+        const row = get(id);
+        if (row.state !== 'running' || row.workerId !== input.workerId || row.leaseToken !== input.leaseToken) reject('Lease lost or invalid', 409);
+        db.prepare('INSERT INTO evidence(jobId,projectId,updatedAt,payload) VALUES(?,?,?,?) ON CONFLICT(jobId) DO UPDATE SET updatedAt=excluded.updatedAt, payload=excluded.payload').run(id, row.projectId, now(), payload);
+        return { ok: true };
+      });
+    },
+    evidenceFor(id) { get(id); const row = db.prepare('SELECT * FROM evidence WHERE jobId=?').get(id); return row ? { jobId: id, projectId: row.projectId, updatedAt: row.updatedAt, ...JSON.parse(row.payload) } : null; },
+    evidenceList({ limit = 40 } = {}) {
+      if (!Number.isInteger(limit) || limit < 1 || limit > 200) reject('Invalid limit');
+      return db.prepare('SELECT e.jobId, e.projectId, e.updatedAt, e.payload, j.state AS jobState FROM evidence e JOIN jobs j ON j.id=e.jobId ORDER BY e.updatedAt DESC LIMIT ?').all(limit)
+        .map(row => { const payload = JSON.parse(row.payload); return { jobId: row.jobId, projectId: row.projectId, updatedAt: row.updatedAt, jobState: row.jobState, run: payload.run, steps: (payload.steps ?? []).slice(-40), members: payload.members ?? {}, active: payload.active ?? null, usage: payload.usage ?? null, tokens: payload.tokens ?? 0 }; });
+    },
+    registerProject(id, input) {
+      registered(id); object(input, ['workerId', 'manifest']); text(input.workerId, 'workerId');
+      if (!input.manifest || typeof input.manifest !== 'object' || Array.isArray(input.manifest)) reject('Invalid manifest');
+      const manifest = JSON.stringify(input.manifest);
+      if (manifest.length > 65536) reject('Manifest exceeds 64KB', 413);
+      return tx(() => { db.prepare('INSERT INTO projects(id,manifest,workerId,updatedAt) VALUES(?,?,?,?) ON CONFLICT(id) DO UPDATE SET manifest=excluded.manifest, workerId=excluded.workerId, updatedAt=excluded.updatedAt').run(id, manifest, input.workerId, now()); return { ok: true }; });
+    },
+    projectsList() {
+      const rows = Object.fromEntries(db.prepare('SELECT * FROM projects').all().map(row => [row.id, row]));
+      return Object.entries(projects).map(([id, project]) => ({ id, repository: project.repository ?? null, manifest: rows[id] ? JSON.parse(rows[id].manifest) : null, workerId: rows[id]?.workerId ?? null, seenAt: rows[id]?.updatedAt ?? null }));
+    },
     requeue(id, input = {}) {
       object(input, []);
       return tx(() => {
         const row = get(id);
         if (!['blocked', 'failed'].includes(row.state)) reject('Only blocked or failed jobs can be requeued after human inspection', 409);
-        if (db.prepare(`SELECT id FROM jobs WHERE id<>? AND projectId=? AND state IN ('running','queued') AND (issue IS NULL OR ? IS NULL OR issue=?)`).get(id, row.projectId, row.issue, row.issue)) reject('Active overlapping job already exists', 409);
+        if (row.kind !== 'chat' && db.prepare(`SELECT id FROM jobs WHERE id<>? AND projectId=? AND kind<>'chat' AND state IN ('running','queued') AND (issue IS NULL OR ? IS NULL OR issue=?)`).get(id, row.projectId, row.issue, row.issue)) reject('Active overlapping job already exists', 409);
         db.prepare(`UPDATE jobs SET state='queued',workerId=NULL,leaseToken=NULL,leaseUntil=NULL,result=NULL,updatedAt=? WHERE id=?`).run(now(), id);
         return view(get(id));
       });
@@ -168,12 +229,20 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'GET' && url.pathname === '/health') return reply(200, { ok: true });
       if (req.method === 'GET' && url.pathname === '/jobs') return reply(200, queue.list());
+      if (req.method === 'GET' && url.pathname === '/projects') return reply(200, queue.projectsList());
+      if (req.method === 'GET' && url.pathname === '/evidence') return reply(200, queue.evidenceList({ limit: url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 40 }));
+      const evidenceMatch = /^\/jobs\/([a-f0-9-]+)\/evidence$/.exec(url.pathname);
+      if (req.method === 'GET' && evidenceMatch) { const found = queue.evidenceFor(evidenceMatch[1]); return found ? reply(200, found) : reject('No evidence yet', 404); }
       if (req.method !== 'POST') reject('Not found', 404);
+      const limit = evidenceMatch ? 700_000 : 65536;
       let size = 0; const chunks = [];
-      for await (const chunk of req) { size += chunk.length; if (size > 65536) { reply(413, { error: 'JSON body exceeds 64KB' }); req.resume(); return; } chunks.push(chunk); }
+      for await (const chunk of req) { size += chunk.length; if (size > limit) { reply(413, { error: `JSON body exceeds ${limit} bytes` }); req.resume(); return; } chunks.push(chunk); }
       let body; try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { reject('Invalid JSON'); }
       if (url.pathname === '/jobs') return reply(201, queue.enqueue(body));
       if (url.pathname === '/claim') return reply(200, queue.claim(body));
+      if (evidenceMatch) return reply(200, queue.evidence(evidenceMatch[1], body));
+      const project = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/manifest$/.exec(url.pathname);
+      if (project) return reply(200, queue.registerProject(project[1], body));
       const match = /^\/jobs\/([a-f0-9-]+)\/(heartbeat|complete|fail|requeue|cancel)$/.exec(url.pathname);
       if (!match) reject('Not found', 404);
       reply(200, queue[match[2]](match[1], body));
@@ -181,8 +250,10 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
   });
 }
 
+// 0.0.0.0 is only for containers behind a TLS-terminating proxy that enforces auth (Fly).
 export function validBind(host) {
   if (host === '127.0.0.1' || host === '::1' || host === 'localhost') return true;
+  if (host === '0.0.0.0' && process.env.AGENT_TEAM_PUBLIC_BIND === '1') return true;
   const parts = host.split('.');
   return parts.length === 4 && parts.every(p => /^\d{1,3}$/.test(p) && Number(p) <= 255) && Number(parts[0]) === 100 && Number(parts[1]) >= 64 && Number(parts[1]) <= 127;
 }

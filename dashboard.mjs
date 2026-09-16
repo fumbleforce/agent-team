@@ -1,192 +1,62 @@
-import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
 import * as fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { DatabaseSync } from 'node:sqlite';
 import { validBind } from './queue.mjs';
 import { createClient } from './worker.mjs';
 import { localToken } from './cli.mjs';
 import { ROSTER } from './roster.mjs';
-import { converse, openConversations } from './chat.mjs';
-import { createLinearClient } from './linear-api.mjs';
+import { clip } from './evidence.mjs';
 
 const PORTRAITS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'portraits');
-
-const UNITS = ['agent-team-coordinator', 'agent-team-worker', 'agent-team-intake'];
-const RUN_ID = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9-]+Z-[a-f0-9]{8}$/;
 const ACTIVE = ['queued', 'running', 'blocked', 'failed'];
 const DAY = 86_400_000;
-const clip = (text, max) => { const value = String(text ?? '').replace(/\s+/g, ' ').trim(); return value.length > max ? `${value.slice(0, max - 1)}…` : value; };
 
-function tail(file, bytes = 262144) {
-  try {
-    const size = fs.statSync(file).size;
-    const fd = fs.openSync(file, 'r');
-    try {
-      const length = Math.min(size, bytes);
-      const buffer = Buffer.alloc(length);
-      fs.readSync(fd, buffer, 0, length, size - length);
-      return buffer.toString('utf8');
-    } finally { fs.closeSync(fd); }
-  } catch { return ''; }
-}
-
-// One line per model step for either engine: what the coordinator said or which tool it
-// called, and whether a subagent did it. Claude emits assistant/result/rate_limit events;
-// OpenCode emits text/tool_use/step_finish parts.
-export function eventSteps(text, limit = 40, worktree = null) {
-  const local = value => worktree ? String(value).split(`${worktree}/`).join('') : String(value);
-  const steps = []; let usage = null; let engineResult = null; let tokens = 0;
-  // Subagent events carry the Agent call's id; that call named the role, so steps are attributed by member.
-  const handoffs = {}; const members = {};
-  const push = (scope, kind, value, member = null) => {
-    steps.push({ scope, kind, member, text: clip(local(value), kind === 'text' ? 300 : 200) });
-    if (member) members[member] = (members[member] ?? 0) + 1;
-  };
-  for (const line of text.split('\n')) {
-    let event;
-    try { event = JSON.parse(line); } catch { continue; }
-    const scope = event.parent_tool_use_id ? 'subagent' : 'coordinator';
-    const member = event.parent_tool_use_id ? handoffs[event.parent_tool_use_id] ?? 'subagent' : null;
-    if (event.type === 'assistant') {
-      for (const block of event.message?.content ?? []) {
-        if (block.type === 'text' && block.text?.trim()) push(scope, 'text', block.text, member);
-        else if (block.type === 'tool_use') {
-          const input = block.input ?? {};
-          if (block.name === 'Agent' && typeof input.subagent_type === 'string' && block.id) handoffs[block.id] = input.subagent_type;
-          const detail = input.description ?? input.command ?? input.file_path ?? input.pattern ?? input.prompt ?? input.query ?? '';
-          push(scope, 'tool', `${block.name}${input.subagent_type ? ` → ${input.subagent_type}` : ''}${detail ? `: ${detail}` : ''}`, member);
-        }
-      }
-    } else if (event.type === 'rate_limit_event' && event.rate_limit_info) {
-      const windows = event.rate_limit_info.unifiedWindows ?? {};
-      usage = { status: event.rate_limit_info.status, fiveHour: windows.five_hour ?? null, sevenDay: windows.seven_day ?? null };
-    } else if (event.type === 'result') {
-      engineResult = { subtype: event.subtype, isError: event.is_error === true, durationMs: event.duration_ms, turns: event.num_turns };
-    } else if (event.type === 'text' && event.part?.text?.trim()) push('coordinator', 'text', event.part.text);
-    else if (event.type === 'tool_use' && event.part) {
-      const input = event.part.state?.input ?? {};
-      const detail = input.description ?? input.command ?? input.filePath ?? input.pattern ?? input.prompt ?? '';
-      push(event.part.tool === 'task' ? 'subagent' : 'coordinator', 'tool', `${event.part.tool}${input.subagent_type ? ` → ${input.subagent_type}` : ''}${detail ? `: ${detail}` : ''}`, event.part.tool === 'task' ? input.subagent_type ?? 'subagent' : null);
-    } else if (event.type === 'step_finish' && Number.isFinite(event.part?.tokens?.total)) tokens += event.part.tokens.total;
-  }
-  const last = steps.at(-1);
-  return { steps: steps.slice(-limit), usage, engineResult, tokens, members, active: last ? last.member ?? 'team-coordinator' : null };
-}
-
-function readJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
-
-function runSummary(project, dir, id) {
-  const journal = readJson(path.join(dir, 'journal.json'));
-  if (!journal) return { project, id, state: 'unreadable' };
-  // Running journals carry the pinned issue only in options; the final issue is recorded at the end.
-  return { project, id, state: journal.state, engine: journal.engine ?? 'opencode', issue: journal.issue ?? journal.options?.issue ?? null,
-    ideation: journal.options?.ideate === true, worktree: journal.worktree ?? null, prUrl: journal.prUrl ?? null,
-    delivery: journal.delivery?.state ?? null, startedAt: journal.startedAt, finishedAt: journal.finishedAt ?? null,
-    baseCommit: journal.baseCommit ? journal.baseCommit.slice(0, 8) : null, summary: clip(journal.summary ?? journal.error ?? '', 400),
-    proposals: Array.isArray(journal.proposals) ? journal.proposals.map(p => p.title) : undefined };
-}
-
-export function collectState({ dbPath, projects, stateDir, defaultEngine = 'opencode', systemctl = defaultSystemctl, runLimit = 12, now = Date.now }) {
+// Everything the page shows comes from the coordinator API: jobs, run evidence reported by
+// workers, and the project registry workers fill from their manifests. No local disk is read.
+export async function collectState({ request, now = Date.now }) {
   const time = now();
-  const services = Object.fromEntries(UNITS.map(unit => [unit, systemctl(unit)]));
-  let jobs = [];
-  if (dbPath && fs.existsSync(dbPath)) {
-    const db = new DatabaseSync(dbPath, { readOnly: true });
-    try {
-      jobs = db.prepare('SELECT id, projectId, issue, request, state, workerId, createdAt, updatedAt, result FROM jobs ORDER BY createdAt DESC, rowid DESC LIMIT 60').all()
-        .map(row => { const request = JSON.parse(row.request); const result = row.result ? JSON.parse(row.result) : null;
-          return { id: row.id, projectId: row.projectId, kind: request.kind ?? 'development', issue: row.issue, engine: request.engine ?? null, base: request.base,
-            proposalLimit: request.proposalLimit ?? null, publish: request.publish === true, autoMerge: request.autoMerge === true, state: row.state, workerId: row.workerId,
-            createdAt: row.createdAt, updatedAt: row.updatedAt, outcome: result?.outcome ?? null, summary: clip(result?.summary ?? '', 300) }; });
-    } finally { db.close(); }
+  const [jobsRaw, evidence, registry] = await Promise.all([request('/jobs'), request('/evidence?limit=60'), request('/projects')]);
+  const jobs = jobsRaw.map(job => ({ id: job.id, projectId: job.projectId, kind: job.kind ?? 'development', issue: job.issue ?? null, engine: job.engine ?? null, base: job.base ?? null,
+    role: job.role ?? null, message: job.message ?? null, publish: job.publish === true, autoMerge: job.autoMerge === true, state: job.state, workerId: job.workerId ?? null,
+    createdAt: job.createdAt, updatedAt: job.updatedAt, outcome: job.result?.outcome ?? null, summary: clip(job.result?.summary ?? '', job.kind === 'chat' ? 4000 : 300) })).sort((a, b) => b.createdAt - a.createdAt);
+  const runs = evidence.map(item => ({ ...item.run, jobId: item.jobId, jobState: item.jobState, steps: item.steps, members: item.members, active: item.active, usage: item.usage, tokens: item.tokens, updatedAt: item.updatedAt }))
+    .sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''));
+  const live = runs.filter(run => run.state === 'running' && run.jobState === 'running');
+  const usage = live.find(run => run.usage)?.usage ?? runs.find(run => run.engine === 'claude' && run.usage)?.usage ?? null;
+  const openai = { day: 0, week: 0, lastRun: null };
+  for (const run of runs) {
+    if (run.engine !== 'opencode') continue;
+    const age = time - new Date(run.startedAt ?? 0).getTime();
+    if (age <= 7 * DAY) { openai.week += run.tokens ?? 0; if (age <= DAY) openai.day += run.tokens ?? 0; openai.lastRun ??= { jobId: run.jobId, project: run.project, tokens: run.tokens ?? 0 }; }
   }
-  const runs = []; const live = []; const openai = { day: 0, week: 0, lastRun: null };
-  let usage = null;
-  for (const [project, checkout] of Object.entries(projects)) {
-    const runsDir = path.join(checkout, '.agent-team', 'runs');
-    let ids = [];
-    try { ids = fs.readdirSync(runsDir).filter(id => RUN_ID.test(id)).sort().reverse(); } catch { /* no runs yet */ }
-    for (const id of ids.slice(0, runLimit)) {
-      const dir = path.join(runsDir, id);
-      const run = runSummary(project, dir, id);
-      runs.push(run);
-      const events = path.join(dir, 'events.jsonl');
-      if (run.state === 'running') {
-        const parsed = eventSteps(tail(events), 40, run.worktree);
-        live.push({ project, id, issue: run.issue, ideation: run.ideation, engine: run.engine, startedAt: run.startedAt, steps: parsed.steps, members: parsed.members, active: run.ideation ? 'team-ideation' : parsed.active });
-        usage = parsed.usage ?? usage;
-      } else if (run.engine === 'claude' && !usage) usage = eventSteps(tail(events, 65536), 0).usage;
-      if (run.engine === 'opencode') {
-        const age = time - new Date(run.startedAt ?? 0).getTime();
-        if (age <= 7 * DAY) {
-          const { tokens } = eventSteps(fs.existsSync(events) ? fs.readFileSync(events, 'utf8') : '', 0);
-          openai.week += tokens; if (age <= DAY) openai.day += tokens;
-          openai.lastRun ??= { id, project, tokens, startedAt: run.startedAt };
-        }
-      }
-    }
-  }
-  runs.sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''));
+  const quarantined = [...new Set(jobs.filter(job => job.kind !== 'chat' && ['blocked', 'failed'].includes(job.state)).map(job => job.projectId))];
   const team = Object.entries(ROSTER).filter(([role]) => role !== 'team-owner').map(([role, member]) => {
     const busy = live.find(run => run.active === role || (role === 'team-coordinator' && run.active && !run.ideation && !(run.active in ROSTER)));
-    return { role, name: member.name, title: member.title, working: busy ? { project: busy.project, id: busy.id, issue: busy.issue ?? (busy.ideation ? 'ideas' : 'cycle') } : null,
+    const chatting = jobs.find(job => job.kind === 'chat' && job.role === role && job.state === 'running');
+    return { role, name: member.name, title: member.title, working: busy ? { project: busy.project, jobId: busy.jobId, issue: busy.issue ?? (busy.ideation ? 'ideas' : 'cycle') } : chatting ? { project: chatting.projectId, jobId: chatting.id, issue: `chat on ${chatting.issue}` } : null,
       steps: live.reduce((sum, run) => sum + (run.members?.[role] ?? 0), 0) };
   });
-  const quarantined = [...new Set(jobs.filter(job => ['blocked', 'failed'].includes(job.state)).map(job => job.projectId))];
-  // One card per configured project plus what the intake would do next for it.
-  const overview = Object.keys(projects).map(project => {
-    const own = jobs.filter(job => job.projectId === project);
-    const running = live.find(run => run.project === project) ?? null;
-    const delivered = runs.find(run => run.project === project && run.delivery === 'merged') ?? null;
-    const manifest = readJson(path.join(projects[project], '.agent-team.json'));
-    const ideation = manifest?.ideation?.enabled === true ? manifest.ideation : null;
+  const overview = registry.map(project => {
+    const own = jobs.filter(job => job.projectId === project.id && job.kind !== 'chat');
+    const running = live.find(run => run.project === project.id) ?? null;
+    const delivered = runs.find(run => run.project === project.id && run.delivery === 'merged') ?? null;
+    const manifest = project.manifest ?? {};
+    const ideation = manifest.ideation?.enabled === true ? manifest.ideation : null;
     const lastIdeas = own.find(job => job.kind === 'ideation' && job.state !== 'canceled');
     const cooldownEnds = ideation && lastIdeas ? Number(lastIdeas.createdAt) + ideation.minimumIntervalHours * 3_600_000 : null;
     const held = own.filter(job => ['blocked', 'failed'].includes(job.state));
-    return { project, name: manifest?.name ?? project, status: held.length ? 'on hold' : running ? 'running' : own.some(job => job.state === 'queued') ? 'queued' : 'idle',
-      running: running ? { id: running.id, issue: running.issue, ideation: running.ideation, startedAt: running.startedAt } : null,
+    return { project: project.id, name: manifest.name ?? project.id, inbox: manifest.ownerInboxIssue ?? null, workerId: project.workerId, seenAt: project.seenAt,
+      online: project.seenAt ? time - project.seenAt < 180_000 : false,
+      status: held.length ? 'on hold' : running ? 'running' : own.some(job => job.state === 'queued') ? 'queued' : 'idle',
+      running: running ? { jobId: running.jobId, issue: running.issue, ideation: running.ideation, startedAt: running.startedAt } : null,
       queued: own.filter(job => job.state === 'queued').map(job => ({ id: job.id, issue: job.issue, kind: job.kind, createdAt: job.createdAt })),
       held: held.map(job => ({ id: job.id, issue: job.issue, kind: job.kind, summary: job.summary })),
-      delivered: delivered ? { issue: delivered.issue, prUrl: delivered.prUrl, finishedAt: delivered.finishedAt } : null, runs: runs.filter(run => run.project === project).length,
+      delivered: delivered ? { issue: delivered.issue, prUrl: delivered.prUrl, finishedAt: delivered.finishedAt } : null, runs: runs.filter(run => run.project === project.id).length,
       ideation: ideation ? { batchSize: ideation.batchSize, backlogCap: ideation.backlogCap, cooldownEnds, blockedBy: held.length ? 'held job' : own.some(job => ACTIVE.includes(job.state)) ? 'active job' : cooldownEnds && cooldownEnds > time ? 'cooldown' : null } : null };
   });
-  return { generatedAt: new Date(time).toISOString(), services, overview, team, jobs, runs, live, usage, openai, quarantined, stateDir, defaultEngine };
-}
-
-export function runDetail({ projects, project, id }) {
-  if (!Object.hasOwn(projects, project) || !RUN_ID.test(id)) return null;
-  const dir = path.join(projects[project], '.agent-team', 'runs', id);
-  if (!fs.existsSync(path.join(dir, 'journal.json'))) return null;
-  const run = runSummary(project, dir, id);
-  const parsed = eventSteps(tail(path.join(dir, 'events.jsonl'), 1048576), 300, run.worktree);
-  let summary = ''; try { summary = fs.readFileSync(path.join(dir, 'summary.md'), 'utf8'); } catch { /* not written yet */ }
-  return { run, summary, steps: parsed.steps, usage: parsed.usage, engineResult: parsed.engineResult, tokens: parsed.tokens, stderr: tail(path.join(dir, 'stderr.log'), 8192) };
-}
-
-// A member's recent steps across the latest runs, newest run first; used by the member page and as chat context.
-export function memberActivity({ projects, role, runLimit = 8 }) {
-  const activity = [];
-  for (const [project, checkout] of Object.entries(projects)) {
-    const runsDir = path.join(checkout, '.agent-team', 'runs');
-    let ids = [];
-    try { ids = fs.readdirSync(runsDir).filter(id => RUN_ID.test(id)).sort().reverse(); } catch { continue; }
-    for (const id of ids.slice(0, runLimit)) {
-      const dir = path.join(runsDir, id);
-      const run = runSummary(project, dir, id);
-      const parsed = eventSteps(tail(path.join(dir, 'events.jsonl'), 1048576), 400, run.worktree);
-      const mine = parsed.steps.filter(step => role === 'team-coordinator' ? !step.member : step.member === role);
-      if (role === 'team-ideation' ? run.ideation : mine.length) activity.push({ run, steps: (role === 'team-ideation' ? parsed.steps : mine).slice(-12), count: role === 'team-ideation' ? parsed.steps.length : mine.length });
-    }
-  }
-  activity.sort((a, b) => (b.run.startedAt ?? '').localeCompare(a.run.startedAt ?? ''));
-  return activity;
-}
-
-function defaultSystemctl(unit) {
-  const result = spawnSync('systemctl', ['--user', 'is-active', `${unit}.service`], { encoding: 'utf8', timeout: 5000 });
-  return result.error ? 'unknown' : (result.stdout.trim() || 'unknown');
+  return { generatedAt: new Date(time).toISOString(), overview, team, jobs, runs, live, usage, openai, quarantined };
 }
 
 const escape = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
@@ -194,6 +64,7 @@ const when = iso => iso ? new Date(iso).toISOString().replace('T', ' ').slice(0,
 const clock = iso => iso ? new Date(iso).toISOString().slice(11, 16) : '';
 const pct = value => typeof value === 'number' ? Math.round(value * 100) : null;
 const minutes = (from, to) => from ? Math.max(0, Math.round((new Date(to ?? Date.now()) - new Date(from)) / 60000)) : null;
+const ago = ms => ms === null || ms === undefined ? 'never' : ms < 90_000 ? `${Math.round(ms / 1000)} s ago` : ms < 5_400_000 ? `${Math.round(ms / 60000)} min ago` : `${Math.round(ms / 3_600_000)} h ago`;
 const compact = n => n >= 1e6 ? `${(n / 1e6).toFixed(1)}M` : n >= 1e3 ? `${Math.round(n / 1e3)}k` : String(n);
 const short = url => escape(/\/pull\/(\d+)$/.test(url) ? `#${url.match(/\/pull\/(\d+)$/)[1]}` : url.replace(/^https:\/\/github\.com\//, ''));
 const STYLE = `:root{--bg:#10161d;--panel:#161e27;--panel-2:#1c2632;--line:#27333f;--text:#dde4ea;--muted:#8a98a6;--dim:#5c6975;--run:#e5a53a;--ok:#4cc38a;--bad:#f0616a;--wait:#79b8ff;--sans:system-ui,-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;--mono:ui-monospace,SFMono-Regular,Menlo,Consolas,'Liberation Mono',monospace}
@@ -202,12 +73,13 @@ a{color:var(--wait);text-decoration:none}a:hover{text-decoration:underline}:focu
 header{display:grid;grid-template-columns:auto 1fr auto;gap:12px 28px;align-items:center;padding-bottom:12px;border-bottom:1px solid var(--line)}
 h1{font:600 18px/1 var(--sans);margin:0;letter-spacing:-.01em}h1 span{color:var(--muted);font-weight:400}
 .units{display:flex;flex-wrap:wrap;gap:6px 18px;font:12px var(--mono);color:var(--muted);padding:10px 0 0}.units span{display:inline-flex;align-items:center;gap:7px}
-.dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}.dot.active{background:var(--ok)}.dot.inactive,.dot.failed,.dot.unknown{background:var(--bad)}
+.dot{width:7px;height:7px;border-radius:50%;background:var(--dim)}.dot.on{background:var(--ok)}.dot.off{background:var(--bad)}
 .usage{display:flex;gap:22px;flex-wrap:wrap}.g{min-width:150px}.g .l{display:flex;justify-content:space-between;gap:10px;font:11.5px var(--mono);color:var(--muted)}.g .l b{color:var(--text);font-weight:500}
 .g .bar{height:4px;background:var(--line);margin:5px 0 3px;position:relative}.g .bar i{position:absolute;inset:0 auto 0 0;background:var(--wait)}.g .bar i.hot{background:var(--run)}.g .bar i.full{background:var(--bad)}.g .n{font:11px var(--mono);color:var(--dim)}
 .meta{font:11.5px var(--mono);color:var(--dim);text-align:right}@media(max-width:900px){header{grid-template-columns:1fr 1fr}.meta{grid-column:1/-1;text-align:left}}
 .flash{margin:12px 0 0;padding:8px 12px;border-left:3px solid var(--wait);background:var(--panel);font-size:13px}.flash.err{border-color:var(--bad)}
-.team{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:14px 0 0}.member{background:var(--panel);border:1px solid var(--line);padding:8px 10px;font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center}.av{border-radius:50%;object-fit:cover;flex:none;vertical-align:-3px;margin-right:5px;background:var(--panel-2)}.member .av{margin:0;width:44px;height:44px}.member.busy{border-color:#6b5a2c}.member .name{display:block;color:var(--text);font-size:13px;font-weight:600}.member .name:hover{text-decoration:underline}.member>a{display:flex;flex:none}.member small{display:block;font:11px var(--mono);color:var(--dim);margin-bottom:4px}.member.busy span{color:var(--run)}
+.team{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:14px 0 0}.member{background:var(--panel);border:1px solid var(--line);padding:8px 10px;font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center}.member.busy{border-color:#6b5a2c}
+.av{border-radius:50%;object-fit:cover;flex:none;vertical-align:-3px;margin-right:5px;background:var(--panel-2)}.member .av{margin:0;width:44px;height:44px}.member .name{display:block;color:var(--text);font-size:13px;font-weight:600}.member .name:hover{text-decoration:underline}.member>a{display:flex;flex:none}.member small{display:block;font:11px var(--mono);color:var(--dim);margin-bottom:4px}.member.busy span{color:var(--run)}
 .projects{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin:14px 0}
 .card{background:var(--panel);border:1px solid var(--line);padding:10px 12px}.card.hold{border-color:#5a2b2f}.card .top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}.card .top b{font:600 13.5px var(--sans)}
 .card p{margin:2px 0;color:var(--muted);font-size:12.5px}.card p.n{font:11.5px var(--mono);color:var(--dim)}.card form{margin-top:8px;display:flex;gap:6px 10px;flex-wrap:wrap;align-items:center}.why{font:11.5px var(--mono);color:var(--dim)}
@@ -217,59 +89,56 @@ h2{font:600 12px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;col
 .now{background:var(--panel);border:1px solid var(--line);padding:10px 12px}.now+.now{margin-top:10px}.now h3{margin:0;font:600 15px var(--sans);display:flex;align-items:center;gap:9px}.now h3 a{color:inherit}
 .now .sub{font:11.5px var(--mono);color:var(--muted);margin:4px 0 8px;display:flex;flex-wrap:wrap;gap:4px 14px}
 .pulse{width:9px;height:9px;border-radius:50%;background:var(--run);animation:breathe 2.2s ease-in-out infinite;flex:none;display:inline-block}@keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(229,165,58,.5)}50%{box-shadow:0 0 0 7px rgba(229,165,58,0)}}
-@media(prefers-reduced-motion:reduce){.pulse{animation:none}.ticker{scroll-behavior:auto}}
+@media(prefers-reduced-motion:reduce){.pulse{animation:none}.ticker,.chat{scroll-behavior:auto}}
 .ticker{font:12px/1.5 var(--mono);border-top:1px solid var(--line);padding-top:8px;max-height:380px;overflow-y:auto;scroll-behavior:smooth}.ticker.full{max-height:none}.ticker div{display:grid;grid-template-columns:28px minmax(0,1fr);gap:8px;padding:1px 0}.ticker i{font-style:normal;color:var(--dim);text-align:right}
 .ticker .t{color:var(--text)}.ticker .agent{color:var(--muted)}.ticker .agent::before{content:'↳ '}.ticker b{color:var(--text);font-weight:500}.ticker .say{color:var(--wait);font-family:var(--sans);font-size:13px}
 .empty{color:var(--muted);font-size:13px;padding:8px 0}
 .list{border-top:1px solid var(--line)}.row{display:grid;grid-template-columns:40px minmax(90px,130px) minmax(0,1fr) auto;gap:4px 12px;padding:7px 0;border-bottom:1px solid var(--line);align-items:baseline}
 .row .at{font:11.5px var(--mono);color:var(--dim)}.row .who{font:12.5px var(--mono)}.row .who small{display:block;color:var(--dim);font-size:11px}.row .what{font-size:12.5px;color:var(--muted)}.row .what b{color:var(--text);font-weight:500}.row .what ul{margin:4px 0 0;padding-left:16px}
 .st{font:10.5px/1 var(--mono);letter-spacing:.05em;text-transform:uppercase;padding:4px 7px;border:1px solid currentColor;border-radius:2px;white-space:nowrap;color:var(--dim)}
-.st.ready,.st.completed,.st.merged,.st.active{color:var(--ok)}.st.running{color:var(--run)}.st.queued{color:var(--wait)}.st.blocked,.st.failed,.st.on\\ hold{color:var(--bad)}
+.st.ready,.st.completed,.st.merged{color:var(--ok)}.st.running{color:var(--run)}.st.queued{color:var(--wait)}.st.blocked,.st.failed,.st.on\\ hold{color:var(--bad)}
 .up{background:var(--panel);border:1px solid var(--line);padding:8px 12px}.up .item{display:grid;grid-template-columns:24px minmax(0,1fr);gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px}.up .item:last-child{border:0}.up i{font-style:normal;color:var(--dim);font:11.5px var(--mono);text-align:right}.up small{display:block;color:var(--dim);font:11px var(--mono)}
 pre{background:var(--panel);border:1px solid var(--line);padding:12px;overflow:auto;font:12px/1.5 var(--mono);white-space:pre-wrap;color:var(--muted)}
 .crumb{font:12px var(--mono);margin-bottom:12px}
 .mh{grid-template-columns:auto 1fr;align-items:start}.mh .av{width:96px;height:96px;margin:0}.voice{margin:6px 0;color:var(--muted);max-width:70ch}.mh p.n{font:11.5px var(--mono);color:var(--dim);margin:0}
-.chat{background:var(--panel);border:1px solid var(--line);padding:10px 12px;max-height:480px;overflow-y:auto;scroll-behavior:smooth}.msg{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}.msg:last-child{border:0}.msg .who{font:11.5px var(--mono);color:var(--dim);margin-bottom:2px}.msg.owner .who{color:var(--wait)}.msg.failed{color:var(--bad)}.msg .av{margin-top:2px}
+.chat{background:var(--panel);border:1px solid var(--line);padding:10px 12px;max-height:480px;overflow-y:auto;scroll-behavior:smooth}.msg{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;white-space:pre-wrap}.msg:last-child{border:0}.msg .who{font:11.5px var(--mono);color:var(--dim);margin-bottom:2px;white-space:normal}.msg.owner .who{color:var(--wait)}.msg.failed,.msg.blocked{color:var(--bad)}.msg .av{margin-top:2px}
 .compose{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.compose textarea,.compose select,.compose input{grid-column:1/-1;background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:8px;font:13px var(--sans);border-radius:3px}.compose select,.compose input{grid-column:auto}.compose button{grid-column:1/-1;justify-self:end}`;
 const avatar = (role, size = 20) => Object.hasOwn(ROSTER, role) ? `<img class="av" src="/portraits/${role}.webp" width="${size}" height="${size}" alt="">` : '';
 const tag = value => `<span class="st ${escape(value)}">${escape(value)}</span>`;
 const ticker = (steps, id, full = false) => steps.length
   ? `<div class="ticker ${full ? 'full' : ''}" data-ticker="${escape(id)}">${steps.map((step, index) => `<div><i>${index + 1}</i><span class="${step.kind === 'text' ? 'say' : step.scope === 'subagent' ? 'agent' : 't'}">${step.member ? `${avatar(step.member, 16)}<b>${escape(ROSTER[step.member]?.name ?? step.member)}</b> ` : ''}${escape(step.text)}</span></div>`).join('')}</div>`
-  : '<p class="empty">Started; waiting for the first model step.</p>';
+  : '<p class="empty">Started; waiting for the first reported step.</p>';
 const gauge = (name, value, note, kind = 'pct') => `<div class="g"><div class="l"><span>${escape(name)}</span><b>${value === null ? 'no data' : kind === 'pct' ? `${value}% used` : escape(value)}</b></div><div class="bar"><i class="${kind === 'pct' && value >= 95 ? 'full' : kind === 'pct' && value >= 75 ? 'hot' : ''}" style="width:${kind === 'pct' ? (value ?? 0) : 0}%"></i></div><div class="n">${escape(note)}</div></div>`;
-// Live refresh swaps <main> from a fresh render; tickers that were at the bottom glide to the new bottom.
 const SCRIPT = `(function(){var near={};var all=function(){return document.querySelectorAll('[data-ticker]')};
 all().forEach(function(t){t.scrollTop=t.scrollHeight});
 function refresh(){if(document.hidden)return;all().forEach(function(t){near[t.dataset.ticker]=t.scrollHeight-t.scrollTop-t.clientHeight<48});
-fetch(location.pathname,{cache:'no-store'}).then(function(r){return r.text()}).then(function(html){var doc=new DOMParser().parseFromString(html,'text/html');var next=doc.querySelector('main'),cur=document.querySelector('main');if(!next||!cur)return;
+fetch(location.pathname+location.search.replace(/[?&](ok|error)=[^&]*/g,''),{cache:'no-store'}).then(function(r){return r.text()}).then(function(html){var doc=new DOMParser().parseFromString(html,'text/html');var next=doc.querySelector('main'),cur=document.querySelector('main');if(!next||!cur)return;
 var keep={};all().forEach(function(t){keep[t.dataset.ticker]=t.scrollTop});cur.replaceWith(next);
 all().forEach(function(t){var id=t.dataset.ticker;if(near[id]===false&&keep[id]!==undefined)t.scrollTop=keep[id];else t.scrollTo({top:t.scrollHeight,behavior:'smooth'})});
-var m=doc.querySelector('.meta'),c=document.querySelector('.meta');if(m&&c)c.innerHTML=m.innerHTML;var u=doc.querySelector('.usage'),cu=document.querySelector('.usage');if(u&&cu)cu.innerHTML=u.innerHTML;}).catch(function(){})}
+['.meta','.usage','.units'].forEach(function(sel){var m=doc.querySelector(sel),c=document.querySelector(sel);if(m&&c)c.innerHTML=m.innerHTML});}).catch(function(){})}
 setInterval(refresh,REFRESH);})();`;
-
 const page = (title, body, refreshMs) => `<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>${escape(title)}</title><style>${STYLE}</style></head><body>${body}${refreshMs ? `<script>${SCRIPT.replace('REFRESH', String(refreshMs))}</script>` : ''}</body></html>`;
 
-export function renderIndex(state, flash = null) {
-  const units = Object.entries(state.services).map(([unit, status]) => `<span><i class="dot ${escape(status)}"></i>${escape(unit.replace('agent-team-', ''))}</span>`).join('');
+export function renderIndex(state, flash = null, hostname = 'fly') {
+  const units = state.overview.map(p => `<span><i class="dot ${p.online ? 'on' : 'off'}"></i>${escape(p.workerId ?? 'no worker')} for ${escape(p.name)} · seen ${escape(ago(p.seenAt ? Date.now() - p.seenAt : null))}</span>`).join('') || '<span><i class="dot"></i>no workers registered yet</span>';
   const claude = state.usage;
   const usage = `<div class="usage">${gauge('Claude 5h', pct(claude?.fiveHour?.utilization), claude?.fiveHour?.resetsAt ? `resets ${clock(claude.fiveHour.resetsAt * 1000)} UTC` : 'from the last Claude run')}${gauge('Claude 7d', pct(claude?.sevenDay?.utilization), claude?.sevenDay?.resetsAt ? `resets ${clock(claude.sevenDay.resetsAt * 1000)} UTC` : '')}${gauge('OpenCode tokens 24h', state.openai.week ? compact(state.openai.day) : null, 'OpenCode reports tokens, not plan limits', 'raw')}${gauge('OpenCode tokens 7d', state.openai.week ? compact(state.openai.week) : null, state.openai.lastRun ? `last run ${compact(state.openai.lastRun.tokens)} tokens` : 'no OpenCode runs this week', 'raw')}</div>`;
   const cards = state.overview.map(p => {
-    const why = { 'held job': 'release the held job first', 'active job': 'available when the current job finishes', cooldown: `cooldown until ${when(p.ideation?.cooldownEnds)} UTC` };
-    // A manual request skips the automatic refill cooldown; only conflicting jobs hold it.
+    const why = { 'held job': 'release the held job first', 'active job': 'available when the current job finishes' };
     const hold = p.ideation?.blockedBy && p.ideation.blockedBy !== 'cooldown' ? p.ideation.blockedBy : null;
     const ideas = p.ideation ? (hold ? `<button disabled>Propose ideas</button><span class="why">${escape(why[hold] ?? hold)}</span>` : `<button type="submit" name="action" value="ideate">Propose ${p.ideation.batchSize} ideas</button>${p.ideation.blockedBy === 'cooldown' ? `<span class="why">automatic refill waits until ${escape(when(p.ideation.cooldownEnds))} UTC</span>` : ''}`) : '';
     const release = p.held.length ? `<button type="submit" name="action" value="requeue" title="Rerun the held job after you have inspected it">Release and rerun</button>` : '';
     return `<div class="card ${p.status === 'on hold' ? 'hold' : ''}"><div class="top"><b>${escape(p.name)}</b>${tag(p.status)}</div>
-<p>${p.running ? `${p.running.issue ? 'Building' : 'Running'} <a href="/runs/${escape(p.project)}/${escape(p.running.id)}">${escape(p.running.issue ?? (p.running.ideation ? 'ideation' : 'unpinned cycle'))}</a> · ${minutes(p.running.startedAt)} min` : p.status === 'on hold' ? `${p.held.length} job${p.held.length === 1 ? '' : 's'} on hold: ${escape(p.held[0].summary || p.held[0].issue || 'inspect the run')}` : p.queued.length ? `${p.queued.length} queued: ${escape(p.queued.map(job => job.issue ?? 'ideas').join(', '))}` : 'Idle, waiting for approved work'}</p>
+<p>${p.running ? `${p.running.issue ? 'Building' : 'Running'} <a href="/runs/${escape(p.running.jobId)}">${escape(p.running.issue ?? (p.running.ideation ? 'ideation' : 'unpinned cycle'))}</a> · ${minutes(p.running.startedAt)} min` : p.status === 'on hold' ? `${p.held.length} job${p.held.length === 1 ? '' : 's'} on hold: ${escape(p.held[0].summary || p.held[0].issue || 'inspect the run')}` : p.queued.length ? `${p.queued.length} queued: ${escape(p.queued.map(job => job.issue ?? 'ideas').join(', '))}` : p.online ? 'Idle, waiting for approved work' : 'No worker online; queued work waits'}</p>
 <p class="n"><a href="/team/team-pm?project=${escape(p.project)}">Message the team</a> · ${p.delivered ? `shipped ${escape(p.delivered.issue ?? 'run')} ${p.delivered.prUrl ? `<a href="${escape(p.delivered.prUrl)}">${short(p.delivered.prUrl)}</a>` : ''} ${escape(when(p.delivered.finishedAt))}` : 'nothing shipped yet'} · ${p.runs} runs</p>
 ${ideas || release ? `<form method="post" action="/actions"><input type="hidden" name="project" value="${escape(p.project)}">${p.held[0] ? `<input type="hidden" name="job" value="${escape(p.held[0].id)}">` : ''}${ideas}${release}</form>` : ''}</div>`;
-  }).join('') || '<p class="empty">No projects are mapped in worker.json.</p>';
-  const now = state.live.length ? state.live.map(run => `<div class="now"><h3><span class="pulse"></span><a href="/runs/${escape(run.project)}/${escape(run.id)}">${escape(run.issue ?? (run.ideation ? 'Proposing ideas' : 'Unpinned cycle'))}</a></h3>
-<div class="sub"><span>${escape(run.project)}</span><span>${escape(run.engine)}</span><span>started ${escape(clock(run.startedAt))} UTC · ${minutes(run.startedAt)} min</span></div>${ticker(run.steps, run.id)}</div>`).join('')
+  }).join('') || '<p class="empty">No projects registered. Start a worker with a mapped checkout and it registers its manifest here.</p>';
+  const now = state.live.length ? state.live.map(run => `<div class="now"><h3><span class="pulse"></span><a href="/runs/${escape(run.jobId)}">${escape(run.issue ?? (run.ideation ? 'Proposing ideas' : 'Unpinned cycle'))}</a></h3>
+<div class="sub"><span>${escape(run.project)}</span><span>${escape(run.engine)}</span><span>started ${escape(clock(run.startedAt))} UTC · ${minutes(run.startedAt)} min</span><span>reported ${escape(ago(Date.now() - run.updatedAt))}</span></div>${ticker(run.steps, run.jobId)}</div>`).join('')
     : '<div class="now"><p class="empty">Nothing running. The team is idle until a card is approved or a job is queued.</p></div>';
   const upcoming = [];
   for (const p of state.overview) {
-    for (const job of p.queued) upcoming.push({ at: Number(job.createdAt), text: `${job.issue ? `Build ${job.issue}` : 'Propose ideas'} · ${p.name}`, note: 'queued, starts when the worker is free' });
+    for (const job of p.queued) upcoming.push({ at: Number(job.createdAt), text: `${job.issue ? `Build ${job.issue}` : 'Propose ideas'} · ${p.name}`, note: p.online ? 'queued, starts when the worker is free' : 'queued, waits for a worker to come online' });
     if (p.ideation && !p.held.length) {
       const busy = p.running || p.queued.length; const later = p.ideation.cooldownEnds && p.ideation.cooldownEnds > Date.now();
       upcoming.push({ at: Math.max(p.ideation.cooldownEnds ?? 0, busy ? Date.now() + 1 : 0), text: `Propose up to ${p.ideation.batchSize} ideas · ${p.name}`,
@@ -278,16 +147,16 @@ ${ideas || release ? `<form method="post" action="/actions"><input type="hidden"
   }
   upcoming.sort((a, b) => a.at - b.at);
   const upcomingHtml = upcoming.length ? upcoming.map((item, index) => `<div class="item"><i>${index + 1}</i><span>${escape(item.text)}<small>${escape(item.note)}</small></span></div>`).join('') : '<p class="empty">Nothing scheduled. Approving an idea in Linear queues a build within a minute.</p>';
-  const jobs = state.jobs.map(job => `<div class="row"><span class="at">${escape(clock(job.createdAt))}</span><span class="who">${escape(job.issue ?? (job.kind === 'ideation' ? 'ideas' : 'cycle'))}<small>${escape(job.projectId)} · ${escape(job.engine ?? `${state.defaultEngine} (default)`)}${job.autoMerge ? ' · auto-merge' : job.publish ? ' · publish' : ''}</small></span><span class="what">${escape(job.summary) || (job.state === 'queued' ? 'Waiting for the worker.' : job.state === 'running' ? 'In progress.' : '')}</span>${tag(job.state)}</div>`).join('');
-  const runs = state.runs.map(run => `<div class="row"><span class="at">${escape(clock(run.startedAt))}</span><span class="who"><a href="/runs/${escape(run.project)}/${escape(run.id)}">${escape(run.issue ?? (run.ideation || run.proposals ? 'ideas' : 'cycle'))}</a><small>${escape(run.project)} · ${escape(run.engine)} · ${minutes(run.startedAt, run.finishedAt) ?? '?'} min</small></span><span class="what">${run.delivery ? `<b>${escape(run.delivery)}</b> · ` : ''}${run.prUrl ? `<a href="${escape(run.prUrl)}">${short(run.prUrl)}</a> · ` : ''}${escape(run.summary)}${run.proposals?.length ? `<ul>${run.proposals.map(title => `<li>${escape(title)}</li>`).join('')}</ul>` : ''}</span>${tag(run.state)}</div>`).join('');
-  const body = `<header><h1>Agent team <span>x3d</span></h1>${usage}<div class="meta">${escape(when(state.generatedAt))} UTC · live · <a href="/api/state">JSON</a></div></header>
+  const jobs = state.jobs.filter(job => job.kind !== 'chat').map(job => `<div class="row"><span class="at">${escape(clock(job.createdAt))}</span><span class="who">${escape(job.issue ?? (job.kind === 'ideation' ? 'ideas' : 'cycle'))}<small>${escape(job.projectId)} · ${escape(job.engine ?? 'worker default')}${job.autoMerge ? ' · auto-merge' : job.publish ? ' · publish' : ''}</small></span><span class="what">${escape(job.summary) || (job.state === 'queued' ? 'Waiting for a worker.' : job.state === 'running' ? 'In progress.' : '')}</span>${tag(job.state)}</div>`).join('');
+  const runs = state.runs.map(run => `<div class="row"><span class="at">${escape(clock(run.startedAt))}</span><span class="who"><a href="/runs/${escape(run.jobId)}">${escape(run.issue ?? (run.ideation || run.proposals ? 'ideas' : 'cycle'))}</a><small>${escape(run.project)} · ${escape(run.engine)} · ${minutes(run.startedAt, run.finishedAt) ?? '?'} min</small></span><span class="what">${run.delivery ? `<b>${escape(run.delivery)}</b> · ` : ''}${run.prUrl ? `<a href="${escape(run.prUrl)}">${short(run.prUrl)}</a> · ` : ''}${escape(run.summary)}${run.proposals?.length ? `<ul>${run.proposals.map(title => `<li>${escape(title)}</li>`).join('')}</ul>` : ''}</span>${tag(run.state)}</div>`).join('');
+  const body = `<header><h1>Agent team <span>${escape(hostname)}</span></h1>${usage}<div class="meta">${escape(when(state.generatedAt))} UTC · live · <a href="/api/state">JSON</a></div></header>
 <div class="units">${units}</div>
 <main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
-<div class="team">${state.team.map(m => `<div class="member ${m.working ? 'busy' : ''}"><a href="/team/${escape(m.role)}">${avatar(m.role, 44)}</a><div><a class="name" href="/team/${escape(m.role)}">${escape(m.name)}</a><small>${escape(m.title)}</small><span>${m.working ? `on <a href="/runs/${escape(m.working.project)}/${escape(m.working.id)}">${escape(m.working.issue)}</a>${m.steps ? ` · ${m.steps} steps` : ''}` : 'idle'}</span></div></div>`).join('')}</div>
+<div class="team">${state.team.map(m => `<div class="member ${m.working ? 'busy' : ''}"><a href="/team/${escape(m.role)}">${avatar(m.role, 44)}</a><div><a class="name" href="/team/${escape(m.role)}">${escape(m.name)}</a><small>${escape(m.title)}</small><span>${m.working ? `on <a href="/runs/${escape(m.working.jobId)}">${escape(m.working.issue)}</a>${m.steps ? ` · ${m.steps} steps` : ''}` : 'idle'}</span></div></div>`).join('')}</div>
 <div class="projects">${cards}</div>
 <div class="cols"><section><h2>Now</h2>${now}</section><section><h2>Upcoming <small>automatic runs in order</small></h2><div class="up">${upcomingHtml}</div></section></div>
-<div class="cols even"><section><h2>Queue <small>jobs asked of the coordinator · ${state.jobs.filter(job => ['queued', 'running'].includes(job.state)).length || 'none'} active</small></h2><div class="list">${jobs || '<p class="empty">No jobs yet.</p>'}</div></section>
-<section><h2>Runs <small>what the runner actually executed · latest ${state.runs.length}</small></h2><div class="list">${runs || '<p class="empty">No runs recorded yet.</p>'}</div></section></div></main>`;
+<div class="cols even"><section><h2>Queue <small>jobs asked of the coordinator · ${state.jobs.filter(job => job.kind !== 'chat' && ['queued', 'running'].includes(job.state)).length || 'none'} active</small></h2><div class="list">${jobs || '<p class="empty">No jobs yet.</p>'}</div></section>
+<section><h2>Runs <small>what workers actually executed · latest ${state.runs.length}</small></h2><div class="list">${runs || '<p class="empty">No runs reported yet.</p>'}</div></section></div></main>`;
   return page('Agent team', body, 10_000);
 }
 
@@ -297,64 +166,55 @@ export function renderRun(detail) {
   const body = `<div class="crumb"><a href="/">← Agent team</a></div>
 <header><h1>${run.state === 'running' ? '<span class="pulse"></span> ' : ''}${escape(run.issue ?? (run.ideation ? 'Proposing ideas' : 'Unpinned cycle'))} <span>${escape(run.project)}</span></h1>
 <div class="usage">${detail.usage ? gauge('Claude 5h', pct(detail.usage.fiveHour?.utilization), 'at the time of this run') + gauge('Claude 7d', pct(detail.usage.sevenDay?.utilization), '') : ''}</div><div class="meta">${tag(run.state)}${run.delivery ? ` ${tag(run.delivery)}` : ''}</div></header>
-<div class="units"><span>${escape(run.engine)}</span><span>base ${escape(run.baseCommit ?? '')}</span><span>${escape(when(run.startedAt))} → ${escape(run.finishedAt ? clock(run.finishedAt) : 'running')} UTC · ${minutes(run.startedAt, run.finishedAt) ?? '?'} min</span>${run.prUrl ? `<span><a href="${escape(run.prUrl)}">${short(run.prUrl)}</a></span>` : ''}${result ? `<span>${result}</span>` : ''}<span>${escape(run.id)}</span></div>
-<main><section><h2>Steps <small>${detail.steps.length} shown</small></h2><div class="now">${ticker(detail.steps, run.id, true)}</div></section>
+<div class="units"><span>${escape(run.engine)}</span><span>base ${escape(run.baseCommit ?? '')}</span><span>${escape(when(run.startedAt))} → ${escape(run.finishedAt ? clock(run.finishedAt) : 'running')} UTC · ${minutes(run.startedAt, run.finishedAt) ?? '?'} min</span>${run.prUrl ? `<span><a href="${escape(run.prUrl)}">${short(run.prUrl)}</a></span>` : ''}${result ? `<span>${result}</span>` : ''}<span>${escape(run.id)}</span><span>reported ${escape(ago(Date.now() - detail.updatedAt))}</span></div>
+<main><section><h2>Steps <small>${detail.steps.length} shown</small></h2><div class="now">${ticker(detail.steps, detail.jobId, true)}</div></section>
 <section><h2>Summary</h2><pre>${escape(detail.summary || 'Not written yet.')}</pre></section>
-${detail.stderr.trim() ? `<section><h2>Errors and warnings</h2><pre>${escape(detail.stderr)}</pre></section>` : ''}</main>`;
+${detail.stderr?.trim() ? `<section><h2>Errors and warnings</h2><pre>${escape(detail.stderr)}</pre></section>` : ''}</main>`;
   return page(`${run.issue ?? 'run'} · ${run.id}`, body, run.state === 'running' ? 10_000 : 0);
 }
 
-export function renderMember({ role, state, activity, projects, manifests, selected, thread, flash, chatEnabled }) {
+export function renderMember({ role, state, activity, selected, thread, flash }) {
   const member = ROSTER[role];
   const working = state.team.find(m => m.role === role)?.working ?? null;
-  const options = Object.keys(projects).map(project => `<option value="${escape(project)}" ${project === selected.project ? 'selected' : ''}>${escape(manifests[project]?.name ?? project)}</option>`).join('');
-  const bubbles = thread.map(m => `<div class="msg ${m.direction} ${m.status}">${m.direction === 'member' ? avatar(role, 22) : ''}<div><div class="who">${m.direction === 'owner' ? 'You' : escape(member.name)} <span>${escape(when(new Date(m.createdAt).toISOString()))}</span>${m.status === 'thinking' ? ' <span class="pulse"></span> thinking' : m.status === 'failed' ? ' · failed' : m.status === 'posting' ? ' · posting' : ''}</div>${escape(m.body || (m.status === 'thinking' ? '…' : ''))}</div></div>`).join('');
+  const options = state.overview.map(p => `<option value="${escape(p.project)}" ${p.project === selected.project ? 'selected' : ''}>${escape(p.name)}</option>`).join('');
+  const label = { queued: 'queued for a worker', running: 'thinking', blocked: 'failed', failed: 'failed', canceled: 'canceled' };
+  const bubbles = thread.flatMap(job => [
+    `<div class="msg owner"><div><div class="who">You <span>${escape(when(new Date(job.createdAt).toISOString()))}</span>${['queued', 'running'].includes(job.state) ? ` · ${label[job.state]}${job.state === 'running' ? ' <span class="pulse"></span>' : ''}` : ''}</div>${escape(job.message)}</div></div>`,
+    job.state === 'completed' || ['blocked', 'failed'].includes(job.state) ? `<div class="msg member ${job.state}">${avatar(role, 22)}<div><div class="who">${escape(member.name)} <span>${escape(when(new Date(job.updatedAt).toISOString()))}</span>${job.state !== 'completed' ? ` · ${label[job.state]}` : ''}</div>${escape(job.summary)}</div></div>` : '']);
   const body = `<div class="crumb"><a href="/">← Agent team</a></div>
-<header class="mh">${avatar(role, 96)}<div><h1>${escape(member.name)} <span>${escape(member.title)}</span></h1><p class="voice">${escape(member.voice)}</p><p class="n">${working ? `Working on <a href="/runs/${escape(working.project)}/${escape(working.id)}">${escape(working.issue)}</a> in ${escape(working.project)}` : 'Idle right now'}</p></div></header>
-<main><div class="cols"><section><h2>Conversation <small>${escape(selected.issue)} · ${escape(manifests[selected.project]?.name ?? selected.project)}</small></h2>
+<header class="mh">${avatar(role, 96)}<div><h1>${escape(member.name)} <span>${escape(member.title)}</span></h1><p class="voice">${escape(member.voice)}</p><p class="n">${working ? `Working on <a href="/runs/${escape(working.jobId)}">${escape(working.issue)}</a> in ${escape(working.project)}` : 'Idle right now'}</p></div></header>
+<main><div class="cols"><section><h2>Conversation <small>${escape(selected.issue || 'choose a card')} · ${escape(state.overview.find(p => p.project === selected.project)?.name ?? selected.project ?? '')}</small></h2>
 ${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
-<div class="chat" data-ticker="chat">${bubbles || `<p class="empty">No messages yet. What you write is posted on ${escape(selected.issue)} in Linear; ${escape(member.name)} answers there and here.</p>`}</div>
-${chatEnabled ? `<form method="post" action="/chat" class="compose"><input type="hidden" name="role" value="${escape(role)}"><select name="project">${options}</select><input name="issue" value="${escape(selected.issue)}" pattern="[A-Z][A-Z0-9]*-[1-9][0-9]*" title="Linear issue, e.g. the owner inbox"><textarea name="message" rows="3" maxlength="4000" placeholder="Ask ${escape(member.name)} something, or give direction. It lands on the Linear card." required></textarea><button type="submit">Send to ${escape(member.name)}</button></form>` : '<p class="empty">Chat needs the Linear key on the dashboard service: run configure-linear.mjs --install and restart the dashboard.</p>'}</section>
-<section><h2>Recent work <small>${activity.length} runs</small></h2>${activity.map(item => `<div class="now"><h3><a href="/runs/${escape(item.run.project)}/${escape(item.run.id)}">${escape(item.run.issue ?? (item.run.ideation ? 'Proposing ideas' : 'cycle'))}</a> ${tag(item.run.state)}</h3><div class="sub"><span>${escape(item.run.project)}</span><span>${escape(when(item.run.startedAt))}</span><span>${item.count} steps</span>${item.run.prUrl ? `<span><a href="${escape(item.run.prUrl)}">${short(item.run.prUrl)}</a></span>` : ''}</div>${ticker(item.steps, item.run.id, true)}</div>`).join('') || '<p class="empty">No recorded steps yet.</p>'}</section></div></main>`;
+<div class="chat" data-ticker="chat">${bubbles.join('') || `<p class="empty">No messages yet. What you write is posted on ${escape(selected.issue || 'the card')} in Linear by the project's worker; ${escape(member.name)} answers there and here.</p>`}</div>
+${state.overview.length ? `<form method="post" action="/chat" class="compose"><input type="hidden" name="role" value="${escape(role)}"><select name="project">${options}</select><input name="issue" value="${escape(selected.issue ?? '')}" pattern="[A-Z][A-Z0-9]*-[1-9][0-9]*" title="Linear issue, e.g. the owner inbox" required><textarea name="message" rows="3" maxlength="4000" placeholder="Ask ${escape(member.name)} something, or give direction. It lands on the Linear card." required></textarea><button type="submit">Send to ${escape(member.name)}</button></form>` : '<p class="empty">No project is registered yet, so there is nowhere to send a message.</p>'}</section>
+<section><h2>Recent work <small>${activity.length} runs</small></h2>${activity.map(item => `<div class="now"><h3><a href="/runs/${escape(item.jobId)}">${escape(item.issue ?? (item.ideation ? 'Proposing ideas' : 'cycle'))}</a> ${tag(item.state)}</h3><div class="sub"><span>${escape(item.project)}</span><span>${escape(when(item.startedAt))}</span><span>${item.count} steps</span>${item.prUrl ? `<span><a href="${escape(item.prUrl)}">${short(item.prUrl)}</a></span>` : ''}</div>${ticker(item.steps, item.jobId, true)}</div>`).join('') || '<p class="empty">No reported steps yet.</p>'}</section></div></main>`;
   return page(`${member.name} · ${member.title}`, body, 10_000);
 }
 
-// Actions are the two operator commands the CLI also offers; the browser must be same-origin.
-async function performAction({ form, config, state }) {
-  const project = state.overview.find(p => p.project === form.get('project'));
-  if (!project) return { error: true, text: 'Unknown project.' };
-  const enqueue = config.enqueue ?? createClient(config.coordinatorUrl, config.token);
-  if (form.get('action') === 'ideate') {
-    if (!project.ideation) return { error: true, text: `${project.name} has no ideation configuration.` };
-    if (project.ideation.blockedBy && project.ideation.blockedBy !== 'cooldown') return { error: true, text: `Ideation for ${project.name} is waiting on: ${project.ideation.blockedBy}.` };
-    const job = await enqueue('/jobs', { projectId: project.project, kind: 'ideation', proposalLimit: project.ideation.batchSize, timeoutMinutes: 10, ...(config.base?.[project.project] ?? {}) });
-    return { text: `Queued ideation for ${project.name} (${project.ideation.batchSize} proposals). Job ${job.id}.` };
-  }
-  if (form.get('action') === 'requeue') {
-    const job = project.held.find(job => job.id === form.get('job'));
-    if (!job) return { error: true, text: 'That job is no longer on hold.' };
-    await enqueue(`/jobs/${job.id}/requeue`, {});
-    return { text: `Released ${project.name}: job ${job.id} is queued again.` };
-  }
-  return { error: true, text: 'Unknown action.' };
+function memberActivity(state, role) {
+  return state.runs.map(run => {
+    const mine = (run.steps ?? []).filter(step => role === 'team-coordinator' ? !step.member : step.member === role);
+    const steps = role === 'team-ideation' ? (run.ideation ? run.steps : []) : mine;
+    return steps.length ? { ...run, steps: steps.slice(-12), count: steps.length } : null;
+  }).filter(Boolean);
+}
+
+function basicAuth(req, password) {
+  const header = req.headers.authorization ?? '';
+  if (!header.startsWith('Basic ')) return false;
+  const given = Buffer.from(Buffer.from(header.slice(6), 'base64').toString('utf8').split(':').slice(1).join(':'));
+  const expected = Buffer.from(password);
+  return given.length === expected.length && timingSafeEqual(given, expected);
 }
 
 export function createDashboardServer(config) {
-  const projects = config.projects;
-  const manifests = Object.fromEntries(Object.entries(projects).map(([project, checkout]) => [project, readJson(path.join(checkout, '.agent-team.json')) ?? {}]));
-  const store = config.chat?.dbPath ? openConversations(config.chat.dbPath) : null;
-  const chatEnabled = Boolean(store && config.chat?.linear);
-  const latestWorktree = project => {
-    const runsDir = path.join(projects[project], '.agent-team', 'runs');
-    let ids = []; try { ids = fs.readdirSync(runsDir).filter(id => RUN_ID.test(id)).sort().reverse(); } catch { return null; }
-    for (const id of ids) { const worktree = readJson(path.join(runsDir, id, 'journal.json'))?.worktree; if (worktree && fs.existsSync(worktree)) return worktree; }
-    return null;
-  };
-  const state = () => collectState({ dbPath: config.db, projects, stateDir: config.stateDir, defaultEngine: config.defaultEngine, systemctl: config.systemctl });
-  const sameOrigin = req => { const site = req.headers['sec-fetch-site']; const origin = req.headers.origin; return site ? ['same-origin', 'none'].includes(site) : !origin || origin === `http://${req.headers.host}`; };
+  const request = config.request ?? createClient(config.coordinatorUrl, config.token);
+  const state = () => collectState({ request });
+  const sameOrigin = req => { const site = req.headers['sec-fetch-site']; const origin = req.headers.origin; return site ? ['same-origin', 'none'].includes(site) : !origin || origin === `${req.headers['x-forwarded-proto'] ?? 'http'}://${req.headers.host}`; };
   return createServer(async (req, res) => {
     const reply = (status, type, body) => { res.writeHead(status, { 'content-type': type, 'cache-control': 'no-store' }); res.end(body); };
     try {
+      if (config.password && !basicAuth(req, config.password)) { req.resume(); res.writeHead(401, { 'www-authenticate': 'Basic realm="agent-team"', 'content-type': 'text/plain' }); return res.end('Sign in'); }
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'POST') {
         if (!['/actions', '/chat'].includes(url.pathname)) return reply(404, 'text/plain', 'Not found');
@@ -362,76 +222,82 @@ export function createDashboardServer(config) {
         let size = 0; const chunks = [];
         for await (const chunk of req) { size += chunk.length; if (size > 16384) return reply(413, 'text/plain', 'Too large'); chunks.push(chunk); }
         const form = new URLSearchParams(Buffer.concat(chunks).toString());
+        const current = await state();
+        const project = current.overview.find(p => p.project === form.get('project'));
         if (url.pathname === '/chat') {
-          const role = form.get('role'); const project = form.get('project'); const issue = (form.get('issue') || manifests[project]?.ownerInboxIssue || '').trim();
-          const back = text => { res.writeHead(303, { location: `/team/${encodeURIComponent(role ?? '')}?project=${encodeURIComponent(project ?? '')}&issue=${encodeURIComponent(issue)}&${text.error ? 'error' : 'ok'}=${encodeURIComponent(text.text)}` }); res.end(); };
-          if (!Object.hasOwn(ROSTER, role) || !Object.hasOwn(projects, project)) return back({ error: true, text: 'Choose a team member and a project.' });
-          if (!chatEnabled) return back({ error: true, text: 'Chat needs the Linear key on the dashboard service.' });
-          const work = memberActivity({ projects: { [project]: projects[project] }, role, runLimit: 6 }).flatMap(item => [
-            `${item.run.issue ?? 'ideation'} run ${item.run.id}: ${item.run.state}${item.run.delivery ? `, delivery ${item.run.delivery}` : ''}${item.run.prUrl ? ` (${item.run.prUrl})` : ''}`,
-            ...item.steps.slice(-3).map(step => `${item.run.issue ?? 'ideation'}: ${step.text}`)]).slice(0, 18);
-          const cwd = latestWorktree(project) ?? projects[project];
+          const role = form.get('role'); const issue = (form.get('issue') || project?.inbox || '').trim();
+          const back = text => { res.writeHead(303, { location: `/team/${encodeURIComponent(role ?? '')}?project=${encodeURIComponent(project?.project ?? '')}&issue=${encodeURIComponent(issue)}&${text.error ? 'error' : 'ok'}=${encodeURIComponent(text.text)}` }); res.end(); };
+          if (!Object.hasOwn(ROSTER, role) || !project) return back({ error: true, text: 'Choose a team member and a project.' });
           try {
-            // The reply arrives asynchronously; the page polls the local thread for it.
-            const started = (config.converse ?? converse)({ store, linear: config.chat.linear, manifest: manifests[project], project, role, issue, message: form.get('message'), cwd, work, runDir: config.chat.runDir });
-            started.then(result => { if (result?.error) console.error(`chat reply failed: ${result.error}`); }).catch(error => console.error(error.message));
-            await Promise.race([started, new Promise(resolve => setTimeout(resolve, 300))]);
-          } catch (error) { return back({ error: true, text: error.message }); }
-          return back({ text: `Sent to ${ROSTER[role].name} on ${issue}.` });
+            await request('/jobs', { projectId: project.project, kind: 'chat', role, issue, message: form.get('message') ?? '' });
+            return back({ text: project.online ? `Sent to ${ROSTER[role].name} on ${issue}.` : `Queued for ${ROSTER[role].name} on ${issue}; it is delivered when a worker for ${project.name} is online.` });
+          } catch (error) { return back({ error: true, text: `Not sent: ${error.message}` }); }
         }
-        let flash;
-        try { flash = await performAction({ form, config, state: state() }); } catch (error) { flash = { error: true, text: `The coordinator refused: ${error.message}` }; }
-        res.writeHead(303, { location: `/?${flash.error ? 'error' : 'ok'}=${encodeURIComponent(flash.text)}` }); return res.end();
+        const back = flash => { res.writeHead(303, { location: `/?${flash.error ? 'error' : 'ok'}=${encodeURIComponent(flash.text)}` }); res.end(); };
+        if (!project) return back({ error: true, text: 'Unknown project.' });
+        try {
+          if (form.get('action') === 'ideate') {
+            if (!project.ideation) return back({ error: true, text: `${project.name} has no ideation configuration.` });
+            if (project.ideation.blockedBy && project.ideation.blockedBy !== 'cooldown') return back({ error: true, text: `Ideation for ${project.name} is waiting on: ${project.ideation.blockedBy}.` });
+            const manifest = (await request('/projects')).find(p => p.id === project.project)?.manifest ?? {};
+            const base = typeof manifest.delivery?.baseBranch === 'string' ? { base: `origin/${manifest.delivery.baseBranch}`, fetch: true } : {};
+            const job = await request('/jobs', { projectId: project.project, kind: 'ideation', proposalLimit: project.ideation.batchSize, timeoutMinutes: 10, ...base });
+            return back({ text: `Queued ideation for ${project.name} (${project.ideation.batchSize} proposals). Job ${job.id}.` });
+          }
+          if (form.get('action') === 'requeue') {
+            const job = project.held.find(job => job.id === form.get('job'));
+            if (!job) return back({ error: true, text: 'That job is no longer on hold.' });
+            await request(`/jobs/${job.id}/requeue`, {});
+            return back({ text: `Released ${project.name}: job ${job.id} is queued again.` });
+          }
+          return back({ error: true, text: 'Unknown action.' });
+        } catch (error) { return back({ error: true, text: `The coordinator refused: ${error.message}` }); }
       }
       if (req.method !== 'GET') return reply(405, 'text/plain', 'GET only');
-      if (url.pathname === '/') {
-        const flash = url.searchParams.has('ok') ? { text: url.searchParams.get('ok') } : url.searchParams.has('error') ? { error: true, text: url.searchParams.get('error') } : null;
-        return reply(200, 'text/html; charset=utf-8', renderIndex(state(), flash));
-      }
-      if (url.pathname === '/api/state') return reply(200, 'application/json', JSON.stringify(state()));
-      const memberMatch = /^\/team\/(team-[a-z]+)$/.exec(url.pathname);
-      if (memberMatch) {
-        const role = memberMatch[1];
-        if (!Object.hasOwn(ROSTER, role)) return reply(404, 'text/plain', 'Not found');
-        const project = Object.hasOwn(projects, url.searchParams.get('project')) ? url.searchParams.get('project') : Object.keys(projects)[0];
-        const issue = url.searchParams.get('issue') || manifests[project]?.ownerInboxIssue || '';
-        const flash = url.searchParams.has('ok') ? { text: url.searchParams.get('ok') } : url.searchParams.has('error') ? { error: true, text: url.searchParams.get('error') } : null;
-        return reply(200, 'text/html; charset=utf-8', renderMember({ role, state: state(), activity: memberActivity({ projects, role }), projects, manifests, selected: { project, issue },
-          thread: store && project ? store.thread({ project, issue, role }) : [], flash, chatEnabled }));
-      }
+      const flash = url.searchParams.has('ok') ? { text: url.searchParams.get('ok') } : url.searchParams.has('error') ? { error: true, text: url.searchParams.get('error') } : null;
+      if (url.pathname === '/') return reply(200, 'text/html; charset=utf-8', renderIndex(await state(), flash, config.hostname));
+      if (url.pathname === '/api/state') return reply(200, 'application/json', JSON.stringify(await state()));
+      if (url.pathname === '/health') return reply(200, 'application/json', '{"ok":true}');
       const portrait = /^\/portraits\/(team-[a-z]+)\.webp$/.exec(url.pathname);
       if (portrait) {
         const file = path.join(config.portraits ?? PORTRAITS, `${portrait[1]}.webp`);
         if (!Object.hasOwn(ROSTER, portrait[1]) || !fs.existsSync(file)) return reply(404, 'text/plain', 'Not found');
         res.writeHead(200, { 'content-type': 'image/webp', 'cache-control': 'public, max-age=3600' }); return res.end(fs.readFileSync(file));
       }
-      const match = /^\/runs\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([^/]+)$/.exec(url.pathname);
-      const detail = match && runDetail({ projects, project: match[1], id: match[2] });
-      if (!detail) return reply(404, 'text/plain', 'Not found');
-      if (url.searchParams.get('format') === 'json') return reply(200, 'application/json', JSON.stringify(detail));
-      return reply(200, 'text/html; charset=utf-8', renderRun(detail));
+      const memberMatch = /^\/team\/(team-[a-z]+)$/.exec(url.pathname);
+      if (memberMatch) {
+        const role = memberMatch[1];
+        if (!Object.hasOwn(ROSTER, role)) return reply(404, 'text/plain', 'Not found');
+        const current = await state();
+        const project = current.overview.find(p => p.project === url.searchParams.get('project')) ?? current.overview[0] ?? null;
+        const issue = url.searchParams.get('issue') || project?.inbox || '';
+        const thread = current.jobs.filter(job => job.kind === 'chat' && job.role === role && job.projectId === project?.project && job.issue === issue).sort((a, b) => a.createdAt - b.createdAt).slice(-30);
+        return reply(200, 'text/html; charset=utf-8', renderMember({ role, state: current, activity: memberActivity(current, role), selected: { project: project?.project ?? null, issue }, thread, flash }));
+      }
+      const runMatch = /^\/runs\/([a-f0-9-]{36})$/.exec(url.pathname);
+      if (runMatch) {
+        let detail;
+        try { detail = await request(`/jobs/${runMatch[1]}/evidence`); } catch { return reply(404, 'text/plain', 'No evidence reported for that job'); }
+        if (url.searchParams.get('format') === 'json') return reply(200, 'application/json', JSON.stringify(detail));
+        return reply(200, 'text/html; charset=utf-8', renderRun(detail));
+      }
+      return reply(404, 'text/plain', 'Not found');
     } catch (error) { reply(500, 'text/plain', 'Dashboard error; see service log'); console.error(error.message); }
   });
 }
 
-// The dashboard reads the coordinator database and worker checkouts; its only writes are
-// the two operator actions, sent to the coordinator with the same token the CLI uses.
-export function loadConfig(file) {
+// Configuration: coordinatorUrl directly, or a worker.json to borrow it from. The token comes from
+// the environment or the private service file. A non-loopback bind requires a password.
+export function loadConfig(file, env = process.env) {
   const config = JSON.parse(fs.readFileSync(file, 'utf8'));
-  const coordinator = JSON.parse(fs.readFileSync(config.coordinator, 'utf8'));
-  const worker = JSON.parse(fs.readFileSync(config.worker, 'utf8'));
   const host = config.host ?? '127.0.0.1'; const port = Number(config.port ?? 4311);
   if (!validBind(host) || !Number.isInteger(port) || port < 1 || port > 65535) throw new Error('Use a loopback or Tailscale IPv4 bind address and valid port');
-  if (!worker.projects || typeof worker.projects !== 'object') throw new Error('worker.json must map projects');
-  const base = {};
-  for (const [project, checkout] of Object.entries(worker.projects)) {
-    const manifest = readJson(path.join(checkout, '.agent-team.json'));
-    if (typeof manifest?.delivery?.baseBranch === 'string') base[project] = { base: `origin/${manifest.delivery.baseBranch}`, fetch: true };
-  }
-  const stateDir = worker.stateDir ? path.resolve(path.dirname(config.worker), worker.stateDir) : path.resolve(path.dirname(file), '.agent-team-dashboard');
-  const chat = { dbPath: path.join(stateDir, 'dashboard.sqlite'), runDir: path.join(stateDir, 'chat'), linear: process.env.LINEAR_API_KEY ? createLinearClient() : null };
-  return { host, port, db: path.resolve(path.dirname(config.coordinator), coordinator.db ?? '.agent-team-coordinator/queue.sqlite'), projects: worker.projects,
-    stateDir: worker.stateDir, defaultEngine: worker.engine ?? 'opencode', coordinatorUrl: worker.coordinatorUrl ?? 'http://127.0.0.1:4310', token: localToken(), base, chat };
+  let coordinatorUrl = config.coordinatorUrl;
+  if (!coordinatorUrl && config.worker) coordinatorUrl = JSON.parse(fs.readFileSync(config.worker, 'utf8')).coordinatorUrl;
+  if (typeof coordinatorUrl !== 'string') throw new Error('dashboard.json needs coordinatorUrl (or a worker config that has one)');
+  const password = env.AGENT_TEAM_DASHBOARD_PASSWORD;
+  if (!['127.0.0.1', '::1', 'localhost'].includes(host) && (typeof password !== 'string' || password.length < 12)) throw new Error('A public bind requires AGENT_TEAM_DASHBOARD_PASSWORD of at least 12 characters');
+  return { host, port, coordinatorUrl, token: localToken(env), password: password || null, hostname: env.FLY_APP_NAME ?? config.hostname ?? 'local' };
 }
 
 export async function main(args = process.argv.slice(2)) {

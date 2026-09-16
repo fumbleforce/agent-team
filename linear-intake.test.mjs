@@ -83,3 +83,16 @@ test('intake emits fixed bounded errors rather than underlying text', async () =
   await assert.rejects(runIntake({ projects: { example: '/nonexistent/secret-test-key' } }, { once: true, linear: {}, queue: () => assert.fail(), onError: error => errors.push(error.message) }), /Intake project poll failed/);
   assert.deepEqual(errors, ['Intake project poll failed']);
 });
+
+test('without local checkouts the intake polls manifests from the coordinator registry', async () => {
+  const seen = [];
+  const queue = async (route, body) => {
+    if (route === '/projects') return [{ id: 'example', manifest }, { id: 'bare', manifest: null }];
+    if (route === '/jobs' && body === undefined) return [];
+    seen.push({ route, body }); return { id: 'job', state: 'queued' };
+  };
+  const linear = { snapshot: async () => ({ ideas: [], remaining: 0 }), prepareApproved: async () => {} };
+  await runIntake({ coordinatorUrl: 'http://127.0.0.1:4310' }, { once: true, queue, linear });
+  assert.deepEqual(seen, []);
+  await assert.rejects(runIntake({ projects: { example: 'relative' } }, { once: true, queue, linear }), /absolute/);
+});

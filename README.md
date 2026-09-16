@@ -225,11 +225,29 @@ Enable the worker/coordinator after a successful pilot, then enable `agent-team-
 
 Do not enable schedules before deciding model-provider spending limits. The system bounds concurrency, role steps, cycle count and elapsed time, but does not enforce a dollar budget. An idle PM cycle can still consume model tokens. On the Claude engine, subscription limits apply instead of a bill; a limit stops the affected job rather than retrying.
 
+## Hosted control plane on Fly.io
+
+The coordinator, the Linear intake and the dashboard can run away from your machines as one small Fly app; workers stay wherever the checkouts and model logins are and connect outbound. Nothing at home needs an open port.
+
+- `fly-entrypoint.mjs` derives configuration from secrets and starts the three services on one machine with the SQLite database on the mounted volume. `fly.toml` exposes the dashboard on the app's HTTPS address (basic auth, `AGENT_TEAM_DASHBOARD_PASSWORD`) and the coordinator API on port 8443 (bearer token, `AGENT_TEAM_TOKEN`). `LINEAR_API_KEY` enables the intake; without it the app runs but polls nothing.
+- Workers register each mapped project's `.agent-team.json` with the coordinator on start and every minute, so the intake and the dashboard know the projects without checkouts, and the page shows which worker was last seen for each project.
+- While a runner executes, the worker reports evidence every 20 seconds: the journal, the last 200 steps, summary and stderr tail, from the run directory. The dashboard reads jobs, evidence and the registry from the coordinator API only; run pages, the live feed and member pages are that reported evidence.
+- Chat is a queue job of kind `chat`: the dashboard enqueues it, a worker for that project claims it in a dedicated chat slot (beside builds, even while the project is on hold), posts the owner's message on the card, answers in character and posts the reply; the reply is the job result. If no worker is online the message waits, and the page says so.
+
+```sh
+fly launch --no-deploy --copy-config --name agent-team     # once; accept the app and volume
+fly volumes create agent_team_data --size 1 --region arn
+fly secrets set AGENT_TEAM_TOKEN=... AGENT_TEAM_DASHBOARD_PASSWORD=... LINEAR_API_KEY=...
+fly deploy
+```
+
+Then point each worker's `coordinatorUrl` at `https://<app>.fly.dev:8443`, restart it, and stop the local coordinator, intake and dashboard services. The local dashboard can also stay and point at the same URL (`coordinatorUrl` in `dashboard.json`).
+
 ## Dashboard and everyday commands
 
-`dashboard.mjs` serves a read-only status page (default `http://127.0.0.1:4311`): service states, Claude subscription window usage as reported by the last run, what the running coordinator and its subagents are doing right now, the job queue with quarantine warnings, and every run with its delivery result, PR link and a detail page of model steps, summary and stderr. It reads the coordinator database and run journals; it never writes, executes or exposes lease tokens, prompts or credentials. `install-local.mjs` installs it as `agent-team-dashboard.service`. To reach it from another device, add a Tailscale Serve route for port 4311 yourself; do not bind it beyond loopback or the tailnet.
+`dashboard.mjs` serves the status page (default `http://127.0.0.1:4311`, or the Fly app address): worker presence per project, Claude subscription window usage and OpenCode token consumption as reported by runs, what the running coordinator and its subagents are doing right now, the queue with quarantine warnings, upcoming automatic runs, and every reported run with its delivery result, PR link and a detail page of steps, summary and stderr. Its only writes are the operator actions (propose ideas, release a held job, send a message), all sent to the coordinator API. `install-local.mjs` installs it locally as `agent-team-dashboard.service`.
 
-Each member has a name, a voice and a portrait (`roster.mjs`, `portraits/`, regenerated with `portraits.mjs` and a Replicate key in `.env`). Clicking a member opens their page: current work, recent steps across runs, and a conversation panel. A message there is posted on the chosen Linear card of the selected project (the owner inbox by default) as "Owner → Name (title): …"; the member answers in a bounded read-only Claude session with the card's thread and its own recent work as context, from the latest retained worktree, and the reply is posted back signed "Name (title): …". Threads and reply status are kept in `dashboard.sqlite` under the worker state directory. Chat needs the Linear key on the dashboard service (`configure-linear.mjs --install` writes that drop-in); replies count against the Claude subscription and are never retried.
+Each member has a name, a voice and a portrait (`roster.mjs`, `portraits/`, regenerated with `portraits.mjs` and a Replicate key in `.env`). Clicking a member opens their page: current work, recent steps across runs, and a conversation panel. A message there is posted on the chosen Linear card of the selected project (the owner inbox by default) as "Owner → Name (title): …"; the member answers in a bounded read-only Claude session with the card's thread and its own recent work as context, from the latest retained worktree, and the reply is posted back signed "Name (title): …". Threads are the chat jobs themselves, so they follow the coordinator wherever it runs. Replies count against the worker's Claude subscription and are never retried.
 
 `cli.mjs` finds the control-plane token in `~/.config/agent-team/service.env` when `AGENT_TEAM_TOKEN` is not exported, so the everyday commands are short:
 

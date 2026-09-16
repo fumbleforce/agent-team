@@ -1,5 +1,5 @@
 import { spawn } from 'node:child_process';
-import { mkdirSync, openSync, closeSync, readFileSync, writeSync, renameSync } from 'node:fs';
+import { mkdirSync, openSync, closeSync, readFileSync, writeSync, renameSync, readdirSync, existsSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -8,6 +8,8 @@ import { ENGINES } from './engines.mjs';
 import { createLinearClient } from './linear-api.mjs';
 import { validateIdeation } from './idea-schema.mjs';
 import { validateResult } from './runner.mjs';
+import { RUN_ID, memberActivity, runEvidence } from './evidence.mjs';
+import { answer } from './chat.mjs';
 
 const runner = fileURLToPath(new URL('./runner.mjs', import.meta.url));
 export function runnerArgs(job, checkout, ideaContext) {
@@ -90,6 +92,15 @@ const sleep = (ms, signal) => new Promise(resolve => {
   const done = () => { clearTimeout(timer); signal?.removeEventListener('abort', done); resolve(); };
   const timer = setTimeout(done, ms); signal?.addEventListener('abort', done, { once: true });
 });
+// The newest retained run worktree: sparse-excluded secrets make it the safe place to read code.
+export function latestWorktree(checkout) {
+  const runsDir = path.join(checkout, '.agent-team', 'runs');
+  let ids = []; try { ids = readdirSync(runsDir).filter(id => RUN_ID.test(id)).sort().reverse(); } catch { return null; }
+  for (const id of ids) {
+    try { const worktree = JSON.parse(readFileSync(path.join(runsDir, id, 'journal.json'), 'utf8')).worktree; if (worktree && existsSync(worktree)) return worktree; } catch { /* unreadable journal */ }
+  }
+  return null;
+}
 export function validateConfig(config) {
   if (!config || typeof config.workerId !== 'string' || !/^[\w.-]{1,128}$/.test(config.workerId)) throw new Error('Invalid workerId');
   if (config.engine !== undefined && !ENGINES.includes(config.engine)) throw new Error('Invalid engine');
@@ -97,11 +108,31 @@ export function validateConfig(config) {
   if (!config.projects || !Object.keys(config.projects).length || Object.values(config.projects).some(p => typeof p !== 'string' || !path.isAbsolute(p))) throw new Error('Projects must map IDs to absolute checkout paths');
 }
 export async function runWorker(config, { once = false, signal = new AbortController().signal,
-  request = createClient(config.coordinatorUrl, process.env.AGENT_TEAM_TOKEN), run = runProcess,
+  request = createClient(config.coordinatorUrl, process.env.AGENT_TEAM_TOKEN), run = runProcess, chatAnswer = answer,
   linear = createLinearClient, loadManifest = checkout => JSON.parse(readFileSync(path.join(checkout, '.agent-team.json'), 'utf8')),
-  pollMs = 2000, onError = error => console.error(error.message) } = {}) {
+  pollMs = 2000, evidenceMs = 20_000, registerMs = 60_000, onError = error => console.error(error.message) } = {}) {
   validateConfig(config);
   const projectIds = Object.keys(config.projects);
+  // Manifests registered here let a remote coordinator, intake and dashboard work without checkouts.
+  async function register() {
+    for (const [projectId, checkout] of Object.entries(config.projects)) {
+      try { await request(`/projects/${projectId}/manifest`, { workerId: config.workerId, manifest: await loadManifest(checkout) }); } catch (error) { onError(error); }
+    }
+  }
+  function reporter(job, credentials, checkout) {
+    let runId = null;
+    const report = async () => {
+      try {
+        if (!runId) { const lock = JSON.parse(readFileSync(path.join(checkout, '.agent-team', 'lock.json'), 'utf8')); if (RUN_ID.test(lock.id ?? '')) runId = lock.id; }
+        if (!runId) return;
+        const dir = path.join(checkout, '.agent-team', 'runs', runId);
+        if (!existsSync(path.join(dir, 'journal.json'))) return;
+        await request(`/jobs/${job.id}/evidence`, { ...credentials, evidence: runEvidence(job.projectId, dir, runId, { stepLimit: 200 }) });
+      } catch { /* evidence is best effort; the job result is authoritative */ }
+    };
+    const timer = setInterval(report, evidenceMs);
+    return { stop: async () => { clearInterval(timer); await report(); } };
+  }
   async function execute(job) {
     if (!Object.hasOwn(config.projects, job.projectId) || !/^[a-f0-9-]{36}$/.test(job.id) || !Number.isFinite(job.leaseMs) || job.leaseMs < 1) throw new Error('Invalid claimed job');
     const control = new AbortController(); const heartbeatControl = new AbortController();
@@ -171,8 +202,20 @@ export async function runWorker(config, { once = false, signal = new AbortContro
         }
       }
       active();
-      execution = skip ? { code: 0, journal: { outcome: 'idle' } }
-        : await run({ job: boundedJob, args: runnerArgs(boundedJob, checkout, ideaContext), signal: control.signal, stateDir });
+      if (job.kind === 'chat') {
+        manifest ??= await loadManifest(checkout);
+        client ??= await linear({ apiKey: process.env.LINEAR_API_KEY, fetchImpl: (url, init = {}) => { active(); return fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, control.signal]) : control.signal }); } });
+        const work = memberActivity({ projects: { [job.projectId]: checkout }, role: job.role, runLimit: 6 }).flatMap(item => [
+          `${item.run.issue ?? 'ideation'} run ${item.run.id}: ${item.run.state}${item.run.delivery ? `, delivery ${item.run.delivery}` : ''}${item.run.prUrl ? ` (${item.run.prUrl})` : ''}`,
+          ...item.steps.slice(-3).map(step => `${item.run.issue ?? 'ideation'}: ${step.text}`)]).slice(0, 18);
+        const replied = await chatAnswer({ linear: client, manifest, role: job.role, issue: job.issue, message: job.message, cwd: latestWorktree(checkout) ?? checkout, work, runDir: path.join(stateDir, 'chat'), signal: control.signal });
+        execution = { code: 0, journal: { outcome: 'ready' } }; apiSummary = replied.reply.slice(0, 1900);
+      } else if (skip) execution = { code: 0, journal: { outcome: 'idle' } };
+      else {
+        const evidence = reporter(job, credentials, checkout);
+        try { execution = await run({ job: boundedJob, args: runnerArgs(boundedJob, checkout, ideaContext), signal: control.signal, stateDir }); }
+        finally { await evidence.stop(); }
+      }
       active();
       if (!skip && job.kind === 'ideation' && execution.code === 0) {
         const journal = execution.journal;
@@ -189,9 +232,10 @@ export async function runWorker(config, { once = false, signal = new AbortContro
       }
     }
     catch (error) {
-      execution = { code: job.kind === 'ideation' || job.approvalRequired ? 2 : 1 };
+      execution = { code: job.kind === 'ideation' || job.kind === 'chat' || job.approvalRequired ? 2 : 1 };
       apiSummary = error.message === 'LINEAR_API_KEY is required' ? error.message
-        : job.kind === 'ideation' || job.approvalRequired ? 'Idea workflow blocked: configuration, API, or report validation failed; inspect local evidence' : undefined;
+        : job.kind === 'chat' ? `No reply: ${error.message}`.slice(0, 1900)
+          : job.kind === 'ideation' || job.approvalRequired ? 'Idea workflow blocked: configuration, API, or report validation failed; inspect local evidence' : undefined;
     }
     finally {
       clearTimeout(cap); heartbeatControl.abort(); await heartbeat;
@@ -204,17 +248,23 @@ export async function runWorker(config, { once = false, signal = new AbortContro
     try { await request(`/jobs/${job.id}/${['ready', 'idle'].includes(outcome) ? 'complete' : 'fail'}`, { ...credentials, result }); }
     catch (error) { onError(error); }
   }
-  async function slot() {
+  async function slot(kinds) {
     do {
       if (signal.aborted) return;
       try {
-        const job = await request('/claim', { workerId: config.workerId, projectIds });
+        const job = await request('/claim', { workerId: config.workerId, projectIds, kinds });
         if (job) await execute(job);
         else if (!once) await sleep(pollMs, signal);
       } catch (error) { onError(error); if (!once) await sleep(pollMs, signal); }
     } while (!once && !signal.aborted);
   }
-  await Promise.all(Array.from({ length: once ? 1 : config.concurrency ?? 1 }, slot));
+  await register();
+  const registration = once ? null : setInterval(register, registerMs);
+  try {
+    // Builds take their configured slots; one extra slot answers chat beside them.
+    await Promise.all(once ? [slot(['development', 'ideation', 'chat'])]
+      : [...Array.from({ length: config.concurrency ?? 1 }, () => slot(['development', 'ideation'])), slot(['chat'])]);
+  } finally { if (registration) clearInterval(registration); }
 }
 export async function main(args = process.argv.slice(2)) {
   let configPath; let once = false;

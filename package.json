@@ -11,6 +11,6 @@
     "worker": "node worker.mjs --config worker.example.json",
     "intake": "node linear-intake.mjs --config intake.example.json",
     "dashboard": "node dashboard.mjs --config dashboard.example.json",
-    "check": "node --check runner.mjs && node --check queue.mjs && node --check worker.mjs && node --check cli.mjs && node --check delivery.mjs && node --check install-local.mjs && node --check opencode-plugin.mjs && node --check engines.mjs && node --check git-base.mjs && node --check idea-schema.mjs && node --check linear-api.mjs && node --check linear-intake.mjs && node --check configure-linear.mjs && node --check dashboard.mjs && node --check roster.mjs && node --check portraits.mjs && node --check chat.mjs"
+    "check": "node --check runner.mjs && node --check queue.mjs && node --check worker.mjs && node --check cli.mjs && node --check delivery.mjs && node --check install-local.mjs && node --check opencode-plugin.mjs && node --check engines.mjs && node --check git-base.mjs && node --check idea-schema.mjs && node --check linear-api.mjs && node --check linear-intake.mjs && node --check configure-linear.mjs && node --check dashboard.mjs && node --check roster.mjs && node --check portraits.mjs && node --check chat.mjs && node --check evidence.mjs && node --check fly-entrypoint.mjs"
   }
 }

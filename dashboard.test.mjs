@@ -4,164 +4,117 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createQueue } from './queue.mjs';
-import { collectState, createDashboardServer, eventSteps, loadConfig, renderIndex, runDetail } from './dashboard.mjs';
+import { collectState, createDashboardServer, loadConfig, renderIndex } from './dashboard.mjs';
 
 const MARKER = '<script>alert("summary")</script>';
-const events = [
-  { type: 'system', subtype: 'init' },
-  { type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the manifest first.' }, { type: 'tool_use', id: 'toolu_1', name: 'Agent', input: { subagent_type: 'team-pm', description: 'Claim FUM-1', prompt: 'private prompt text' } }] } },
-  { type: 'assistant', parent_tool_use_id: 'toolu_1', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- x.unit.test.ts' } }] } },
-  { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.15, resetsAt: 1789555200 }, seven_day: { utilization: 0.4, resetsAt: 1790000000 } } } },
-  { type: 'result', subtype: 'success', is_error: false, duration_ms: 120000, num_turns: 7 },
-].map(event => JSON.stringify(event)).join('\n') + '\n';
-const opencodeEvents = [
-  { type: 'text', part: { text: 'Claiming FUM-9 now.' } },
-  { type: 'tool_use', part: { tool: 'bash', state: { input: { command: 'npm run typecheck:web', description: 'Typecheck web' } } } },
-  { type: 'step_finish', part: { tokens: { total: 24000 } } },
-  { type: 'step_finish', part: { tokens: { total: 1000 } } },
-].map(event => JSON.stringify(event)).join('\n') + '\n';
+const steps = [{ scope: 'coordinator', kind: 'text', member: null, text: 'Reading the manifest first.' }, { scope: 'coordinator', kind: 'tool', member: null, text: 'Agent → team-pm: Claim FUM-1' }, { scope: 'subagent', kind: 'tool', member: 'team-pm', text: 'Bash: npm test' }];
+const usage = { status: 'allowed', fiveHour: { utilization: 0.15, resetsAt: 1789555200 }, sevenDay: { utilization: 0.4, resetsAt: 1790000000 } };
 
+// A queue-backed coordinator fed the way workers feed it: manifests, jobs and evidence.
 function fixture(t) {
-  const root = mkdtempSync(path.join(os.tmpdir(), 'dashboard-')); t.after(() => rmSync(root, { recursive: true, force: true }));
-  const checkout = path.join(root, 'checkout'); const runs = path.join(checkout, '.agent-team', 'runs');
-  const write = (id, journal, stream = events) => {
-    mkdirSync(path.join(runs, id), { recursive: true });
-    writeFileSync(path.join(runs, id, 'journal.json'), JSON.stringify(journal));
-    writeFileSync(path.join(runs, id, 'events.jsonl'), stream);
-    writeFileSync(path.join(runs, id, 'summary.md'), `# Agent run ${id}\n${MARKER}`);
-  };
-  write('2026-09-16T06-00-00-000Z-aaaaaaaa', { id: 'a', state: 'ready', engine: 'claude', issue: 'FUM-1', prUrl: 'https://github.com/o/r/pull/1', delivery: { state: 'merged' }, startedAt: '2026-09-16T06:00:00.000Z', finishedAt: '2026-09-16T06:10:00.000Z', baseCommit: 'abcdef1234567890', summary: MARKER });
-  write('2026-09-16T07-00-00-000Z-bbbbbbbb', { id: 'b', state: 'running', engine: 'claude', options: { issue: 'FUM-2' }, worktree: '/wt/run-b', startedAt: '2026-09-16T07:00:00.000Z' });
-  write('2026-09-16T05-00-00-000Z-cccccccc', { id: 'c', state: 'ready', engine: 'opencode', issue: 'FUM-9', startedAt: new Date(Date.now() - 3600_000).toISOString(), finishedAt: new Date().toISOString() }, opencodeEvents);
-  mkdirSync(path.join(runs, 'not-a-run-id'));
-  writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ name: 'Myntbase', ideation: { enabled: true, backlogCap: 10, batchSize: 3, minimumIntervalHours: 24 } }));
-  const dbPath = path.join(root, 'queue.sqlite');
-  const q = createQueue(dbPath, { projects: { myntbase: {} } });
-  q.enqueue({ projectId: 'myntbase', issue: 'FUM-1', publish: true, autoMerge: true, engine: 'claude' });
-  const job = q.claim({ workerId: 'x3d', projectIds: ['myntbase'] });
+  const q = createQueue(':memory:', { projects: { myntbase: { repository: 'o/r' } } }); t.after(() => q.close());
+  q.registerProject('myntbase', { workerId: 'x3d', manifest: { name: 'Myntbase', ownerInboxIssue: 'FUM-10', ideation: { enabled: true, backlogCap: 10, batchSize: 3, minimumIntervalHours: 24 }, delivery: { baseBranch: 'master' } } });
+  const done = q.enqueue({ projectId: 'myntbase', issue: 'FUM-1', publish: true, autoMerge: true, engine: 'claude' });
+  let job = q.claim({ workerId: 'x3d', projectIds: ['myntbase'] });
+  q.evidence(job.id, { workerId: 'x3d', leaseToken: job.leaseToken, evidence: { run: { project: 'myntbase', id: '2026-09-16T06-00-00-000Z-aaaaaaaa', state: 'ready', engine: 'claude', issue: 'FUM-1', prUrl: 'https://github.com/o/r/pull/1', delivery: 'merged', startedAt: '2026-09-16T06:00:00.000Z', finishedAt: '2026-09-16T06:10:00.000Z', baseCommit: 'abcdef12', summary: MARKER }, steps, members: { 'team-pm': 1 }, active: 'team-pm', usage, engineResult: { subtype: 'success', isError: false, durationMs: 120000, turns: 7 }, tokens: 0, summary: `# run\n${MARKER}`, stderr: '' } });
+  q.complete(job.id, { workerId: 'x3d', leaseToken: job.leaseToken, result: { outcome: 'ready', summary: 'Runner ready' } });
+  const held = q.enqueue({ projectId: 'myntbase', issue: 'FUM-2', publish: true });
+  job = q.claim({ workerId: 'x3d', projectIds: ['myntbase'] });
+  q.evidence(job.id, { workerId: 'x3d', leaseToken: job.leaseToken, evidence: { run: { project: 'myntbase', id: '2026-09-16T07-00-00-000Z-bbbbbbbb', state: 'running', engine: 'opencode', issue: 'FUM-2', startedAt: new Date(Date.now() - 600_000).toISOString() }, steps, members: { 'team-pm': 1 }, active: 'team-pm', usage: null, tokens: 25000, summary: '' } });
   q.fail(job.id, { workerId: 'x3d', leaseToken: job.leaseToken, result: { outcome: 'blocked', summary: `blocked ${MARKER}` } });
-  q.close();
-  const systemctl = unit => unit.endsWith('intake') ? 'inactive' : 'active';
-  return { root, checkout, dbPath, systemctl, projects: { myntbase: checkout }, leaseToken: job.leaseToken };
+  const chat = q.enqueue({ projectId: 'myntbase', kind: 'chat', role: 'team-pm', issue: 'FUM-10', message: 'Status?' });
+  const chatJob = q.claim({ workerId: 'x3d', projectIds: ['myntbase'], kinds: ['chat'] });
+  q.complete(chatJob.id, { workerId: 'x3d', leaseToken: chatJob.leaseToken, result: { outcome: 'ready', summary: 'All good, nothing blocks FUM-2.' } });
+  const request = async (route, body) => {
+    const url = new URL(route, 'http://x');
+    if (body === undefined) {
+      if (url.pathname === '/jobs') return q.list();
+      if (url.pathname === '/projects') return q.projectsList();
+      if (url.pathname === '/evidence') return q.evidenceList({ limit: Number(url.searchParams.get('limit') ?? 40) });
+      const m = /^\/jobs\/([^/]+)\/evidence$/.exec(url.pathname); if (m) { const e = q.evidenceFor(m[1]); if (!e) throw new Error('404'); return e; }
+      throw new Error('unknown route');
+    }
+    if (url.pathname === '/jobs') return q.enqueue(body);
+    const m = /^\/jobs\/([^/]+)\/(requeue|cancel)$/.exec(url.pathname); if (m) return q[m[2]](m[1], body);
+    throw new Error('unknown write');
+  };
+  return { q, request, done, held, chat, leaseToken: job.leaseToken };
 }
 
-test('event steps summarize coordinator and subagent activity, usage and engine result without prompts', () => {
-  const parsed = eventSteps(events);
-  assert.deepEqual(parsed.steps.map(step => [step.scope, step.kind]), [['coordinator', 'text'], ['coordinator', 'tool'], ['subagent', 'tool']]);
-  assert.equal(parsed.steps[1].text, 'Agent → team-pm: Claim FUM-1');
-  assert.equal(parsed.steps[2].member, 'team-pm'); assert.equal(parsed.active, 'team-pm'); assert.deepEqual(parsed.members, { 'team-pm': 1 });
-  assert.ok(!JSON.stringify(parsed).includes('private prompt text'));
-  assert.equal(parsed.usage.fiveHour.utilization, 0.15);
-  assert.deepEqual(parsed.engineResult, { subtype: 'success', isError: false, durationMs: 120000, turns: 7 });
-  assert.deepEqual(eventSteps('garbage\n{"type":"x"}\n'), { steps: [], usage: null, engineResult: null, tokens: 0, members: {}, active: null });
-  const oc = eventSteps(opencodeEvents);
-  assert.deepEqual(oc.steps.map(step => step.text), ['Claiming FUM-9 now.', 'bash: Typecheck web']); assert.equal(oc.tokens, 25000);
-  assert.equal(eventSteps(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/wt/run-b/src/a.ts' } }] } }), 5, '/wt/run-b').steps[0].text, 'Read: src/a.ts');
-});
-
-test('state aggregates services, queue, runs, live steps, usage and quarantine without lease tokens', t => {
+test('state derives projects, team, runs, usage and quarantine from the coordinator only', async t => {
   const f = fixture(t);
-  const state = collectState({ dbPath: f.dbPath, projects: f.projects, systemctl: f.systemctl });
-  assert.deepEqual(state.services, { 'agent-team-coordinator': 'active', 'agent-team-worker': 'active', 'agent-team-intake': 'inactive' });
-  assert.equal(state.jobs.length, 1); assert.equal(state.jobs[0].state, 'blocked'); assert.equal(state.jobs[0].engine, 'claude');
+  const state = await collectState({ request: f.request });
+  assert.deepEqual(state.overview.map(p => [p.project, p.name, p.status, p.online, p.held.length, p.delivered?.issue, p.ideation?.blockedBy]), [['myntbase', 'Myntbase', 'on hold', true, 1, 'FUM-1', 'held job']]);
   assert.deepEqual(state.quarantined, ['myntbase']);
-  assert.deepEqual(state.overview.map(p => [p.project, p.name, p.status, p.held.length, p.delivered?.issue, p.ideation?.blockedBy]), [['myntbase', 'Myntbase', 'on hold', 1, 'FUM-1', 'held job']]);
-  assert.deepEqual(state.runs.map(run => run.state).sort(), ['ready', 'ready', 'running']);
-  const merged = state.runs.find(run => run.issue === 'FUM-1'); assert.equal(merged.delivery, 'merged'); assert.equal(merged.baseCommit, 'abcdef12');
-  assert.equal(state.openai.day, 25000); assert.equal(state.openai.week, 25000); assert.equal(state.openai.lastRun.project, 'myntbase');
-  assert.equal(state.live.length, 1); assert.equal(state.live[0].steps.length, 3); assert.equal(state.live[0].issue, 'FUM-2');
-  assert.equal(state.overview[0].running.issue, 'FUM-2');
   assert.equal(state.usage.sevenDay.utilization, 0.4);
-  const jeff = state.team.find(m => m.role === 'team-pm'); assert.equal(jeff.name, 'Jeff'); assert.equal(jeff.working.issue, 'FUM-2'); assert.equal(jeff.steps, 1);
-  assert.equal(state.team.find(m => m.role === 'team-dev').working, null);
+  assert.equal(state.openai.day, 25000);
+  assert.equal(state.live.length, 0, 'a blocked job is not live even if its last report said running');
+  assert.equal(state.jobs.find(job => job.kind === 'chat').summary, 'All good, nothing blocks FUM-2.');
   assert.ok(!JSON.stringify(state).includes(f.leaseToken));
-  assert.deepEqual(collectState({ dbPath: path.join(f.root, 'missing.sqlite'), projects: { other: path.join(f.root, 'nowhere') }, systemctl: () => 'unknown' }).jobs, []);
 });
 
-test('run detail validates project and id and refuses traversal', t => {
+test('pages escape content, serve portraits and evidence, and require same-origin for writes', async t => {
   const f = fixture(t);
-  const detail = runDetail({ projects: f.projects, project: 'myntbase', id: '2026-09-16T06-00-00-000Z-aaaaaaaa' });
-  assert.equal(detail.run.state, 'ready'); assert.ok(detail.summary.includes(MARKER)); assert.equal(detail.steps.length, 3);
-  for (const [project, id] of [['other', '2026-09-16T06-00-00-000Z-aaaaaaaa'], ['myntbase', '../../checkout'], ['myntbase', 'not-a-run-id'], ['myntbase', '2026-09-16T06-00-00-000Z-zzzzzzzz']]) assert.equal(runDetail({ projects: f.projects, project, id }), null);
-});
-
-test('HTTP pages escape content, serve JSON, and reject writes and unknown paths', async t => {
-  const f = fixture(t);
-  const server = createDashboardServer({ db: f.dbPath, projects: f.projects, systemctl: f.systemctl });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
+  const server = createDashboardServer({ request: f.request, hostname: 'test' });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
-  const index = await fetch(base + '/'); const html = await index.text();
-  assert.equal(index.status, 200); assert.ok(!html.includes(MARKER)); assert.ok(html.includes('&lt;script&gt;'));
-  assert.ok(html.includes('on hold') && html.includes('15% used') && html.includes('Agent → team-pm') && html.includes('Release and rerun') && html.includes('25k') && html.includes('release the held job first') && html.includes('Jeff') && html.includes('<b>Jeff</b> Bash'));
-  const api = await (await fetch(base + '/api/state')).json();
-  assert.equal(api.jobs[0].outcome, 'blocked');
-  const run = await fetch(base + '/runs/myntbase/2026-09-16T06-00-00-000Z-aaaaaaaa');
-  assert.equal(run.status, 200); assert.ok((await run.text()).includes('7 turns'));
-  const json = await (await fetch(base + '/runs/myntbase/2026-09-16T06-00-00-000Z-aaaaaaaa?format=json')).json();
-  assert.equal(json.run.issue, 'FUM-1');
-  assert.equal((await fetch(base + '/runs/myntbase/..%2F..%2Fx')).status, 404);
-  assert.equal((await fetch(base + '/runs/other/2026-09-16T06-00-00-000Z-aaaaaaaa')).status, 404);
-  assert.equal((await fetch(base + '/', { method: 'POST' })).status, 404);
+  const html = await (await fetch(base + '/')).text();
+  assert.ok(!html.includes(MARKER) && html.includes('&lt;script&gt;') && html.includes('on hold') && html.includes('15% used') && html.includes('Release and rerun') && html.includes('25k') && html.includes('x3d for Myntbase'));
+  assert.equal((await fetch(base + '/portraits/team-pm.webp')).headers.get('content-type'), 'image/webp');
+  for (const bad of ['/portraits/team-nobody.webp', '/portraits/../roster.mjs', '/runs/not-a-uuid', `/runs/${'0'.repeat(36)}`]) assert.equal((await fetch(base + bad)).status, 404);
+  const run = await (await fetch(`${base}/runs/${f.done.id}`)).text();
+  assert.ok(run.includes('7 turns') && run.includes('&lt;script&gt;') && run.includes('Jeff'));
   assert.equal((await fetch(base + '/', { method: 'PUT' })).status, 405);
-  const portrait = await fetch(base + '/portraits/team-pm.webp');
-  assert.equal(portrait.status, 200); assert.equal(portrait.headers.get('content-type'), 'image/webp');
-  for (const bad of ['/portraits/team-nobody.webp', '/portraits/../roster.mjs', '/portraits/team-pm.png']) assert.equal((await fetch(base + bad)).status, 404);
-  assert.ok(html.includes('src="/portraits/team-pm.webp"'));
-  assert.ok(renderIndex({ generatedAt: new Date().toISOString(), services: {}, overview: [], team: [], jobs: [], runs: [], live: [], usage: null, openai: { day: 0, week: 0, lastRun: null }, quarantined: [], defaultEngine: 'claude' }).includes('No jobs yet'));
-});
-
-test('configuration resolves the coordinator database and worker projects and validates the bind', t => {
-  const f = fixture(t);
-  const dir = path.join(f.root, 'config'); mkdirSync(dir);
-  writeFileSync(path.join(dir, 'coordinator.json'), JSON.stringify({ db: f.dbPath, projects: { myntbase: {} } }));
-  writeFileSync(path.join(dir, 'worker.json'), JSON.stringify({ workerId: 'x3d', projects: f.projects, stateDir: '/tmp/state' }));
-  writeFileSync(path.join(dir, 'dashboard.json'), JSON.stringify({ port: 4311, coordinator: path.join(dir, 'coordinator.json'), worker: path.join(dir, 'worker.json') }));
-  const config = loadConfig(path.join(dir, 'dashboard.json'));
-  assert.deepEqual({ ...config, token: undefined, chat: undefined }, { host: '127.0.0.1', port: 4311, db: f.dbPath, projects: f.projects, stateDir: '/tmp/state', defaultEngine: 'opencode', coordinatorUrl: 'http://127.0.0.1:4310', token: undefined, base: {}, chat: undefined });
-  assert.equal(config.chat.dbPath, '/tmp/state/dashboard.sqlite'); assert.equal(config.chat.linear, null);
-  writeFileSync(path.join(dir, 'dashboard.json'), JSON.stringify({ host: '0.0.0.0', coordinator: path.join(dir, 'coordinator.json'), worker: path.join(dir, 'worker.json') }));
-  assert.throws(() => loadConfig(path.join(dir, 'dashboard.json')), /loopback or Tailscale/);
-});
-
-test('actions queue ideation or requeue a held job only from the page itself', async t => {
-  const f = fixture(t); const calls = [];
-  const enqueue = async (route, body) => { calls.push([route, body]); return { id: 'job-new' }; };
-  const server = createDashboardServer({ db: f.dbPath, projects: f.projects, systemctl: f.systemctl, enqueue, base: { myntbase: { base: 'origin/master', fetch: true } } });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
-  const base = `http://127.0.0.1:${server.address().port}`;
-  const post = (body, headers = { 'sec-fetch-site': 'same-origin' }) => fetch(base + '/actions', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers }, body: new URLSearchParams(body).toString() });
-  assert.equal((await post({ action: 'ideate', project: 'myntbase' }, { 'sec-fetch-site': 'cross-site' })).status, 403);
-  assert.equal((await post({ action: 'ideate', project: 'myntbase' }, { origin: 'http://evil.invalid' })).status, 403);
-  let response = await post({ action: 'ideate', project: 'myntbase' });
-  assert.equal(response.status, 303); assert.match(decodeURIComponent(response.headers.get('location')), /waiting on: held job/);
-  assert.equal(calls.length, 0);
-  const held = (await (await fetch(base + '/api/state')).json()).jobs[0];
-  response = await post({ action: 'requeue', project: 'myntbase', job: held.id });
+  const post = (path, body, headers = { 'sec-fetch-site': 'same-origin' }) => fetch(base + path, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', ...headers }, body: new URLSearchParams(body).toString() });
+  assert.equal((await post('/actions', { action: 'ideate', project: 'myntbase' }, { 'sec-fetch-site': 'cross-site' })).status, 403);
+  let response = await post('/actions', { action: 'ideate', project: 'myntbase' });
+  assert.match(decodeURIComponent(response.headers.get('location')), /waiting on: held job/);
+  response = await post('/actions', { action: 'requeue', project: 'myntbase', job: f.held.id });
   assert.match(decodeURIComponent(response.headers.get('location')), /queued again/);
-  assert.deepEqual(calls, [[`/jobs/${held.id}/requeue`, {}]]);
-  const page = await (await fetch(base + '/?ok=Queued%20ideation')).text();
-  assert.ok(page.includes('class="flash "') && page.includes('Queued ideation'));
+  assert.equal(f.q.list().find(job => job.id === f.held.id).state, 'queued');
+  assert.ok(renderIndex({ generatedAt: new Date().toISOString(), overview: [], team: [], jobs: [], runs: [], live: [], usage: null, openai: { day: 0, week: 0, lastRun: null }, quarantined: [] }).includes('No projects registered'));
 });
 
-test('member pages show work and history; chat posts through the conversation pipeline', async t => {
-  const f = fixture(t); const calls = [];
-  const converse = async args => { calls.push(args); return { outgoing: 'a', replyId: 'b' }; };
-  const server = createDashboardServer({ db: f.dbPath, projects: f.projects, systemctl: f.systemctl, chat: { dbPath: ':memory:', runDir: path.join(f.root, 'chat'), linear: {} }, converse });
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
-  t.after(() => new Promise(resolve => server.close(resolve)));
+test('member pages show the conversation as chat jobs and queue new messages', async t => {
+  const f = fixture(t);
+  const server = createDashboardServer({ request: f.request });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
   const base = `http://127.0.0.1:${server.address().port}`;
   const page = await (await fetch(base + '/team/team-pm')).text();
-  assert.ok(page.includes('Jeff') && page.includes('Relentless customer focus') && page.includes('Working on') && page.includes('FUM-2') && page.includes('Send to Jeff'));
+  assert.ok(page.includes('Jeff') && page.includes('Relentless') && page.includes('Status?') && page.includes('All good, nothing blocks FUM-2.') && page.includes('Send to Jeff') && page.includes('FUM-10'));
   assert.equal((await fetch(base + '/team/team-nobody')).status, 404);
-  const response = await fetch(base + '/chat', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, body: new URLSearchParams({ role: 'team-pm', project: 'myntbase', issue: 'FUM-10', message: 'Status?' }).toString() });
-  assert.equal(response.status, 303); assert.match(decodeURIComponent(response.headers.get('location')), /Sent to Jeff on FUM-10/);
-  assert.equal(calls.length, 1); assert.equal(calls[0].issue, 'FUM-10'); assert.equal(calls[0].message, 'Status?'); assert.equal(calls[0].cwd, '/wt/run-b'.startsWith('/wt') ? calls[0].cwd : null);
-  assert.ok(calls[0].work.some(line => line.includes('FUM-2')));
-  const disabled = createDashboardServer({ db: f.dbPath, projects: f.projects, systemctl: f.systemctl, chat: { dbPath: ':memory:', runDir: path.join(f.root, 'chat'), linear: null } });
-  await new Promise(resolve => disabled.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => disabled.close(resolve)));
-  const off = await fetch(`http://127.0.0.1:${disabled.address().port}/chat`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, body: 'role=team-pm&project=myntbase&message=x' });
-  assert.match(decodeURIComponent(off.headers.get('location')), /needs the Linear key/);
-  assert.ok((await (await fetch(`http://127.0.0.1:${disabled.address().port}/team/team-dev`)).text()).includes('configure-linear.mjs'));
+  const response = await fetch(base + '/chat', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, body: new URLSearchParams({ role: 'team-dev', project: 'myntbase', issue: 'FUM-10', message: 'Gandalf?' }).toString() });
+  assert.equal(response.status, 303); assert.match(decodeURIComponent(response.headers.get('location')), /Sent to Gandalf on FUM-10/);
+  const queued = f.q.list().find(job => job.kind === 'chat' && job.role === 'team-dev');
+  assert.equal(queued.state, 'queued'); assert.equal(queued.message, 'Gandalf?');
+  const bad = await fetch(base + '/chat', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, body: 'role=team-dev&project=myntbase&issue=nope&message=x' });
+  assert.match(decodeURIComponent(bad.headers.get('location')), /Not sent/);
+});
+
+test('basic auth guards every route when a password is configured', async t => {
+  const f = fixture(t);
+  const server = createDashboardServer({ request: f.request, password: 'correct horse battery' });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const anonymous = await fetch(base + '/');
+  assert.equal(anonymous.status, 401); assert.match(anonymous.headers.get('www-authenticate'), /Basic/);
+  assert.equal((await fetch(base + '/portraits/team-pm.webp', { headers: { authorization: `Basic ${Buffer.from('owner:wrong password').toString('base64')}` } })).status, 401);
+  assert.equal((await fetch(base + '/health', { headers: { authorization: `Basic ${Buffer.from('owner:correct horse battery').toString('base64')}` } })).status, 200);
+});
+
+test('configuration takes a coordinator URL or borrows it from a worker config and demands a password for public binds', t => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'dashboard-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  writeFileSync(path.join(dir, 'worker.json'), JSON.stringify({ coordinatorUrl: 'https://team.example:8443', projects: {} }));
+  writeFileSync(path.join(dir, 'dashboard.json'), JSON.stringify({ worker: path.join(dir, 'worker.json') }));
+  const env = { HOME: dir, AGENT_TEAM_TOKEN: 'synthetic-token-with-24-chars!' };
+  assert.deepEqual(loadConfig(path.join(dir, 'dashboard.json'), env), { host: '127.0.0.1', port: 4311, coordinatorUrl: 'https://team.example:8443', token: env.AGENT_TEAM_TOKEN, password: null, hostname: 'local' });
+  writeFileSync(path.join(dir, 'dashboard.json'), JSON.stringify({ host: '0.0.0.0', coordinatorUrl: 'http://127.0.0.1:4310' }));
+  assert.throws(() => loadConfig(path.join(dir, 'dashboard.json'), env), /loopback or Tailscale/);
+  process.env.AGENT_TEAM_PUBLIC_BIND = '1';
+  try {
+    assert.throws(() => loadConfig(path.join(dir, 'dashboard.json'), env), /requires AGENT_TEAM_DASHBOARD_PASSWORD/);
+    const config = loadConfig(path.join(dir, 'dashboard.json'), { ...env, AGENT_TEAM_DASHBOARD_PASSWORD: 'long enough password', FLY_APP_NAME: 'agent-team' });
+    assert.equal(config.password, 'long enough password'); assert.equal(config.hostname, 'agent-team');
+  } finally { delete process.env.AGENT_TEAM_PUBLIC_BIND; }
+  mkdirSync(path.join(dir, 'unused'));
 });

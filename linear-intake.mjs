@@ -52,14 +52,20 @@ function settled(job) {
 export async function runIntake(config, { once = false, signal = new AbortController().signal,
   queue, linear, now = Date.now, onError = () => console.error('Intake project poll failed; verify configuration, credentials, and service availability') } = {}) {
   if (!config || !Number.isInteger(config.pollSeconds ?? 60) || (config.pollSeconds ?? 60) < 1 || (config.pollSeconds ?? 60) > 3600) throw new Error('Invalid pollSeconds');
-  if (!config.projects || typeof config.projects !== 'object' || Array.isArray(config.projects) || !Object.keys(config.projects).length || Object.values(config.projects).some(value => typeof value !== 'string' || !path.isAbsolute(value))) throw new Error('Projects must map queue IDs to absolute checkout paths');
+  const local = config.projects !== undefined;
+  if (local && (typeof config.projects !== 'object' || Array.isArray(config.projects) || !Object.keys(config.projects).length || Object.values(config.projects).some(value => typeof value !== 'string' || !path.isAbsolute(value)))) throw new Error('Projects must map queue IDs to absolute checkout paths');
   linear ??= createLinearClient();
   queue ??= createClient(config.coordinatorUrl ?? 'http://127.0.0.1:4310', process.env.AGENT_TEAM_TOKEN);
+  // Without local checkouts, manifests come from the coordinator's registry filled by workers.
+  const sources = async () => local ? Object.entries(config.projects).map(([id, checkout]) => [id, () => JSON.parse(readFileSync(path.join(checkout, '.agent-team.json'), 'utf8'))])
+    : (await queue('/projects')).filter(project => project.manifest).map(project => [project.id, () => project.manifest]);
   do {
-    for (const [queueProjectId, checkout] of Object.entries(config.projects)) {
+    let entries = [];
+    try { entries = await sources(); } catch { onError(new Error('Intake project poll failed')); if (once) throw new Error('Intake project poll failed'); }
+    for (const [queueProjectId, read] of entries) {
       if (signal.aborted) return;
       try {
-        const manifest = JSON.parse(readFileSync(path.join(checkout, '.agent-team.json'), 'utf8'));
+        const manifest = read();
         if (manifest.queueProjectId !== queueProjectId) throw new Error('Intake project routing mismatch');
         await pollProject({ manifest, queue, linear, now });
       } catch {

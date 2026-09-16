@@ -166,6 +166,46 @@ test('engine and fetch are optional, validated and retained', () => {
     assert.equal(claim(q, 'w', ['a']).engine, 'claude');
   } finally { q.close(); }
 });
+test('chat jobs run beside builds, skip quarantine, and carry role, issue and message', () => {
+  const q = createQueue(':memory:', { projects });
+  try {
+    for (const invalid of [{ role: 'nobody', issue: 'FUM-1', message: 'x' }, { role: 'team-pm', message: 'x' }, { role: 'team-pm', issue: 'FUM-1', message: '' }, { role: 'team-pm', issue: 'FUM-1', message: 'x', publish: true }, { role: 'team-pm', issue: 'FUM-1', message: 'x', timeoutMinutes: 30 }]) assert.throws(() => q.enqueue({ projectId: 'a', kind: 'chat', ...invalid }));
+    assert.throws(() => q.enqueue({ projectId: 'a', role: 'team-pm' }), /require chat/);
+    const build = q.enqueue({ projectId: 'a', issue: 'FUM-1' });
+    const running = claim(q, 'w', ['a']);
+    assert.equal(running.id, build.id);
+    const chat = q.enqueue({ projectId: 'a', kind: 'chat', role: 'team-pm', issue: 'FUM-10', message: 'Status?' });
+    assert.equal(chat.kind, 'chat'); assert.equal(chat.timeoutMinutes, 5);
+    assert.equal(q.claim({ workerId: 'w', projectIds: ['a'] }), null, 'build slots never take chat');
+    const talking = q.claim({ workerId: 'w', projectIds: ['a'], kinds: ['chat'] });
+    assert.equal(talking.id, chat.id);
+    q.fail(running.id, { ...credentials(running), result: { outcome: 'blocked', summary: 'held' } });
+    const second = q.enqueue({ projectId: 'a', kind: 'chat', role: 'team-dev', issue: 'FUM-10', message: 'While held?' });
+    assert.equal(q.claim({ workerId: 'w', projectIds: ['a'], kinds: ['chat'] }).id, second.id, 'chat is answered even while the project is on hold');
+    assert.throws(() => q.claim({ workerId: 'w', projectIds: ['a'], kinds: ['other'] }));
+    q.complete(talking.id, { ...credentials(talking), result: { outcome: 'ready', summary: 'Reply text' } });
+    assert.equal(q.list().find(j => j.id === chat.id).result.summary, 'Reply text');
+  } finally { q.close(); }
+});
+test('evidence is stored per lease and listed newest first; manifests register per project', () => {
+  const q = createQueue(':memory:', { projects });
+  try {
+    q.enqueue({ projectId: 'a', issue: 'FUM-1' }); const job = claim(q, 'w', ['a']);
+    assert.throws(() => q.evidence(job.id, { ...credentials(job), leaseToken: 'wrong', evidence: {} }), /Lease/);
+    assert.throws(() => q.evidence(job.id, { ...credentials(job), evidence: { big: 'x'.repeat(700_000) } }), /600KB/);
+    q.evidence(job.id, { ...credentials(job), evidence: { run: { id: 'r1', state: 'running' }, steps: [{ text: 'first' }] } });
+    q.evidence(job.id, { ...credentials(job), evidence: { run: { id: 'r1', state: 'ready' }, steps: [{ text: 'second' }] } });
+    assert.deepEqual(q.evidenceFor(job.id).steps, [{ text: 'second' }]);
+    assert.equal(q.evidenceList()[0].jobState, 'running');
+    q.complete(job.id, { ...credentials(job), result: { outcome: 'ready', summary: 'done' } });
+    assert.throws(() => q.evidence(job.id, { ...credentials(job), evidence: {} }), /Lease/);
+    assert.equal(q.evidenceFor(job.id).run.state, 'ready'); assert.equal(q.evidenceList()[0].jobState, 'completed');
+    assert.throws(() => q.evidenceList({ limit: 0 }));
+    assert.throws(() => q.registerProject('unknown', { workerId: 'w', manifest: {} }));
+    q.registerProject('a', { workerId: 'w', manifest: { name: 'A' } });
+    assert.deepEqual(q.projectsList().map(p => [p.id, p.manifest?.name ?? null, p.workerId]), [['a', 'A', 'w'], ['b', null, null]]);
+  } finally { q.close(); }
+});
 test('startup registry requires registered IDs and repository strings', () => {
   for (const registry of [undefined, null, {}, [], { a: {} }, { a: { repository: '' } }, { '../a': { repository: 'repo' } }]) assert.throws(() => validateRegistry(registry));
   assert.doesNotThrow(() => validateRegistry({ myntbase: { repository: 'git@github.com:fumbleforce/stockapp.git' } }));
@@ -194,4 +234,6 @@ test('HTTP auth, JSON limits, lifecycle, clear error status and no token in summ
 test('bind boundaries are loopback or Tailscale IPv4', () => {
   for (const host of ['127.0.0.1', '::1', '100.64.0.1', '100.127.255.255']) assert.ok(validBind(host));
   for (const host of ['0.0.0.0', '192.168.1.1', '100.63.1.1', '100.128.1.1', '100.64.0.999']) assert.equal(validBind(host), false);
+  process.env.AGENT_TEAM_PUBLIC_BIND = '1';
+  try { assert.ok(validBind('0.0.0.0')); assert.equal(validBind('192.168.1.1'), false); } finally { delete process.env.AGENT_TEAM_PUBLIC_BIND; }
 });

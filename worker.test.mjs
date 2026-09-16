@@ -1,10 +1,10 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createQueue } from './queue.mjs';
-import { runWorker, runnerArgs, parseJournal, runProcess, validateConfig, RUNNER_STOP_GRACE_MS } from './worker.mjs';
+import { runWorker, runnerArgs, parseJournal, runProcess, validateConfig, latestWorktree, RUNNER_STOP_GRACE_MS } from './worker.mjs';
 import { parseEnqueueArgs } from './cli.mjs';
 
 const config = { workerId: 'test', concurrency: 2, projects: { a: '/tmp/synthetic-a', b: '/tmp/synthetic-b' } };
@@ -126,6 +126,8 @@ function requestFor(q, observer = () => {}) {
   return async (route, body) => {
     observer(route, body);
     if (route === '/claim') return q.claim(body);
+    const project = /^\/projects\/([^/]+)\/manifest$/.exec(route); if (project) return q.registerProject(project[1], body);
+    if (route.endsWith('/evidence')) return q.evidence(route.split('/')[2], body);
     const [, , id, method] = route.split('/'); return q[method](id, body);
   };
 }
@@ -272,4 +274,41 @@ test('worker gives supervisor time to kill a separately detached TERM-ignoring c
     await execution;
     rmSync(stateDir, { recursive: true, force: true });
   }
+});
+
+test('workers register manifests, stream run evidence from the run directory, and answer chat jobs', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'team-evidence-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const checkout = path.join(root, 'checkout'); const runId = '2026-09-16T09-00-00-000Z-abcdef12';
+  const runDir = path.join(checkout, '.agent-team', 'runs', runId); mkdirSync(runDir, { recursive: true });
+  const worktree = path.join(root, 'worktree'); mkdirSync(worktree);
+  writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ name: 'Synthetic', queueProjectId: 'a', teamId: 'team', ownerInboxIssue: 'FUM-10', ideation: ideaConfig }));
+  const q = createQueue(':memory:', { projects: { a: {}, b: {} } });
+  try {
+    q.enqueue({ projectId: 'a', issue: 'FUM-1' });
+    const cfg = { ...config, projects: { a: checkout, b: '/tmp/synthetic-b' } };
+    await runWorker(cfg, { once: true, request: requestFor(q), evidenceMs: 15, run: async () => {
+      writeFileSync(path.join(checkout, '.agent-team', 'lock.json'), JSON.stringify({ id: runId, pid: 1 }));
+      writeFileSync(path.join(runDir, 'journal.json'), JSON.stringify({ id: runId, state: 'running', engine: 'claude', options: { issue: 'FUM-1' }, worktree, startedAt: '2026-09-16T09:00:00.000Z' }));
+      writeFileSync(path.join(runDir, 'events.jsonl'), [{ type: 'assistant', message: { content: [{ type: 'text', text: 'Working on it.' }, { type: 'tool_use', id: 'toolu_pm', name: 'Agent', input: { subagent_type: 'team-pm', description: 'Claim FUM-1' } }] } },
+        { type: 'assistant', parent_tool_use_id: 'toolu_pm', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: `${worktree}/README.md` } }] } }].map(e => JSON.stringify(e)).join('\n') + '\n');
+      await new Promise(resolve => setTimeout(resolve, 60));
+      writeFileSync(path.join(runDir, 'journal.json'), JSON.stringify({ id: runId, state: 'ready', engine: 'claude', issue: 'FUM-1', worktree, startedAt: '2026-09-16T09:00:00.000Z', finishedAt: '2026-09-16T09:05:00.000Z', summary: 'Delivered' }));
+      rmSync(path.join(checkout, '.agent-team', 'lock.json'));
+      return { code: 0, journal: { outcome: 'ready' } };
+    } });
+    const registry = q.projectsList().find(p => p.id === 'a');
+    assert.equal(registry.manifest.name, 'Synthetic'); assert.equal(registry.workerId, 'test');
+    const evidence = q.evidenceList()[0];
+    assert.equal(evidence.run.state, 'ready'); assert.equal(evidence.run.issue, 'FUM-1'); assert.equal(evidence.steps[0].text, 'Working on it.');
+    assert.equal(latestWorktree(checkout), worktree);
+    const chat = q.enqueue({ projectId: 'a', kind: 'chat', role: 'team-pm', issue: 'FUM-10', message: 'Jeff?' });
+    let answered;
+    await runWorker(cfg, { once: true, request: requestFor(q), linear: () => ({}), chatAnswer: async args => { answered = args; return { reply: 'On it, nothing blocks.' }; } });
+    assert.equal(answered.role, 'team-pm'); assert.equal(answered.issue, 'FUM-10'); assert.equal(answered.cwd, worktree); assert.equal(answered.manifest.name, 'Synthetic');
+    assert.ok(answered.work.some(line => line.includes('FUM-1 run')));
+    assert.deepEqual([q.list().find(j => j.id === chat.id).state, q.list().find(j => j.id === chat.id).result.summary], ['completed', 'On it, nothing blocks.']);
+    q.enqueue({ projectId: 'a', kind: 'chat', role: 'team-dev', issue: 'FUM-10', message: 'x' });
+    await runWorker(cfg, { once: true, request: requestFor(q), linear: () => ({}), chatAnswer: async () => { throw new Error('Claude usage limit reached'); } });
+    assert.match(q.list().at(-1).result.summary, /No reply: Claude usage limit/); assert.equal(q.list().at(-1).state, 'blocked');
+  } finally { q.close(); }
 });

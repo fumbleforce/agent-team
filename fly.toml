@@ -1,0 +1,46 @@
+# Control plane only: coordinator API, Linear intake and dashboard. Workers stay on your own
+# machines and connect outbound. Set secrets before the first deploy:
+#   fly secrets set AGENT_TEAM_TOKEN=... AGENT_TEAM_DASHBOARD_PASSWORD=... LINEAR_API_KEY=...
+app = "agent-team"
+primary_region = "arn"
+
+[build]
+
+[env]
+  AGENT_TEAM_PROJECTS = '{"myntbase":{"repository":"fumbleforce/stockapp"}}'
+
+[mounts]
+  source = "agent_team_data"
+  destination = "/data"
+
+# Dashboard on the app's HTTPS address (basic auth), coordinator API on port 8443 (bearer token).
+[[services]]
+  internal_port = 4311
+  protocol = "tcp"
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  [[services.ports]]
+    port = 443
+    handlers = ["tls", "http"]
+  [[services.ports]]
+    port = 80
+    handlers = ["http"]
+    force_https = true
+  [[services.tcp_checks]]
+    interval = "30s"
+    timeout = "5s"
+
+[[services]]
+  internal_port = 4310
+  protocol = "tcp"
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+  [[services.ports]]
+    port = 8443
+    handlers = ["tls", "http"]
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"

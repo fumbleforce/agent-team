@@ -1,0 +1,7 @@
+.env
+*.local.json
+.agent-team-coordinator/
+.agent-team-worker/
+node_modules/
+.git/
+CLAUDE_HANDOFF.md
