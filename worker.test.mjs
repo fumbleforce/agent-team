@@ -101,6 +101,8 @@ test('CLI auto-merge requires explicit publish and preserves existing enqueue op
 test('engine and fetch route to the runner; worker default engine applies only when the job has none', async () => {
   assert.deepEqual(runnerArgs({ engine: 'claude', base: 'origin/main', fetch: true }, '/tmp/a').slice(1), ['--project', '/tmp/a', '--execute', '--cycles', '1', '--base', 'origin/main', '--engine', 'claude', '--fetch']);
   assert.ok(!runnerArgs({ fetch: false }, '/tmp/a').includes('--fetch'));
+  // Queue views carry null columns for unpinned jobs; null must not become an argument.
+  assert.deepEqual(runnerArgs({ issue: null, engine: null, model: null, kind: 'ideation', proposalLimit: 2 }, '/tmp/a').slice(1), ['--project', '/tmp/a', '--execute', '--cycles', '1', '--ideate', '--proposal-limit', '2']);
   assert.throws(() => validateConfig({ ...config, engine: 'codex' }), /Invalid engine/);
   assert.deepEqual(parseEnqueueArgs('a', ['--engine', 'claude', '--base', 'origin/master', '--fetch']), { projectId: 'a', publish: false, autoMerge: false, engine: 'claude', base: 'origin/master', fetch: true });
   assert.throws(() => parseEnqueueArgs('a', ['--fetch']), /REMOTE\/BRANCH/);

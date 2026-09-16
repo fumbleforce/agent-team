@@ -13,7 +13,7 @@ const runner = fileURLToPath(new URL('./runner.mjs', import.meta.url));
 export function runnerArgs(job, checkout, ideaContext) {
   const args = [runner, '--project', checkout, '--execute', '--cycles', '1'];
   for (const [key, flag] of [['issue', '--issue'], ['base', '--base'], ['engine', '--engine'], ['model', '--model'], ['timeoutMinutes', '--timeout-minutes']]) {
-    if (job[key] !== undefined) args.push(flag, String(job[key]));
+    if (job[key] !== undefined && job[key] !== null) args.push(flag, String(job[key]));
   }
   if (job.fetch === true) args.push('--fetch');
   if (job.publish === true) args.push('--publish');
