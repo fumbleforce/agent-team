@@ -21,7 +21,7 @@ test('engine names are validated', () => {
 test('subscription environment drops API-key, provider and nested-session variables only', () => {
   const env = claudeEnvironment({ ANTHROPIC_API_KEY: 'k', ANTHROPIC_AUTH_TOKEN: 't', ANTHROPIC_BASE_URL: 'u', CLAUDE_CODE_USE_BEDROCK: '1',
     CLAUDECODE: '1', CLAUDE_CODE_SESSION_ID: 's', CLAUDE_PID: '1', CLAUDE_EFFORT: 'high', HOME: '/h', PATH: '/bin', OPENAI_API_KEY: 'keep' });
-  assert.deepEqual(env, { HOME: '/h', PATH: '/bin', OPENAI_API_KEY: 'keep' });
+  assert.deepEqual(env, { HOME: '/h', PATH: '/bin', OPENAI_API_KEY: 'keep', CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS: '0' });
 });
 
 test('auth status must be a first-party claude.ai login and yields no identifying data', () => {

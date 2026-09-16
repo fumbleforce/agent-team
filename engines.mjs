@@ -21,6 +21,9 @@ export function claudeEnvironment(env) {
   for (const key of Object.keys(filtered)) {
     if (/^ANTHROPIC_/.test(key) || /^CLAUDE_CODE_/.test(key) || ['CLAUDECODE', 'CLAUDE_PID', 'CLAUDE_EFFORT'].includes(key)) delete filtered[key];
   }
+  // Print mode otherwise abandons a cycle after 600 s of background subagent work; the runner's
+  // own timeout is the only deadline.
+  filtered.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS = '0';
   return filtered;
 }
 
@@ -54,7 +57,7 @@ export function claudeSystemPrompt({ shared, role, instructions }) {
   const parts = shared.instructions.map(file => fs.readFileSync(file, 'utf8'));
   parts.push(shared.agent[role].prompt);
   if (role === 'team-coordinator') {
-    parts.push(`Engine notes: delegate each role session with the Agent tool using only the subagent names ${Object.keys(claudeAgents(shared)).join(', ')}; never use built-in or other agent types for role work or approvals. Treat "Task tool" in role instructions as the Agent tool. Use each returned agent identifier as that role's sessionId. Linear is available through the linear MCP tools.`);
+    parts.push(`Engine notes: delegate each role session with the Agent tool using only the subagent names ${Object.keys(claudeAgents(shared)).join(', ')}; never use built-in or other agent types for role work or approvals, and never run them in the background: wait for each role to return before continuing. Treat "Task tool" in role instructions as the Agent tool. Use each returned agent identifier as that role's sessionId. Linear is available through the linear MCP tools.`);
   }
   if (instructions.length) {
     parts.push('# Project instructions\n\nThe following files from the assigned worktree are binding project instructions.');

@@ -727,7 +727,7 @@ test('model environment filters app overrides generically and retains model cred
     OPENCODE_CONFIG_CONTENT: '{"agent":{}}' });
   assert.equal(source.E2E_FIKEN_LIVE, '1');
   const claude = modelEnvironment({ ...source, CLAUDECODE: '1' }, null, 'claude');
-  assert.equal(claude.ANTHROPIC_API_KEY, undefined); assert.equal(claude.CLAUDECODE, undefined);
+  assert.equal(claude.ANTHROPIC_API_KEY, undefined); assert.equal(claude.CLAUDECODE, undefined); assert.equal(claude.CLAUDE_CODE_PRINT_BG_WAIT_CEILING_MS, '0');
   assert.equal(claude.OPENCODE_CONFIG_CONTENT, undefined); assert.equal(claude.OPENAI_API_KEY, 'test-token');
 });
 
