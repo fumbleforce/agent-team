@@ -7,6 +7,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { validBind } from './queue.mjs';
 import { createClient } from './worker.mjs';
 import { localToken } from './cli.mjs';
+import { ROSTER } from './roster.mjs';
 
 const UNITS = ['agent-team-coordinator', 'agent-team-worker', 'agent-team-intake'];
 const RUN_ID = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9-]+Z-[a-f0-9]{8}$/;
@@ -33,18 +34,25 @@ function tail(file, bytes = 262144) {
 export function eventSteps(text, limit = 40, worktree = null) {
   const local = value => worktree ? String(value).split(`${worktree}/`).join('') : String(value);
   const steps = []; let usage = null; let engineResult = null; let tokens = 0;
-  const push = (scope, kind, value) => steps.push({ scope, kind, text: clip(local(value), kind === 'text' ? 300 : 200) });
+  // Subagent events carry the Agent call's id; that call named the role, so steps are attributed by member.
+  const handoffs = {}; const members = {};
+  const push = (scope, kind, value, member = null) => {
+    steps.push({ scope, kind, member, text: clip(local(value), kind === 'text' ? 300 : 200) });
+    if (member) members[member] = (members[member] ?? 0) + 1;
+  };
   for (const line of text.split('\n')) {
     let event;
     try { event = JSON.parse(line); } catch { continue; }
     const scope = event.parent_tool_use_id ? 'subagent' : 'coordinator';
+    const member = event.parent_tool_use_id ? handoffs[event.parent_tool_use_id] ?? 'subagent' : null;
     if (event.type === 'assistant') {
       for (const block of event.message?.content ?? []) {
-        if (block.type === 'text' && block.text?.trim()) push(scope, 'text', block.text);
+        if (block.type === 'text' && block.text?.trim()) push(scope, 'text', block.text, member);
         else if (block.type === 'tool_use') {
           const input = block.input ?? {};
+          if (block.name === 'Agent' && typeof input.subagent_type === 'string' && block.id) handoffs[block.id] = input.subagent_type;
           const detail = input.description ?? input.command ?? input.file_path ?? input.pattern ?? input.prompt ?? input.query ?? '';
-          push(scope, 'tool', `${block.name}${input.subagent_type ? ` → ${input.subagent_type}` : ''}${detail ? `: ${detail}` : ''}`);
+          push(scope, 'tool', `${block.name}${input.subagent_type ? ` → ${input.subagent_type}` : ''}${detail ? `: ${detail}` : ''}`, member);
         }
       }
     } else if (event.type === 'rate_limit_event' && event.rate_limit_info) {
@@ -56,10 +64,11 @@ export function eventSteps(text, limit = 40, worktree = null) {
     else if (event.type === 'tool_use' && event.part) {
       const input = event.part.state?.input ?? {};
       const detail = input.description ?? input.command ?? input.filePath ?? input.pattern ?? input.prompt ?? '';
-      push(event.part.tool === 'task' ? 'subagent' : 'coordinator', 'tool', `${event.part.tool}${input.subagent_type ? ` → ${input.subagent_type}` : ''}${detail ? `: ${detail}` : ''}`);
+      push(event.part.tool === 'task' ? 'subagent' : 'coordinator', 'tool', `${event.part.tool}${input.subagent_type ? ` → ${input.subagent_type}` : ''}${detail ? `: ${detail}` : ''}`, event.part.tool === 'task' ? input.subagent_type ?? 'subagent' : null);
     } else if (event.type === 'step_finish' && Number.isFinite(event.part?.tokens?.total)) tokens += event.part.tokens.total;
   }
-  return { steps: steps.slice(-limit), usage, engineResult, tokens };
+  const last = steps.at(-1);
+  return { steps: steps.slice(-limit), usage, engineResult, tokens, members, active: last ? last.member ?? 'team-coordinator' : null };
 }
 
 function readJson(file) { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch { return null; } }
@@ -102,7 +111,7 @@ export function collectState({ dbPath, projects, stateDir, defaultEngine = 'open
       const events = path.join(dir, 'events.jsonl');
       if (run.state === 'running') {
         const parsed = eventSteps(tail(events), 40, run.worktree);
-        live.push({ project, id, issue: run.issue, ideation: run.ideation, engine: run.engine, startedAt: run.startedAt, steps: parsed.steps });
+        live.push({ project, id, issue: run.issue, ideation: run.ideation, engine: run.engine, startedAt: run.startedAt, steps: parsed.steps, members: parsed.members, active: run.ideation ? 'team-ideation' : parsed.active });
         usage = parsed.usage ?? usage;
       } else if (run.engine === 'claude' && !usage) usage = eventSteps(tail(events, 65536), 0).usage;
       if (run.engine === 'opencode') {
@@ -116,6 +125,11 @@ export function collectState({ dbPath, projects, stateDir, defaultEngine = 'open
     }
   }
   runs.sort((a, b) => (b.startedAt ?? '').localeCompare(a.startedAt ?? ''));
+  const team = Object.entries(ROSTER).filter(([role]) => role !== 'team-owner').map(([role, member]) => {
+    const busy = live.find(run => run.active === role || (role === 'team-coordinator' && run.active && !run.ideation && !(run.active in ROSTER)));
+    return { role, name: member.name, title: member.title, working: busy ? { project: busy.project, id: busy.id, issue: busy.issue ?? (busy.ideation ? 'ideas' : 'cycle') } : null,
+      steps: live.reduce((sum, run) => sum + (run.members?.[role] ?? 0), 0) };
+  });
   const quarantined = [...new Set(jobs.filter(job => ['blocked', 'failed'].includes(job.state)).map(job => job.projectId))];
   // One card per configured project plus what the intake would do next for it.
   const overview = Object.keys(projects).map(project => {
@@ -134,7 +148,7 @@ export function collectState({ dbPath, projects, stateDir, defaultEngine = 'open
       delivered: delivered ? { issue: delivered.issue, prUrl: delivered.prUrl, finishedAt: delivered.finishedAt } : null, runs: runs.filter(run => run.project === project).length,
       ideation: ideation ? { batchSize: ideation.batchSize, backlogCap: ideation.backlogCap, cooldownEnds, blockedBy: held.length ? 'held job' : own.some(job => ACTIVE.includes(job.state)) ? 'active job' : cooldownEnds && cooldownEnds > time ? 'cooldown' : null } : null };
   });
-  return { generatedAt: new Date(time).toISOString(), services, overview, jobs, runs, live, usage, openai, quarantined, stateDir, defaultEngine };
+  return { generatedAt: new Date(time).toISOString(), services, overview, team, jobs, runs, live, usage, openai, quarantined, stateDir, defaultEngine };
 }
 
 export function runDetail({ projects, project, id }) {
@@ -170,6 +184,7 @@ h1{font:600 18px/1 var(--sans);margin:0;letter-spacing:-.01em}h1 span{color:var(
 .g .bar{height:4px;background:var(--line);margin:5px 0 3px;position:relative}.g .bar i{position:absolute;inset:0 auto 0 0;background:var(--wait)}.g .bar i.hot{background:var(--run)}.g .bar i.full{background:var(--bad)}.g .n{font:11px var(--mono);color:var(--dim)}
 .meta{font:11.5px var(--mono);color:var(--dim);text-align:right}@media(max-width:900px){header{grid-template-columns:1fr 1fr}.meta{grid-column:1/-1;text-align:left}}
 .flash{margin:12px 0 0;padding:8px 12px;border-left:3px solid var(--wait);background:var(--panel);font-size:13px}.flash.err{border-color:var(--bad)}
+.team{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:14px 0 0}.member{background:var(--panel);border:1px solid var(--line);padding:8px 10px;font-size:12px;color:var(--muted)}.member.busy{border-color:#6b5a2c}.member b{display:block;color:var(--text);font-size:13px}.member small{display:block;font:11px var(--mono);color:var(--dim);margin-bottom:4px}.member.busy span{color:var(--run)}
 .projects{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin:14px 0}
 .card{background:var(--panel);border:1px solid var(--line);padding:10px 12px}.card.hold{border-color:#5a2b2f}.card .top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}.card .top b{font:600 13.5px var(--sans)}
 .card p{margin:2px 0;color:var(--muted);font-size:12.5px}.card p.n{font:11.5px var(--mono);color:var(--dim)}.card form{margin-top:8px;display:flex;gap:6px 10px;flex-wrap:wrap;align-items:center}.why{font:11.5px var(--mono);color:var(--dim)}
@@ -181,7 +196,7 @@ h2{font:600 12px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;col
 .pulse{width:9px;height:9px;border-radius:50%;background:var(--run);animation:breathe 2.2s ease-in-out infinite;flex:none;display:inline-block}@keyframes breathe{0%,100%{box-shadow:0 0 0 0 rgba(229,165,58,.5)}50%{box-shadow:0 0 0 7px rgba(229,165,58,0)}}
 @media(prefers-reduced-motion:reduce){.pulse{animation:none}.ticker{scroll-behavior:auto}}
 .ticker{font:12px/1.5 var(--mono);border-top:1px solid var(--line);padding-top:8px;max-height:380px;overflow-y:auto;scroll-behavior:smooth}.ticker.full{max-height:none}.ticker div{display:grid;grid-template-columns:28px minmax(0,1fr);gap:8px;padding:1px 0}.ticker i{font-style:normal;color:var(--dim);text-align:right}
-.ticker .t{color:var(--text)}.ticker .agent{color:var(--muted)}.ticker .agent::before{content:'↳ '}.ticker .say{color:var(--wait);font-family:var(--sans);font-size:13px}
+.ticker .t{color:var(--text)}.ticker .agent{color:var(--muted)}.ticker .agent::before{content:'↳ '}.ticker b{color:var(--text);font-weight:500}.ticker .say{color:var(--wait);font-family:var(--sans);font-size:13px}
 .empty{color:var(--muted);font-size:13px;padding:8px 0}
 .list{border-top:1px solid var(--line)}.row{display:grid;grid-template-columns:40px minmax(90px,130px) minmax(0,1fr) auto;gap:4px 12px;padding:7px 0;border-bottom:1px solid var(--line);align-items:baseline}
 .row .at{font:11.5px var(--mono);color:var(--dim)}.row .who{font:12.5px var(--mono)}.row .who small{display:block;color:var(--dim);font-size:11px}.row .what{font-size:12.5px;color:var(--muted)}.row .what b{color:var(--text);font-weight:500}.row .what ul{margin:4px 0 0;padding-left:16px}
@@ -192,7 +207,7 @@ pre{background:var(--panel);border:1px solid var(--line);padding:12px;overflow:a
 .crumb{font:12px var(--mono);margin-bottom:12px}`;
 const tag = value => `<span class="st ${escape(value)}">${escape(value)}</span>`;
 const ticker = (steps, id, full = false) => steps.length
-  ? `<div class="ticker ${full ? 'full' : ''}" data-ticker="${escape(id)}">${steps.map((step, index) => `<div><i>${index + 1}</i><span class="${step.kind === 'text' ? 'say' : step.scope === 'subagent' ? 'agent' : 't'}">${escape(step.text)}</span></div>`).join('')}</div>`
+  ? `<div class="ticker ${full ? 'full' : ''}" data-ticker="${escape(id)}">${steps.map((step, index) => `<div><i>${index + 1}</i><span class="${step.kind === 'text' ? 'say' : step.scope === 'subagent' ? 'agent' : 't'}">${step.member ? `<b>${escape(ROSTER[step.member]?.name ?? step.member)}</b> ` : ''}${escape(step.text)}</span></div>`).join('')}</div>`
   : '<p class="empty">Started; waiting for the first model step.</p>';
 const gauge = (name, value, note, kind = 'pct') => `<div class="g"><div class="l"><span>${escape(name)}</span><b>${value === null ? 'no data' : kind === 'pct' ? `${value}% used` : escape(value)}</b></div><div class="bar"><i class="${kind === 'pct' && value >= 95 ? 'full' : kind === 'pct' && value >= 75 ? 'hot' : ''}" style="width:${kind === 'pct' ? (value ?? 0) : 0}%"></i></div><div class="n">${escape(note)}</div></div>`;
 // Live refresh swaps <main> from a fresh render; tickers that were at the bottom glide to the new bottom.
@@ -241,6 +256,7 @@ ${ideas || release ? `<form method="post" action="/actions"><input type="hidden"
   const body = `<header><h1>Agent team <span>x3d</span></h1>${usage}<div class="meta">${escape(when(state.generatedAt))} UTC · live · <a href="/api/state">JSON</a></div></header>
 <div class="units">${units}</div>
 <main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
+<div class="team">${state.team.map(m => `<div class="member ${m.working ? 'busy' : ''}"><b>${escape(m.name)}</b><small>${escape(m.title)}</small><span>${m.working ? `on <a href="/runs/${escape(m.working.project)}/${escape(m.working.id)}">${escape(m.working.issue)}</a>${m.steps ? ` · ${m.steps} steps` : ''}` : 'idle'}</span></div>`).join('')}</div>
 <div class="projects">${cards}</div>
 <div class="cols"><section><h2>Now</h2>${now}</section><section><h2>Upcoming <small>automatic runs in order</small></h2><div class="up">${upcomingHtml}</div></section></div>
 <div class="cols even"><section><h2>Queue <small>jobs asked of the coordinator · ${state.jobs.filter(job => ['queued', 'running'].includes(job.state)).length || 'none'} active</small></h2><div class="list">${jobs || '<p class="empty">No jobs yet.</p>'}</div></section>

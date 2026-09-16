@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import plugin from './opencode-plugin.mjs';
+import { ROSTER } from './roster.mjs';
 
 test('shared roles load preferences and prompts without project-specific configuration', async () => {
   const config = {};
@@ -8,6 +9,7 @@ test('shared roles load preferences and prompts without project-specific configu
   assert.equal(Object.keys(config.agent).length, 8);
   assert.equal(config.command.team.agent, 'team-owner');
   assert.equal(config.agent['team-ideation'].mode, 'primary');
+  for (const [role, member] of Object.entries(ROSTER)) assert.match(config.agent[role].prompt, new RegExp(`You are ${member.name}, the team's ${member.title}`));
   assert.match(config.agent['team-ideation'].prompt, /read-only/);
   for (const agent of Object.values(config.agent)) {
     assert.match(agent.prompt, /Owner preferences/);

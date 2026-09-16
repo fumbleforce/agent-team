@@ -9,7 +9,7 @@ import { collectState, createDashboardServer, eventSteps, loadConfig, renderInde
 const MARKER = '<script>alert("summary")</script>';
 const events = [
   { type: 'system', subtype: 'init' },
-  { type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the manifest first.' }, { type: 'tool_use', name: 'Agent', input: { subagent_type: 'team-pm', description: 'Claim FUM-1', prompt: 'private prompt text' } }] } },
+  { type: 'assistant', message: { content: [{ type: 'text', text: 'Reading the manifest first.' }, { type: 'tool_use', id: 'toolu_1', name: 'Agent', input: { subagent_type: 'team-pm', description: 'Claim FUM-1', prompt: 'private prompt text' } }] } },
   { type: 'assistant', parent_tool_use_id: 'toolu_1', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- x.unit.test.ts' } }] } },
   { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', unifiedWindows: { five_hour: { utilization: 0.15, resetsAt: 1789555200 }, seven_day: { utilization: 0.4, resetsAt: 1790000000 } } } },
   { type: 'result', subtype: 'success', is_error: false, duration_ms: 120000, num_turns: 7 },
@@ -49,10 +49,11 @@ test('event steps summarize coordinator and subagent activity, usage and engine 
   const parsed = eventSteps(events);
   assert.deepEqual(parsed.steps.map(step => [step.scope, step.kind]), [['coordinator', 'text'], ['coordinator', 'tool'], ['subagent', 'tool']]);
   assert.equal(parsed.steps[1].text, 'Agent → team-pm: Claim FUM-1');
+  assert.equal(parsed.steps[2].member, 'team-pm'); assert.equal(parsed.active, 'team-pm'); assert.deepEqual(parsed.members, { 'team-pm': 1 });
   assert.ok(!JSON.stringify(parsed).includes('private prompt text'));
   assert.equal(parsed.usage.fiveHour.utilization, 0.15);
   assert.deepEqual(parsed.engineResult, { subtype: 'success', isError: false, durationMs: 120000, turns: 7 });
-  assert.deepEqual(eventSteps('garbage\n{"type":"x"}\n'), { steps: [], usage: null, engineResult: null, tokens: 0 });
+  assert.deepEqual(eventSteps('garbage\n{"type":"x"}\n'), { steps: [], usage: null, engineResult: null, tokens: 0, members: {}, active: null });
   const oc = eventSteps(opencodeEvents);
   assert.deepEqual(oc.steps.map(step => step.text), ['Claiming FUM-9 now.', 'bash: Typecheck web']); assert.equal(oc.tokens, 25000);
   assert.equal(eventSteps(JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/wt/run-b/src/a.ts' } }] } }), 5, '/wt/run-b').steps[0].text, 'Read: src/a.ts');
@@ -71,6 +72,8 @@ test('state aggregates services, queue, runs, live steps, usage and quarantine w
   assert.equal(state.live.length, 1); assert.equal(state.live[0].steps.length, 3); assert.equal(state.live[0].issue, 'FUM-2');
   assert.equal(state.overview[0].running.issue, 'FUM-2');
   assert.equal(state.usage.sevenDay.utilization, 0.4);
+  const solveig = state.team.find(m => m.role === 'team-pm'); assert.equal(solveig.name, 'Solveig'); assert.equal(solveig.working.issue, 'FUM-2'); assert.equal(solveig.steps, 1);
+  assert.equal(state.team.find(m => m.role === 'team-dev').working, null);
   assert.ok(!JSON.stringify(state).includes(f.leaseToken));
   assert.deepEqual(collectState({ dbPath: path.join(f.root, 'missing.sqlite'), projects: { other: path.join(f.root, 'nowhere') }, systemctl: () => 'unknown' }).jobs, []);
 });
@@ -90,7 +93,7 @@ test('HTTP pages escape content, serve JSON, and reject writes and unknown paths
   const base = `http://127.0.0.1:${server.address().port}`;
   const index = await fetch(base + '/'); const html = await index.text();
   assert.equal(index.status, 200); assert.ok(!html.includes(MARKER)); assert.ok(html.includes('&lt;script&gt;'));
-  assert.ok(html.includes('on hold') && html.includes('15% used') && html.includes('Agent → team-pm') && html.includes('Release and rerun') && html.includes('25k') && html.includes('release the held job first'));
+  assert.ok(html.includes('on hold') && html.includes('15% used') && html.includes('Agent → team-pm') && html.includes('Release and rerun') && html.includes('25k') && html.includes('release the held job first') && html.includes('Solveig') && html.includes('<b>Solveig</b> Bash'));
   const api = await (await fetch(base + '/api/state')).json();
   assert.equal(api.jobs[0].outcome, 'blocked');
   const run = await fetch(base + '/runs/myntbase/2026-09-16T06-00-00-000Z-aaaaaaaa');
@@ -101,7 +104,7 @@ test('HTTP pages escape content, serve JSON, and reject writes and unknown paths
   assert.equal((await fetch(base + '/runs/other/2026-09-16T06-00-00-000Z-aaaaaaaa')).status, 404);
   assert.equal((await fetch(base + '/', { method: 'POST' })).status, 404);
   assert.equal((await fetch(base + '/', { method: 'PUT' })).status, 405);
-  assert.ok(renderIndex({ generatedAt: new Date().toISOString(), services: {}, overview: [], jobs: [], runs: [], live: [], usage: null, openai: { day: 0, week: 0, lastRun: null }, quarantined: [], defaultEngine: 'claude' }).includes('No jobs yet'));
+  assert.ok(renderIndex({ generatedAt: new Date().toISOString(), services: {}, overview: [], team: [], jobs: [], runs: [], live: [], usage: null, openai: { day: 0, week: 0, lastRun: null }, quarantined: [], defaultEngine: 'claude' }).includes('No jobs yet'));
 });
 
 test('configuration resolves the coordinator database and worker projects and validates the bind', t => {
