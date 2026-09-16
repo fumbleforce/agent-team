@@ -102,6 +102,7 @@ pre{background:var(--panel);border:1px solid var(--line);padding:12px;overflow:a
 .crumb{font:12px var(--mono);margin-bottom:12px}
 .mh{grid-template-columns:auto 1fr;align-items:start}.mh .av{width:96px;height:96px;margin:0}.voice{margin:6px 0;color:var(--muted);max-width:70ch}.mh p.n{font:11.5px var(--mono);color:var(--dim);margin:0}
 .chat{background:var(--panel);border:1px solid var(--line);padding:10px 12px;max-height:480px;overflow-y:auto;scroll-behavior:smooth}.msg{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;white-space:pre-wrap}.msg:last-child{border:0}.msg .who{font:11.5px var(--mono);color:var(--dim);margin-bottom:2px;white-space:normal}.msg.owner .who{color:var(--wait)}.msg.failed,.msg.blocked{color:var(--bad)}.msg .av{margin-top:2px}
+.talk{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}.talk select{background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:5px;font:12px var(--mono);border-radius:3px}
 .compose{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.compose textarea,.compose select,.compose input{grid-column:1/-1;background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:8px;font:13px var(--sans);border-radius:3px}.compose select,.compose input{grid-column:auto}.compose button{grid-column:1/-1;justify-self:end}`;
 const avatar = (role, size = 20) => Object.hasOwn(ROSTER, role) ? `<img class="av" src="/portraits/${role}.webp" width="${size}" height="${size}" alt="">` : '';
 const tag = value => `<span class="st ${escape(value)}">${escape(value)}</span>`;
@@ -197,10 +198,42 @@ export function renderMember({ role, state, activity, selected, thread, flash })
 <main><div class="cols"><section><h2>Conversation <small>${escape(selected.issue || 'choose a card')} · ${escape(state.overview.find(p => p.project === selected.project)?.name ?? selected.project ?? '')}</small></h2>
 ${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
 <div class="chat" data-ticker="chat">${bubbles.join('') || `<p class="empty">No messages yet. What you write is posted on ${escape(selected.issue || 'the card')} in Linear by the project's worker; ${escape(member.name)} answers there and here.</p>`}</div>
-${state.overview.length ? `<form method="post" action="/chat" class="compose"><input type="hidden" name="role" value="${escape(role)}"><select name="project">${options}</select><input name="issue" value="${escape(selected.issue ?? '')}" pattern="[A-Z][A-Z0-9]*-[1-9][0-9]*" title="Linear issue, e.g. the owner inbox" required><textarea name="message" rows="3" maxlength="4000" placeholder="Ask ${escape(member.name)} something, or give direction. It lands on the Linear card." required></textarea><button type="submit">Send to ${escape(member.name)}</button></form>` : '<p class="empty">No project is registered yet, so there is nowhere to send a message.</p>'}</section>
+${state.overview.length ? `<div class="talk"><button type="button" id="talk" data-name="${escape(member.name)}">Talk to ${escape(member.name)}</button><select id="talk-lang"><option value="en-US">English</option><option value="nb-NO">Norsk</option></select><span id="talk-state" class="why">hands-free: speak, pause to send, hear the reply</span></div>
+<form method="post" action="/chat" class="compose" id="compose"><input type="hidden" name="role" value="${escape(role)}"><select name="project">${options}</select><input name="issue" value="${escape(selected.issue ?? '')}" pattern="[A-Z][A-Z0-9]*-[1-9][0-9]*" title="Linear issue, e.g. the owner inbox" required><textarea name="message" rows="3" maxlength="4000" placeholder="Ask ${escape(member.name)} something, or give direction. It lands on the Linear card." required></textarea><button type="submit">Send to ${escape(member.name)}</button></form>` : '<p class="empty">No project is registered yet, so there is nowhere to send a message.</p>'}</section>
 <section><h2>Recent work <small>${activity.length} runs</small></h2>${activity.map(item => `<div class="now"><h3><a href="/runs/${escape(item.jobId)}">${escape(item.issue ?? (item.ideation ? 'Proposing ideas' : 'cycle'))}</a> ${tag(item.state)}</h3><div class="sub"><span>${escape(item.project)}</span><span>${escape(when(item.startedAt))}</span><span>${item.count} steps</span>${item.prUrl ? `<span><a href="${escape(item.prUrl)}">${short(item.prUrl)}</a></span>` : ''}</div>${ticker(item.steps, item.jobId, true)}</div>`).join('') || '<p class="empty">No reported steps yet.</p>'}</section></div></main>`;
-  return page(`${member.name} · ${member.title}`, body + (running ? streamScript(running.id, 'chat', 'chat') : ''), 10_000);
+  return page(`${member.name} · ${member.title}`, body + (running ? streamScript(running.id, 'chat', 'chat') : '') + TALK_SCRIPT, 10_000);
 }
+
+// Hands-free voice in the browser: continuous speech recognition, send on a pause, stream the
+// reply and read it aloud. Recognition pauses while speaking so the page does not hear itself.
+const TALK_SCRIPT = `<script>(function(){var btn=document.getElementById('talk');if(!btn)return;var SR=window.SpeechRecognition||window.webkitSpeechRecognition;var state=document.getElementById('talk-state');var lang=document.getElementById('talk-lang');
+try{lang.value=localStorage.getItem('talk-lang')||lang.value}catch(e){}lang.onchange=function(){try{localStorage.setItem('talk-lang',lang.value)}catch(e){}};
+if(!SR||!window.speechSynthesis){btn.disabled=true;state.textContent='this browser has no speech recognition; Chrome, Edge or Safari do';return;}
+var on=false,rec=null,pending='',timer=null,speaking=false,name=btn.dataset.name;
+function say(t){state.textContent=t}
+function speak(text,done){if(!text.trim()){done&&done();return}speaking=true;stop();var u=new SpeechSynthesisUtterance(text);u.lang=lang.value;var v=speechSynthesis.getVoices().find(function(x){return x.lang===lang.value})||speechSynthesis.getVoices().find(function(x){return x.lang.slice(0,2)===lang.value.slice(0,2)});if(v)u.voice=v;u.onend=function(){speaking=false;done&&done()};u.onerror=u.onend;speechSynthesis.speak(u)}
+function stop(){if(rec){rec.onend=null;try{rec.stop()}catch(e){}rec=null}}
+function listen(){if(!on||speaking)return;stop();rec=new SR();rec.lang=lang.value;rec.continuous=true;rec.interimResults=true;
+rec.onresult=function(e){var finalText='';for(var i=e.resultIndex;i<e.results.length;i++){if(e.results[i].isFinal)finalText+=e.results[i][0].transcript;}
+ if(finalText){pending+=(pending?' ':'')+finalText.trim();say('heard: '+pending);clearTimeout(timer);timer=setTimeout(send,1400)}};
+rec.onerror=function(e){if(e.error==='not-allowed'){say('microphone access denied');on=false;btn.textContent='Talk to '+name}};
+rec.onend=function(){if(on&&!speaking)setTimeout(listen,250)};
+try{rec.start();say('listening…')}catch(e){}}
+function send(){var text=pending.trim();pending='';if(!text)return;stop();say('sending…');
+var form=document.getElementById('compose');var body=new URLSearchParams({role:form.role.value,project:form.project.value,issue:form.issue.value,message:text});
+fetch('/chat',{method:'POST',headers:{'content-type':'application/x-www-form-urlencoded',accept:'application/json'},body:body.toString()}).then(function(r){return r.json()}).then(function(d){
+ if(d.error){speak(d.error,listen);return}var chat=document.querySelector('[data-ticker="chat"]');if(chat){var you=document.createElement('div');you.className='msg owner';you.innerHTML='<div><div class="who">You</div>'+esc(text)+'</div>';chat.appendChild(you);chat.scrollTop=chat.scrollHeight}
+ if(!d.online){speak(name+' will answer when a worker is online.',listen);return}say(name+' is thinking…');follow(d.jobId)}).catch(function(){say('could not send');listen()})}
+function follow(jobId){var es=new EventSource('/runs/'+jobId+'/stream');var buf='',full='',chat=document.querySelector('[data-ticker="chat"]'),bubble=null,queue=[],busy=false;
+ function drain(){if(busy||!queue.length)return;busy=true;var next=queue.shift();speak(next,function(){busy=false;drain()})}
+ es.addEventListener('steps',function(e){JSON.parse(e.data).steps.forEach(function(s){if(s.kind!=='delta')return;buf+=s.text;full+=s.text;
+  if(!bubble&&chat){bubble=document.createElement('div');bubble.className='msg member';bubble.innerHTML='<div><div class="who">'+esc(name)+'</div><div></div></div>';chat.appendChild(bubble)}if(bubble){bubble.lastChild.lastChild.textContent=full;chat.scrollTop=chat.scrollHeight}
+  var m=buf.match(/^[\s\S]*?[.!?](\s|$)/);if(m){queue.push(m[0]);buf=buf.slice(m[0].length);drain()}})});
+ es.addEventListener('done',function(){es.close();if(buf.trim())queue.push(buf);buf='';if(!full)queue.push(name+' did not answer.');var wait=setInterval(function(){if(!busy&&!queue.length){clearInterval(wait);say('listening…');listen()}else drain()},300)});
+ es.onerror=function(){es.close();listen()}}
+function esc(v){return String(v).replace(/[&<>"']/g,function(c){return{'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]})}
+btn.onclick=function(){on=!on;btn.textContent=on?'Stop talking':'Talk to '+name;if(on){speechSynthesis.getVoices();listen()}else{stop();speechSynthesis.cancel();say('off')}};
+})();</script>`;
 
 function memberActivity(state, role) {
   return state.runs.map(run => {
@@ -238,11 +271,13 @@ export function createDashboardServer(config) {
         if (url.pathname === '/chat') {
           const role = form.get('role'); const issue = (form.get('issue') || project?.inbox || '').trim();
           const back = text => { res.writeHead(303, { location: `/team/${encodeURIComponent(role ?? '')}?project=${encodeURIComponent(project?.project ?? '')}&issue=${encodeURIComponent(issue)}&${text.error ? 'error' : 'ok'}=${encodeURIComponent(text.text)}` }); res.end(); };
-          if (!Object.hasOwn(ROSTER, role) || !project) return back({ error: true, text: 'Choose a team member and a project.' });
+          const wantsJson = (req.headers.accept ?? '').includes('application/json');
+          if (!Object.hasOwn(ROSTER, role) || !project) return wantsJson ? reply(400, 'application/json', JSON.stringify({ error: 'Choose a team member and a project.' })) : back({ error: true, text: 'Choose a team member and a project.' });
           try {
-            await request('/jobs', { projectId: project.project, kind: 'chat', role, issue, message: form.get('message') ?? '' });
-            return back({ text: project.online ? `Sent to ${ROSTER[role].name} on ${issue}.` : `Queued for ${ROSTER[role].name} on ${issue}; it is delivered when a worker for ${project.name} is online.` });
-          } catch (error) { return back({ error: true, text: `Not sent: ${error.message}` }); }
+            const job = await request('/jobs', { projectId: project.project, kind: 'chat', role, issue, message: form.get('message') ?? '' });
+            const text = project.online ? `Sent to ${ROSTER[role].name} on ${issue}.` : `Queued for ${ROSTER[role].name} on ${issue}; it is delivered when a worker for ${project.name} is online.`;
+            return wantsJson ? reply(200, 'application/json', JSON.stringify({ jobId: job.id, text, online: project.online })) : back({ text });
+          } catch (error) { return wantsJson ? reply(400, 'application/json', JSON.stringify({ error: `Not sent: ${error.message}` })) : back({ error: true, text: `Not sent: ${error.message}` }); }
         }
         const back = flash => { res.writeHead(303, { location: `/?${flash.error ? 'error' : 'ok'}=${encodeURIComponent(flash.text)}` }); res.end(); };
         if (!project) return back({ error: true, text: 'Unknown project.' });

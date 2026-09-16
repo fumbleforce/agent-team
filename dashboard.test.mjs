@@ -88,6 +88,10 @@ test('member pages show the conversation as chat jobs and queue new messages', a
   assert.equal(response.status, 303); assert.match(decodeURIComponent(response.headers.get('location')), /Sent to Gandalf on FUM-10/);
   const queued = f.q.list().find(job => job.kind === 'chat' && job.role === 'team-dev');
   assert.equal(queued.state, 'queued'); assert.equal(queued.message, 'Gandalf?');
+  const asJson = await fetch(base + '/chat', { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin', accept: 'application/json' }, body: new URLSearchParams({ role: 'team-ux', project: 'myntbase', issue: 'FUM-10', message: 'Rams, voice test' }).toString() });
+  const spoken = await asJson.json();
+  assert.equal(asJson.status, 200); assert.ok(/^[a-f0-9-]{36}$/.test(spoken.jobId)); assert.equal(spoken.online, true);
+  assert.ok(page.includes('id="talk"') && page.includes('nb-NO'));
   const bad = await fetch(base + '/chat', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, body: 'role=team-dev&project=myntbase&issue=nope&message=x' });
   assert.match(decodeURIComponent(bad.headers.get('location')), /Not sent/);
 });
