@@ -6,11 +6,11 @@
   "description": "Shared OpenCode/Claude Code delivery teams with a durable multi-project queue and Tailscale-accessible workers",
   "engines": { "node": ">=22.21.1" },
   "scripts": {
-    "test": "node --test runner.test.mjs queue.test.mjs worker.test.mjs opencode-plugin.test.mjs delivery.test.mjs install-local.test.mjs engines.test.mjs linear-api.test.mjs linear-intake.test.mjs configure-linear.test.mjs dashboard.test.mjs",
+    "test": "node --test runner.test.mjs queue.test.mjs worker.test.mjs opencode-plugin.test.mjs delivery.test.mjs install-local.test.mjs engines.test.mjs linear-api.test.mjs linear-intake.test.mjs configure-linear.test.mjs dashboard.test.mjs chat.test.mjs",
     "coordinator": "node queue.mjs --config coordinator.example.json",
     "worker": "node worker.mjs --config worker.example.json",
     "intake": "node linear-intake.mjs --config intake.example.json",
     "dashboard": "node dashboard.mjs --config dashboard.example.json",
-    "check": "node --check runner.mjs && node --check queue.mjs && node --check worker.mjs && node --check cli.mjs && node --check delivery.mjs && node --check install-local.mjs && node --check opencode-plugin.mjs && node --check engines.mjs && node --check git-base.mjs && node --check idea-schema.mjs && node --check linear-api.mjs && node --check linear-intake.mjs && node --check configure-linear.mjs && node --check dashboard.mjs && node --check roster.mjs && node --check portraits.mjs"
+    "check": "node --check runner.mjs && node --check queue.mjs && node --check worker.mjs && node --check cli.mjs && node --check delivery.mjs && node --check install-local.mjs && node --check opencode-plugin.mjs && node --check engines.mjs && node --check git-base.mjs && node --check idea-schema.mjs && node --check linear-api.mjs && node --check linear-intake.mjs && node --check configure-linear.mjs && node --check dashboard.mjs && node --check roster.mjs && node --check portraits.mjs && node --check chat.mjs"
   }
 }

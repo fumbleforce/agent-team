@@ -118,7 +118,8 @@ test('configuration resolves the coordinator database and worker projects and va
   writeFileSync(path.join(dir, 'worker.json'), JSON.stringify({ workerId: 'x3d', projects: f.projects, stateDir: '/tmp/state' }));
   writeFileSync(path.join(dir, 'dashboard.json'), JSON.stringify({ port: 4311, coordinator: path.join(dir, 'coordinator.json'), worker: path.join(dir, 'worker.json') }));
   const config = loadConfig(path.join(dir, 'dashboard.json'));
-  assert.deepEqual({ ...config, token: undefined }, { host: '127.0.0.1', port: 4311, db: f.dbPath, projects: f.projects, stateDir: '/tmp/state', defaultEngine: 'opencode', coordinatorUrl: 'http://127.0.0.1:4310', token: undefined, base: {} });
+  assert.deepEqual({ ...config, token: undefined, chat: undefined }, { host: '127.0.0.1', port: 4311, db: f.dbPath, projects: f.projects, stateDir: '/tmp/state', defaultEngine: 'opencode', coordinatorUrl: 'http://127.0.0.1:4310', token: undefined, base: {}, chat: undefined });
+  assert.equal(config.chat.dbPath, '/tmp/state/dashboard.sqlite'); assert.equal(config.chat.linear, null);
   writeFileSync(path.join(dir, 'dashboard.json'), JSON.stringify({ host: '0.0.0.0', coordinator: path.join(dir, 'coordinator.json'), worker: path.join(dir, 'worker.json') }));
   assert.throws(() => loadConfig(path.join(dir, 'dashboard.json')), /loopback or Tailscale/);
 });
@@ -142,4 +143,25 @@ test('actions queue ideation or requeue a held job only from the page itself', a
   assert.deepEqual(calls, [[`/jobs/${held.id}/requeue`, {}]]);
   const page = await (await fetch(base + '/?ok=Queued%20ideation')).text();
   assert.ok(page.includes('class="flash "') && page.includes('Queued ideation'));
+});
+
+test('member pages show work and history; chat posts through the conversation pipeline', async t => {
+  const f = fixture(t); const calls = [];
+  const converse = async args => { calls.push(args); return { outgoing: 'a', replyId: 'b' }; };
+  const server = createDashboardServer({ db: f.dbPath, projects: f.projects, systemctl: f.systemctl, chat: { dbPath: ':memory:', runDir: path.join(f.root, 'chat'), linear: {} }, converse });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  const page = await (await fetch(base + '/team/team-pm')).text();
+  assert.ok(page.includes('Jeff') && page.includes('Relentless customer focus') && page.includes('Working on') && page.includes('FUM-2') && page.includes('Send to Jeff'));
+  assert.equal((await fetch(base + '/team/team-nobody')).status, 404);
+  const response = await fetch(base + '/chat', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, body: new URLSearchParams({ role: 'team-pm', project: 'myntbase', issue: 'FUM-10', message: 'Status?' }).toString() });
+  assert.equal(response.status, 303); assert.match(decodeURIComponent(response.headers.get('location')), /Sent to Jeff on FUM-10/);
+  assert.equal(calls.length, 1); assert.equal(calls[0].issue, 'FUM-10'); assert.equal(calls[0].message, 'Status?'); assert.equal(calls[0].cwd, '/wt/run-b'.startsWith('/wt') ? calls[0].cwd : null);
+  assert.ok(calls[0].work.some(line => line.includes('FUM-2')));
+  const disabled = createDashboardServer({ db: f.dbPath, projects: f.projects, systemctl: f.systemctl, chat: { dbPath: ':memory:', runDir: path.join(f.root, 'chat'), linear: null } });
+  await new Promise(resolve => disabled.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => disabled.close(resolve)));
+  const off = await fetch(`http://127.0.0.1:${disabled.address().port}/chat`, { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, body: 'role=team-pm&project=myntbase&message=x' });
+  assert.match(decodeURIComponent(off.headers.get('location')), /needs the Linear key/);
+  assert.ok((await (await fetch(`http://127.0.0.1:${disabled.address().port}/team/team-dev`)).text()).includes('configure-linear.mjs'));
 });

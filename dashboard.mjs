@@ -8,6 +8,8 @@ import { validBind } from './queue.mjs';
 import { createClient } from './worker.mjs';
 import { localToken } from './cli.mjs';
 import { ROSTER } from './roster.mjs';
+import { converse, openConversations } from './chat.mjs';
+import { createLinearClient } from './linear-api.mjs';
 
 const PORTRAITS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'portraits');
 
@@ -163,6 +165,25 @@ export function runDetail({ projects, project, id }) {
   return { run, summary, steps: parsed.steps, usage: parsed.usage, engineResult: parsed.engineResult, tokens: parsed.tokens, stderr: tail(path.join(dir, 'stderr.log'), 8192) };
 }
 
+// A member's recent steps across the latest runs, newest run first; used by the member page and as chat context.
+export function memberActivity({ projects, role, runLimit = 8 }) {
+  const activity = [];
+  for (const [project, checkout] of Object.entries(projects)) {
+    const runsDir = path.join(checkout, '.agent-team', 'runs');
+    let ids = [];
+    try { ids = fs.readdirSync(runsDir).filter(id => RUN_ID.test(id)).sort().reverse(); } catch { continue; }
+    for (const id of ids.slice(0, runLimit)) {
+      const dir = path.join(runsDir, id);
+      const run = runSummary(project, dir, id);
+      const parsed = eventSteps(tail(path.join(dir, 'events.jsonl'), 1048576), 400, run.worktree);
+      const mine = parsed.steps.filter(step => role === 'team-coordinator' ? !step.member : step.member === role);
+      if (role === 'team-ideation' ? run.ideation : mine.length) activity.push({ run, steps: (role === 'team-ideation' ? parsed.steps : mine).slice(-12), count: role === 'team-ideation' ? parsed.steps.length : mine.length });
+    }
+  }
+  activity.sort((a, b) => (b.run.startedAt ?? '').localeCompare(a.run.startedAt ?? ''));
+  return activity;
+}
+
 function defaultSystemctl(unit) {
   const result = spawnSync('systemctl', ['--user', 'is-active', `${unit}.service`], { encoding: 'utf8', timeout: 5000 });
   return result.error ? 'unknown' : (result.stdout.trim() || 'unknown');
@@ -186,7 +207,7 @@ h1{font:600 18px/1 var(--sans);margin:0;letter-spacing:-.01em}h1 span{color:var(
 .g .bar{height:4px;background:var(--line);margin:5px 0 3px;position:relative}.g .bar i{position:absolute;inset:0 auto 0 0;background:var(--wait)}.g .bar i.hot{background:var(--run)}.g .bar i.full{background:var(--bad)}.g .n{font:11px var(--mono);color:var(--dim)}
 .meta{font:11.5px var(--mono);color:var(--dim);text-align:right}@media(max-width:900px){header{grid-template-columns:1fr 1fr}.meta{grid-column:1/-1;text-align:left}}
 .flash{margin:12px 0 0;padding:8px 12px;border-left:3px solid var(--wait);background:var(--panel);font-size:13px}.flash.err{border-color:var(--bad)}
-.team{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:14px 0 0}.member{background:var(--panel);border:1px solid var(--line);padding:8px 10px;font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center}.av{border-radius:50%;object-fit:cover;flex:none;vertical-align:-3px;margin-right:5px;background:var(--panel-2)}.member .av{margin:0;width:44px;height:44px}.member.busy{border-color:#6b5a2c}.member b{display:block;color:var(--text);font-size:13px}.member small{display:block;font:11px var(--mono);color:var(--dim);margin-bottom:4px}.member.busy span{color:var(--run)}
+.team{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:14px 0 0}.member,.member:hover{text-decoration:none;color:var(--muted)}.member{background:var(--panel);border:1px solid var(--line);padding:8px 10px;font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center}.av{border-radius:50%;object-fit:cover;flex:none;vertical-align:-3px;margin-right:5px;background:var(--panel-2)}.member .av{margin:0;width:44px;height:44px}.member.busy{border-color:#6b5a2c}.member b{display:block;color:var(--text);font-size:13px}.member small{display:block;font:11px var(--mono);color:var(--dim);margin-bottom:4px}.member.busy span{color:var(--run)}
 .projects{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin:14px 0}
 .card{background:var(--panel);border:1px solid var(--line);padding:10px 12px}.card.hold{border-color:#5a2b2f}.card .top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}.card .top b{font:600 13.5px var(--sans)}
 .card p{margin:2px 0;color:var(--muted);font-size:12.5px}.card p.n{font:11.5px var(--mono);color:var(--dim)}.card form{margin-top:8px;display:flex;gap:6px 10px;flex-wrap:wrap;align-items:center}.why{font:11.5px var(--mono);color:var(--dim)}
@@ -206,7 +227,10 @@ h2{font:600 12px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;col
 .st.ready,.st.completed,.st.merged,.st.active{color:var(--ok)}.st.running{color:var(--run)}.st.queued{color:var(--wait)}.st.blocked,.st.failed,.st.on\\ hold{color:var(--bad)}
 .up{background:var(--panel);border:1px solid var(--line);padding:8px 12px}.up .item{display:grid;grid-template-columns:24px minmax(0,1fr);gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px}.up .item:last-child{border:0}.up i{font-style:normal;color:var(--dim);font:11.5px var(--mono);text-align:right}.up small{display:block;color:var(--dim);font:11px var(--mono)}
 pre{background:var(--panel);border:1px solid var(--line);padding:12px;overflow:auto;font:12px/1.5 var(--mono);white-space:pre-wrap;color:var(--muted)}
-.crumb{font:12px var(--mono);margin-bottom:12px}`;
+.crumb{font:12px var(--mono);margin-bottom:12px}
+.mh{grid-template-columns:auto 1fr;align-items:start}.mh .av{width:96px;height:96px;margin:0}.voice{margin:6px 0;color:var(--muted);max-width:70ch}.mh p.n{font:11.5px var(--mono);color:var(--dim);margin:0}
+.chat{background:var(--panel);border:1px solid var(--line);padding:10px 12px;max-height:480px;overflow-y:auto;scroll-behavior:smooth}.msg{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px}.msg:last-child{border:0}.msg .who{font:11.5px var(--mono);color:var(--dim);margin-bottom:2px}.msg.owner .who{color:var(--wait)}.msg.failed{color:var(--bad)}.msg .av{margin-top:2px}
+.compose{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.compose textarea,.compose select,.compose input{grid-column:1/-1;background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:8px;font:13px var(--sans);border-radius:3px}.compose select,.compose input{grid-column:auto}.compose button{grid-column:1/-1;justify-self:end}`;
 const avatar = (role, size = 20) => Object.hasOwn(ROSTER, role) ? `<img class="av" src="/portraits/${role}.webp" width="${size}" height="${size}" alt="">` : '';
 const tag = value => `<span class="st ${escape(value)}">${escape(value)}</span>`;
 const ticker = (steps, id, full = false) => steps.length
@@ -237,7 +261,7 @@ export function renderIndex(state, flash = null) {
     const release = p.held.length ? `<button type="submit" name="action" value="requeue" title="Rerun the held job after you have inspected it">Release and rerun</button>` : '';
     return `<div class="card ${p.status === 'on hold' ? 'hold' : ''}"><div class="top"><b>${escape(p.name)}</b>${tag(p.status)}</div>
 <p>${p.running ? `${p.running.issue ? 'Building' : 'Running'} <a href="/runs/${escape(p.project)}/${escape(p.running.id)}">${escape(p.running.issue ?? (p.running.ideation ? 'ideation' : 'unpinned cycle'))}</a> · ${minutes(p.running.startedAt)} min` : p.status === 'on hold' ? `${p.held.length} job${p.held.length === 1 ? '' : 's'} on hold: ${escape(p.held[0].summary || p.held[0].issue || 'inspect the run')}` : p.queued.length ? `${p.queued.length} queued: ${escape(p.queued.map(job => job.issue ?? 'ideas').join(', '))}` : 'Idle, waiting for approved work'}</p>
-<p class="n">${p.delivered ? `shipped ${escape(p.delivered.issue ?? 'run')} ${p.delivered.prUrl ? `<a href="${escape(p.delivered.prUrl)}">${short(p.delivered.prUrl)}</a>` : ''} ${escape(when(p.delivered.finishedAt))}` : 'nothing shipped yet'} · ${p.runs} runs</p>
+<p class="n"><a href="/team/team-pm?project=${escape(p.project)}">Message the team</a> · ${p.delivered ? `shipped ${escape(p.delivered.issue ?? 'run')} ${p.delivered.prUrl ? `<a href="${escape(p.delivered.prUrl)}">${short(p.delivered.prUrl)}</a>` : ''} ${escape(when(p.delivered.finishedAt))}` : 'nothing shipped yet'} · ${p.runs} runs</p>
 ${ideas || release ? `<form method="post" action="/actions"><input type="hidden" name="project" value="${escape(p.project)}">${p.held[0] ? `<input type="hidden" name="job" value="${escape(p.held[0].id)}">` : ''}${ideas}${release}</form>` : ''}</div>`;
   }).join('') || '<p class="empty">No projects are mapped in worker.json.</p>';
   const now = state.live.length ? state.live.map(run => `<div class="now"><h3><span class="pulse"></span><a href="/runs/${escape(run.project)}/${escape(run.id)}">${escape(run.issue ?? (run.ideation ? 'Proposing ideas' : 'Unpinned cycle'))}</a></h3>
@@ -259,7 +283,7 @@ ${ideas || release ? `<form method="post" action="/actions"><input type="hidden"
   const body = `<header><h1>Agent team <span>x3d</span></h1>${usage}<div class="meta">${escape(when(state.generatedAt))} UTC · live · <a href="/api/state">JSON</a></div></header>
 <div class="units">${units}</div>
 <main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
-<div class="team">${state.team.map(m => `<div class="member ${m.working ? 'busy' : ''}">${avatar(m.role, 44)}<div><b>${escape(m.name)}</b><small>${escape(m.title)}</small><span>${m.working ? `on <a href="/runs/${escape(m.working.project)}/${escape(m.working.id)}">${escape(m.working.issue)}</a>${m.steps ? ` · ${m.steps} steps` : ''}` : 'idle'}</span></div></div>`).join('')}</div>
+<div class="team">${state.team.map(m => `<a class="member ${m.working ? 'busy' : ''}" href="/team/${escape(m.role)}">${avatar(m.role, 44)}<div><b>${escape(m.name)}</b><small>${escape(m.title)}</small><span>${m.working ? `on <a href="/runs/${escape(m.working.project)}/${escape(m.working.id)}">${escape(m.working.issue)}</a>${m.steps ? ` · ${m.steps} steps` : ''}` : 'idle'}</span></div></a>`).join('')}</div>
 <div class="projects">${cards}</div>
 <div class="cols"><section><h2>Now</h2>${now}</section><section><h2>Upcoming <small>automatic runs in order</small></h2><div class="up">${upcomingHtml}</div></section></div>
 <div class="cols even"><section><h2>Queue <small>jobs asked of the coordinator · ${state.jobs.filter(job => ['queued', 'running'].includes(job.state)).length || 'none'} active</small></h2><div class="list">${jobs || '<p class="empty">No jobs yet.</p>'}</div></section>
@@ -278,6 +302,21 @@ export function renderRun(detail) {
 <section><h2>Summary</h2><pre>${escape(detail.summary || 'Not written yet.')}</pre></section>
 ${detail.stderr.trim() ? `<section><h2>Errors and warnings</h2><pre>${escape(detail.stderr)}</pre></section>` : ''}</main>`;
   return page(`${run.issue ?? 'run'} · ${run.id}`, body, run.state === 'running' ? 10_000 : 0);
+}
+
+export function renderMember({ role, state, activity, projects, manifests, selected, thread, flash, chatEnabled }) {
+  const member = ROSTER[role];
+  const working = state.team.find(m => m.role === role)?.working ?? null;
+  const options = Object.keys(projects).map(project => `<option value="${escape(project)}" ${project === selected.project ? 'selected' : ''}>${escape(manifests[project]?.name ?? project)}</option>`).join('');
+  const bubbles = thread.map(m => `<div class="msg ${m.direction} ${m.status}">${m.direction === 'member' ? avatar(role, 22) : ''}<div><div class="who">${m.direction === 'owner' ? 'You' : escape(member.name)} <span>${escape(when(new Date(m.createdAt).toISOString()))}</span>${m.status === 'thinking' ? ' <span class="pulse"></span> thinking' : m.status === 'failed' ? ' · failed' : m.status === 'posting' ? ' · posting' : ''}</div>${escape(m.body || (m.status === 'thinking' ? '…' : ''))}</div></div>`).join('');
+  const body = `<div class="crumb"><a href="/">← Agent team</a></div>
+<header class="mh">${avatar(role, 96)}<div><h1>${escape(member.name)} <span>${escape(member.title)}</span></h1><p class="voice">${escape(member.voice)}</p><p class="n">${working ? `Working on <a href="/runs/${escape(working.project)}/${escape(working.id)}">${escape(working.issue)}</a> in ${escape(working.project)}` : 'Idle right now'}</p></div></header>
+<main><div class="cols"><section><h2>Conversation <small>${escape(selected.issue)} · ${escape(manifests[selected.project]?.name ?? selected.project)}</small></h2>
+${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
+<div class="chat" data-ticker="chat">${bubbles || `<p class="empty">No messages yet. What you write is posted on ${escape(selected.issue)} in Linear; ${escape(member.name)} answers there and here.</p>`}</div>
+${chatEnabled ? `<form method="post" action="/chat" class="compose"><input type="hidden" name="role" value="${escape(role)}"><select name="project">${options}</select><input name="issue" value="${escape(selected.issue)}" pattern="[A-Z][A-Z0-9]*-[1-9][0-9]*" title="Linear issue, e.g. the owner inbox"><textarea name="message" rows="3" maxlength="4000" placeholder="Ask ${escape(member.name)} something, or give direction. It lands on the Linear card." required></textarea><button type="submit">Send to ${escape(member.name)}</button></form>` : '<p class="empty">Chat needs the Linear key on the dashboard service: run configure-linear.mjs --install and restart the dashboard.</p>'}</section>
+<section><h2>Recent work <small>${activity.length} runs</small></h2>${activity.map(item => `<div class="now"><h3><a href="/runs/${escape(item.run.project)}/${escape(item.run.id)}">${escape(item.run.issue ?? (item.run.ideation ? 'Proposing ideas' : 'cycle'))}</a> ${tag(item.run.state)}</h3><div class="sub"><span>${escape(item.run.project)}</span><span>${escape(when(item.run.startedAt))}</span><span>${item.count} steps</span>${item.run.prUrl ? `<span><a href="${escape(item.run.prUrl)}">${short(item.run.prUrl)}</a></span>` : ''}</div>${ticker(item.steps, item.run.id, true)}</div>`).join('') || '<p class="empty">No recorded steps yet.</p>'}</section></div></main>`;
+  return page(`${member.name} · ${member.title}`, body, 10_000);
 }
 
 // Actions are the two operator commands the CLI also offers; the browser must be same-origin.
@@ -302,6 +341,15 @@ async function performAction({ form, config, state }) {
 
 export function createDashboardServer(config) {
   const projects = config.projects;
+  const manifests = Object.fromEntries(Object.entries(projects).map(([project, checkout]) => [project, readJson(path.join(checkout, '.agent-team.json')) ?? {}]));
+  const store = config.chat?.dbPath ? openConversations(config.chat.dbPath) : null;
+  const chatEnabled = Boolean(store && config.chat?.linear);
+  const latestWorktree = project => {
+    const runsDir = path.join(projects[project], '.agent-team', 'runs');
+    let ids = []; try { ids = fs.readdirSync(runsDir).filter(id => RUN_ID.test(id)).sort().reverse(); } catch { return null; }
+    for (const id of ids) { const worktree = readJson(path.join(runsDir, id, 'journal.json'))?.worktree; if (worktree && fs.existsSync(worktree)) return worktree; }
+    return null;
+  };
   const state = () => collectState({ dbPath: config.db, projects, stateDir: config.stateDir, defaultEngine: config.defaultEngine, systemctl: config.systemctl });
   const sameOrigin = req => { const site = req.headers['sec-fetch-site']; const origin = req.headers.origin; return site ? ['same-origin', 'none'].includes(site) : !origin || origin === `http://${req.headers.host}`; };
   return createServer(async (req, res) => {
@@ -309,11 +357,26 @@ export function createDashboardServer(config) {
     try {
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'POST') {
-        if (url.pathname !== '/actions') return reply(404, 'text/plain', 'Not found');
+        if (!['/actions', '/chat'].includes(url.pathname)) return reply(404, 'text/plain', 'Not found');
         if (!sameOrigin(req)) { req.resume(); return reply(403, 'text/plain', 'Actions are accepted from the dashboard page only'); }
         let size = 0; const chunks = [];
-        for await (const chunk of req) { size += chunk.length; if (size > 4096) return reply(413, 'text/plain', 'Too large'); chunks.push(chunk); }
+        for await (const chunk of req) { size += chunk.length; if (size > 16384) return reply(413, 'text/plain', 'Too large'); chunks.push(chunk); }
         const form = new URLSearchParams(Buffer.concat(chunks).toString());
+        if (url.pathname === '/chat') {
+          const role = form.get('role'); const project = form.get('project'); const issue = (form.get('issue') || manifests[project]?.ownerInboxIssue || '').trim();
+          const back = text => { res.writeHead(303, { location: `/team/${encodeURIComponent(role ?? '')}?project=${encodeURIComponent(project ?? '')}&issue=${encodeURIComponent(issue)}&${text.error ? 'error' : 'ok'}=${encodeURIComponent(text.text)}` }); res.end(); };
+          if (!Object.hasOwn(ROSTER, role) || !Object.hasOwn(projects, project)) return back({ error: true, text: 'Choose a team member and a project.' });
+          if (!chatEnabled) return back({ error: true, text: 'Chat needs the Linear key on the dashboard service.' });
+          const work = memberActivity({ projects: { [project]: projects[project] }, role, runLimit: 6 }).flatMap(item => item.steps.slice(-3).map(step => `${item.run.issue ?? 'ideation'}: ${step.text}`)).slice(0, 12);
+          const cwd = latestWorktree(project) ?? projects[project];
+          try {
+            // The reply arrives asynchronously; the page polls the local thread for it.
+            const started = (config.converse ?? converse)({ store, linear: config.chat.linear, manifest: manifests[project], project, role, issue, message: form.get('message'), cwd, work, runDir: config.chat.runDir });
+            started.then(result => { if (result?.error) console.error(`chat reply failed: ${result.error}`); }).catch(error => console.error(error.message));
+            await Promise.race([started, new Promise(resolve => setTimeout(resolve, 300))]);
+          } catch (error) { return back({ error: true, text: error.message }); }
+          return back({ text: `Sent to ${ROSTER[role].name} on ${issue}.` });
+        }
         let flash;
         try { flash = await performAction({ form, config, state: state() }); } catch (error) { flash = { error: true, text: `The coordinator refused: ${error.message}` }; }
         res.writeHead(303, { location: `/?${flash.error ? 'error' : 'ok'}=${encodeURIComponent(flash.text)}` }); return res.end();
@@ -324,6 +387,16 @@ export function createDashboardServer(config) {
         return reply(200, 'text/html; charset=utf-8', renderIndex(state(), flash));
       }
       if (url.pathname === '/api/state') return reply(200, 'application/json', JSON.stringify(state()));
+      const memberMatch = /^\/team\/(team-[a-z]+)$/.exec(url.pathname);
+      if (memberMatch) {
+        const role = memberMatch[1];
+        if (!Object.hasOwn(ROSTER, role)) return reply(404, 'text/plain', 'Not found');
+        const project = Object.hasOwn(projects, url.searchParams.get('project')) ? url.searchParams.get('project') : Object.keys(projects)[0];
+        const issue = url.searchParams.get('issue') || manifests[project]?.ownerInboxIssue || '';
+        const flash = url.searchParams.has('ok') ? { text: url.searchParams.get('ok') } : url.searchParams.has('error') ? { error: true, text: url.searchParams.get('error') } : null;
+        return reply(200, 'text/html; charset=utf-8', renderMember({ role, state: state(), activity: memberActivity({ projects, role }), projects, manifests, selected: { project, issue },
+          thread: store && project ? store.thread({ project, issue, role }) : [], flash, chatEnabled }));
+      }
       const portrait = /^\/portraits\/(team-[a-z]+)\.webp$/.exec(url.pathname);
       if (portrait) {
         const file = path.join(config.portraits ?? PORTRAITS, `${portrait[1]}.webp`);
@@ -353,8 +426,10 @@ export function loadConfig(file) {
     const manifest = readJson(path.join(checkout, '.agent-team.json'));
     if (typeof manifest?.delivery?.baseBranch === 'string') base[project] = { base: `origin/${manifest.delivery.baseBranch}`, fetch: true };
   }
+  const stateDir = worker.stateDir ? path.resolve(path.dirname(config.worker), worker.stateDir) : path.resolve(path.dirname(file), '.agent-team-dashboard');
+  const chat = { dbPath: path.join(stateDir, 'dashboard.sqlite'), runDir: path.join(stateDir, 'chat'), linear: process.env.LINEAR_API_KEY ? createLinearClient() : null };
   return { host, port, db: path.resolve(path.dirname(config.coordinator), coordinator.db ?? '.agent-team-coordinator/queue.sqlite'), projects: worker.projects,
-    stateDir: worker.stateDir, defaultEngine: worker.engine ?? 'opencode', coordinatorUrl: worker.coordinatorUrl ?? 'http://127.0.0.1:4310', token: localToken(), base };
+    stateDir: worker.stateDir, defaultEngine: worker.engine ?? 'opencode', coordinatorUrl: worker.coordinatorUrl ?? 'http://127.0.0.1:4310', token: localToken(), base, chat };
 }
 
 export async function main(args = process.argv.slice(2)) {

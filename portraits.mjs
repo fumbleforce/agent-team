@@ -6,7 +6,8 @@ import { ROSTER } from './roster.mjs';
 // Generates one portrait per team member with Replicate (Flux Schnell). The key is read from
 // the untracked .env or REPLICATE_API_KEY; portraits are committed so the dashboard needs no key.
 const root = path.dirname(fileURLToPath(import.meta.url));
-const STYLE = 'stylized character portrait, head and shoulders, flat vector illustration with subtle grain, dark slate background, two-tone amber and teal lighting, bold simple shapes, no text, no watermark, centered, square';
+const STYLE = 'three-colour linocut print portrait, bold carved black lines, flat teal and burnt amber inks with bone-white highlights on near-black paper, visible ink texture and slight misregistration, dramatic side lighting, bust framing centered, no text, no watermark, square';
+const SEED = 7;
 const LOOKS = {
   'team-coordinator': 'a calm hive-mind entity made of many faint overlapping faces and glowing nodes, symmetrical, serene, unsettling',
   'team-pm': 'a bald executive with a wide confident grin and intense eyes, crisp shirt, laser focus, ambitious energy',
@@ -26,7 +27,7 @@ function apiKey() {
 async function generate(key, prompt) {
   const headers = { authorization: `Bearer ${key}`, 'content-type': 'application/json', prefer: 'wait=60' };
   const response = await fetch('https://api.replicate.com/v1/models/black-forest-labs/flux-schnell/predictions', { method: 'POST', headers,
-    body: JSON.stringify({ input: { prompt, aspect_ratio: '1:1', output_format: 'webp', output_quality: 85, num_outputs: 1, go_fast: true } }) });
+    body: JSON.stringify({ input: { prompt, seed: SEED, aspect_ratio: '1:1', output_format: 'webp', output_quality: 85, num_outputs: 1, go_fast: true } }) });
   if (!response.ok) throw new Error(`Replicate request failed (${response.status})`);
   let prediction = await response.json();
   while (!['succeeded', 'failed', 'canceled'].includes(prediction.status)) {

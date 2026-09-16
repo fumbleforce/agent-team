@@ -44,7 +44,8 @@ export async function configure({ keySource, install: write = false, home = home
   const configDir = path.join(home, '.config/agent-team');
   const unitDir = path.join(home, '.config/systemd/user');
   const dropinDir = path.join(unitDir, 'agent-team-worker.service.d');
-  for (const dir of [configDir, unitDir, dropinDir]) inspect(dir, true);
+  const dashboardDropinDir = path.join(unitDir, 'agent-team-dashboard.service.d');
+  for (const dir of [configDir, unitDir, dropinDir, dashboardDropinDir]) inspect(dir, true);
   const worker = json(path.join(configDir, 'worker.json'));
   if (!worker.projects || typeof worker.projects !== 'object' || Array.isArray(worker.projects) || !Object.keys(worker.projects).length) throw new Error('worker.json must map project keys to checkouts');
   const envFile = path.join(configDir, 'service.env');
@@ -69,19 +70,21 @@ export async function configure({ keySource, install: write = false, home = home
     { file: path.join(configDir, 'intake.json'), contents: intakeConfig },
     { file: path.join(unitDir, 'agent-team-intake.service'), contents: unit },
     { file: path.join(dropinDir, 'linear.conf'), contents: dropin },
+    // The dashboard posts owner conversations to Linear; it never passes the key to model runs.
+    ...(readExisting(path.join(unitDir, 'agent-team-dashboard.service')) !== null ? [{ file: path.join(dashboardDropinDir, 'linear.conf'), contents: dropin }] : []),
   ].map(entry => ({ ...entry, previous: readExisting(entry.file) }));
   for (const entry of files) {
     if (entry.previous !== null && entry.previous !== entry.contents && !entry.file.endsWith('linear.env')) throw new Error(`Refusing to replace differing file: ${entry.file}`);
   }
   if (write) {
     privateDirectory(configDir);
-    mkdirSync(dropinDir, { recursive: true, mode: 0o700 });
+    mkdirSync(dropinDir, { recursive: true, mode: 0o700 }); mkdirSync(dashboardDropinDir, { recursive: true, mode: 0o700 });
     for (const entry of files) atomicWrite(entry.file, entry.contents, entry.previous);
   }
   const paths = files.map(entry => entry.file);
   for (const file of paths) log(file);
   log('systemctl --user daemon-reload');
-  log('systemctl --user restart agent-team-worker.service');
+  log('systemctl --user restart agent-team-worker.service agent-team-dashboard.service');
   log('systemctl --user start agent-team-intake.service');
   return { paths, installed: write, projects: Object.keys(worker.projects) };
 }
