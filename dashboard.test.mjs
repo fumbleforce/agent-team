@@ -72,7 +72,7 @@ test('state aggregates services, queue, runs, live steps, usage and quarantine w
   assert.equal(state.live.length, 1); assert.equal(state.live[0].steps.length, 3); assert.equal(state.live[0].issue, 'FUM-2');
   assert.equal(state.overview[0].running.issue, 'FUM-2');
   assert.equal(state.usage.sevenDay.utilization, 0.4);
-  const solveig = state.team.find(m => m.role === 'team-pm'); assert.equal(solveig.name, 'Solveig'); assert.equal(solveig.working.issue, 'FUM-2'); assert.equal(solveig.steps, 1);
+  const jeff = state.team.find(m => m.role === 'team-pm'); assert.equal(jeff.name, 'Jeff'); assert.equal(jeff.working.issue, 'FUM-2'); assert.equal(jeff.steps, 1);
   assert.equal(state.team.find(m => m.role === 'team-dev').working, null);
   assert.ok(!JSON.stringify(state).includes(f.leaseToken));
   assert.deepEqual(collectState({ dbPath: path.join(f.root, 'missing.sqlite'), projects: { other: path.join(f.root, 'nowhere') }, systemctl: () => 'unknown' }).jobs, []);
@@ -93,7 +93,7 @@ test('HTTP pages escape content, serve JSON, and reject writes and unknown paths
   const base = `http://127.0.0.1:${server.address().port}`;
   const index = await fetch(base + '/'); const html = await index.text();
   assert.equal(index.status, 200); assert.ok(!html.includes(MARKER)); assert.ok(html.includes('&lt;script&gt;'));
-  assert.ok(html.includes('on hold') && html.includes('15% used') && html.includes('Agent → team-pm') && html.includes('Release and rerun') && html.includes('25k') && html.includes('release the held job first') && html.includes('Solveig') && html.includes('<b>Solveig</b> Bash'));
+  assert.ok(html.includes('on hold') && html.includes('15% used') && html.includes('Agent → team-pm') && html.includes('Release and rerun') && html.includes('25k') && html.includes('release the held job first') && html.includes('Jeff') && html.includes('<b>Jeff</b> Bash'));
   const api = await (await fetch(base + '/api/state')).json();
   assert.equal(api.jobs[0].outcome, 'blocked');
   const run = await fetch(base + '/runs/myntbase/2026-09-16T06-00-00-000Z-aaaaaaaa');
