@@ -213,7 +213,9 @@ export function renderIndex(state, flash = null) {
   const usage = `<div class="usage">${gauge('Claude 5h', pct(claude?.fiveHour?.utilization), claude?.fiveHour?.resetsAt ? `resets ${clock(claude.fiveHour.resetsAt * 1000)} UTC` : 'from the last Claude run')}${gauge('Claude 7d', pct(claude?.sevenDay?.utilization), claude?.sevenDay?.resetsAt ? `resets ${clock(claude.sevenDay.resetsAt * 1000)} UTC` : '')}${gauge('OpenCode tokens 24h', state.openai.week ? compact(state.openai.day) : null, 'OpenCode reports tokens, not plan limits', 'raw')}${gauge('OpenCode tokens 7d', state.openai.week ? compact(state.openai.week) : null, state.openai.lastRun ? `last run ${compact(state.openai.lastRun.tokens)} tokens` : 'no OpenCode runs this week', 'raw')}</div>`;
   const cards = state.overview.map(p => {
     const why = { 'held job': 'release the held job first', 'active job': 'available when the current job finishes', cooldown: `cooldown until ${when(p.ideation?.cooldownEnds)} UTC` };
-    const ideas = p.ideation ? (p.ideation.blockedBy ? `<button disabled>Propose ideas</button><span class="why">${escape(why[p.ideation.blockedBy] ?? p.ideation.blockedBy)}</span>` : `<button type="submit" name="action" value="ideate">Propose ${p.ideation.batchSize} ideas</button>`) : '';
+    // A manual request skips the automatic refill cooldown; only conflicting jobs hold it.
+    const hold = p.ideation?.blockedBy && p.ideation.blockedBy !== 'cooldown' ? p.ideation.blockedBy : null;
+    const ideas = p.ideation ? (hold ? `<button disabled>Propose ideas</button><span class="why">${escape(why[hold] ?? hold)}</span>` : `<button type="submit" name="action" value="ideate">Propose ${p.ideation.batchSize} ideas</button>${p.ideation.blockedBy === 'cooldown' ? `<span class="why">automatic refill waits until ${escape(when(p.ideation.cooldownEnds))} UTC</span>` : ''}`) : '';
     const release = p.held.length ? `<button type="submit" name="action" value="requeue" title="Rerun the held job after you have inspected it">Release and rerun</button>` : '';
     return `<div class="card ${p.status === 'on hold' ? 'hold' : ''}"><div class="top"><b>${escape(p.name)}</b>${tag(p.status)}</div>
 <p>${p.running ? `${p.running.issue ? 'Building' : 'Running'} <a href="/runs/${escape(p.project)}/${escape(p.running.id)}">${escape(p.running.issue ?? (p.running.ideation ? 'ideation' : 'unpinned cycle'))}</a> · ${minutes(p.running.startedAt)} min` : p.status === 'on hold' ? `${p.held.length} job${p.held.length === 1 ? '' : 's'} on hold: ${escape(p.held[0].summary || p.held[0].issue || 'inspect the run')}` : p.queued.length ? `${p.queued.length} queued: ${escape(p.queued.map(job => job.issue ?? 'ideas').join(', '))}` : 'Idle, waiting for approved work'}</p>
@@ -266,7 +268,7 @@ async function performAction({ form, config, state }) {
   const enqueue = config.enqueue ?? createClient(config.coordinatorUrl, config.token);
   if (form.get('action') === 'ideate') {
     if (!project.ideation) return { error: true, text: `${project.name} has no ideation configuration.` };
-    if (project.ideation.blockedBy) return { error: true, text: `Ideation for ${project.name} is waiting on: ${project.ideation.blockedBy}.` };
+    if (project.ideation.blockedBy && project.ideation.blockedBy !== 'cooldown') return { error: true, text: `Ideation for ${project.name} is waiting on: ${project.ideation.blockedBy}.` };
     const job = await enqueue('/jobs', { projectId: project.project, kind: 'ideation', proposalLimit: project.ideation.batchSize, timeoutMinutes: 10, ...(config.base?.[project.project] ?? {}) });
     return { text: `Queued ideation for ${project.name} (${project.ideation.batchSize} proposals). Job ${job.id}.` };
   }
