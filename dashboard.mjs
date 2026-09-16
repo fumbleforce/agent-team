@@ -367,7 +367,9 @@ export function createDashboardServer(config) {
           const back = text => { res.writeHead(303, { location: `/team/${encodeURIComponent(role ?? '')}?project=${encodeURIComponent(project ?? '')}&issue=${encodeURIComponent(issue)}&${text.error ? 'error' : 'ok'}=${encodeURIComponent(text.text)}` }); res.end(); };
           if (!Object.hasOwn(ROSTER, role) || !Object.hasOwn(projects, project)) return back({ error: true, text: 'Choose a team member and a project.' });
           if (!chatEnabled) return back({ error: true, text: 'Chat needs the Linear key on the dashboard service.' });
-          const work = memberActivity({ projects: { [project]: projects[project] }, role, runLimit: 6 }).flatMap(item => item.steps.slice(-3).map(step => `${item.run.issue ?? 'ideation'}: ${step.text}`)).slice(0, 12);
+          const work = memberActivity({ projects: { [project]: projects[project] }, role, runLimit: 6 }).flatMap(item => [
+            `${item.run.issue ?? 'ideation'} run ${item.run.id}: ${item.run.state}${item.run.delivery ? `, delivery ${item.run.delivery}` : ''}${item.run.prUrl ? ` (${item.run.prUrl})` : ''}`,
+            ...item.steps.slice(-3).map(step => `${item.run.issue ?? 'ideation'}: ${step.text}`)]).slice(0, 18);
           const cwd = latestWorktree(project) ?? projects[project];
           try {
             // The reply arrives asynchronously; the page polls the local thread for it.
