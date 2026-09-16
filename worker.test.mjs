@@ -1,13 +1,92 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createQueue } from './queue.mjs';
-import { runWorker, runnerArgs, parseJournal, runProcess, RUNNER_STOP_GRACE_MS } from './worker.mjs';
+import { runWorker, runnerArgs, parseJournal, runProcess, validateConfig, RUNNER_STOP_GRACE_MS } from './worker.mjs';
 import { parseEnqueueArgs } from './cli.mjs';
 
 const config = { workerId: 'test', concurrency: 2, projects: { a: '/tmp/synthetic-a', b: '/tmp/synthetic-b' } };
+const ideaConfig = { enabled: true, backlogCap: 10, batchSize: 3, minimumIntervalHours: 24, ideaLabel: 'Idea', proposedState: 'Backlog', approvedState: 'Todo', rejectedState: 'Canceled' };
+const proposal = { title: 'Batch matching', problem: 'Manual matching', benefit: 'Fewer errors', scope: 'Confirm matches', successCriteria: ['Confirm a batch'], effort: 'M', evidence: ['Matching screen'], whyNow: 'Repeated manual work' };
+
+test('ideation CLI requires explicit budget and disallows publishing', () => {
+  assert.deepEqual(parseEnqueueArgs('a', ['--ideate', '--proposal-limit', '3']), { projectId: 'a', kind: 'ideation', proposalLimit: 3 });
+  for (const flags of [['--ideate'], ['--ideate', '--proposal-limit', '0'], ['--proposal-limit', '2'], ['--ideate', '--proposal-limit', '2', '--publish'], ['--approval-required']]) assert.throws(() => parseEnqueueArgs('a', flags));
+});
+
+test('missing Linear API key blocks before model invocation', async () => {
+  const previous = process.env.LINEAR_API_KEY; delete process.env.LINEAR_API_KEY;
+  const q = createQueue(':memory:', { projects: config.projects });
+  try {
+    q.enqueue({ projectId: 'a', kind: 'ideation', proposalLimit: 3 });
+    await runWorker(config, { once: true, request: requestFor(q), loadManifest: () => ({ ideation: ideaConfig }),
+      run: () => assert.fail('No model without an API key') });
+    assert.equal(q.list()[0].state, 'blocked');
+    assert.match(q.list()[0].result.summary, /LINEAR_API_KEY is required/);
+  } finally {
+    q.close();
+    if (previous !== undefined) process.env.LINEAR_API_KEY = previous;
+  }
+});
+
+test('heartbeat loss during API preflight aborts requests and never starts model', async () => {
+  const q = createQueue(':memory:', { projects: config.projects, leaseMs: 90 });
+  let transport;
+  try {
+    q.enqueue({ projectId: 'a', kind: 'ideation', proposalLimit: 3 });
+    await runWorker(config, { once: true, loadManifest: () => ({ ideation: ideaConfig }),
+      request: requestFor(q, route => { if (route.endsWith('/heartbeat')) throw new Error('Lost lease'); }),
+      linear: ({ fetchImpl }) => { transport = fetchImpl; return { snapshot: async () => {
+        await new Promise(resolve => setTimeout(resolve, 40));
+        return { remaining: 2 };
+      } }; }, run: () => assert.fail('No model after heartbeat loss') });
+    assert.equal(q.list()[0].state, 'blocked');
+    assert.match(q.list()[0].result.summary, /Heartbeat failed/);
+    assert.throws(() => transport('https://example.invalid'), /interrupted/);
+  } finally { q.close(); }
+});
+
+test('worker ideation preflight, bounded publication and fail-closed gates', async () => {
+  for (const mode of ['full', 'unavailable', 'withdrawn', 'malformed', 'failed', 'aborted', 'publish', 'dedup']) {
+    const stateDir = mkdtempSync(path.join(os.tmpdir(), 'team-ideas-'));
+    const q = createQueue(':memory:', { projects: config.projects });
+    const control = new AbortController(); let runs = 0; let publishes = 0;
+    try {
+      q.enqueue(mode === 'withdrawn' ? { projectId: 'a', issue: 'TEST-1', approvalRequired: true }
+        : { projectId: 'a', kind: 'ideation', proposalLimit: 5 });
+      const linear = () => ({
+        checkApproved: async () => ({ allowed: false }),
+        snapshot: async () => {
+          if (mode === 'unavailable') throw new Error('Offline');
+          return { remaining: mode === 'full' ? 0 : 2, existing: ['Existing feature'], ideas: [{ title: 'Existing feature', description: 'Task data', secretField: 'not copied' }] };
+        },
+        publishProposals: async (manifest, proposals, options) => {
+          publishes++; assert.equal(options.limit, 2); assert.equal(proposals.length, 1); assert.ok(options.jobId);
+          return { created: mode === 'dedup' ? [] : [{ identifier: 'TEST-2' }], skipped: mode === 'dedup' ? 1 : 0 };
+        },
+      });
+      await runWorker({ ...config, stateDir }, { once: true, signal: control.signal, request: requestFor(q), linear,
+        loadManifest: checkout => { assert.equal(checkout, config.projects.a); return { ideation: ideaConfig }; },
+        run: async ({ args, job }) => {
+          runs++; assert.equal(job.proposalLimit, 2);
+          const contextPath = args[args.indexOf('--idea-context') + 1];
+          assert.ok(path.isAbsolute(contextPath)); assert.equal(statSync(contextPath).mode & 0o777, 0o600);
+          const context = JSON.parse(readFileSync(contextPath)); assert.equal(context.proposalLimit, 2);
+          assert.ok(!JSON.stringify(context).includes('not copied'));
+          if (mode === 'aborted') control.abort();
+          return { code: mode === 'failed' ? 1 : 0, journal: { outcome: 'ready', issue: null, prUrl: null, summary: 'Evidence', proposals: mode === 'malformed' ? [{}] : [proposal] } };
+        } });
+      assert.equal(runs, ['full', 'unavailable', 'withdrawn'].includes(mode) ? 0 : 1);
+      assert.equal(publishes, ['publish', 'dedup'].includes(mode) ? 1 : 0);
+      const job = q.list()[0];
+      assert.equal(job.state, ['full', 'withdrawn', 'publish', 'dedup'].includes(mode) ? 'completed' : mode === 'failed' ? 'failed' : 'blocked');
+      if (mode === 'publish') assert.match(job.result.summary, /TEST-2/);
+      if (mode === 'dedup') assert.match(job.result.summary, /skipped 1/);
+    } finally { q.close(); rmSync(stateDir, { recursive: true, force: true }); }
+  }
+});
 test('CLI auto-merge requires explicit publish and preserves existing enqueue options', () => {
   assert.deepEqual(parseEnqueueArgs('a'), { projectId: 'a', publish: false, autoMerge: false });
   assert.equal(parseEnqueueArgs('a', ['--publish']).autoMerge, false);
@@ -18,6 +97,21 @@ test('CLI auto-merge requires explicit publish and preserves existing enqueue op
     });
   }
   assert.throws(() => parseEnqueueArgs('a', ['--publish', '--auto-merge', '--auto-merge']), /Duplicate/);
+});
+test('engine and fetch route to the runner; worker default engine applies only when the job has none', async () => {
+  assert.deepEqual(runnerArgs({ engine: 'claude', base: 'origin/main', fetch: true }, '/tmp/a').slice(1), ['--project', '/tmp/a', '--execute', '--cycles', '1', '--base', 'origin/main', '--engine', 'claude', '--fetch']);
+  assert.ok(!runnerArgs({ fetch: false }, '/tmp/a').includes('--fetch'));
+  assert.throws(() => validateConfig({ ...config, engine: 'codex' }), /Invalid engine/);
+  assert.deepEqual(parseEnqueueArgs('a', ['--engine', 'claude', '--base', 'origin/master', '--fetch']), { projectId: 'a', publish: false, autoMerge: false, engine: 'claude', base: 'origin/master', fetch: true });
+  assert.throws(() => parseEnqueueArgs('a', ['--fetch']), /REMOTE\/BRANCH/);
+  for (const [job, expected] of [[{ projectId: 'a' }, 'claude'], [{ projectId: 'a', engine: 'opencode' }, 'opencode']]) {
+    const q = createQueue(':memory:', { projects: config.projects });
+    try {
+      q.enqueue(job); let seen;
+      await runWorker({ ...config, engine: 'claude' }, { once: true, request: requestFor(q), run: async ({ args }) => { seen = args; return { code: 0, journal: { outcome: 'idle' } }; } });
+      assert.equal(seen[seen.indexOf('--engine') + 1], expected);
+    } finally { q.close(); }
+  }
 });
 test('worker only routes auto-merge when explicitly selected, retaining publish and one cycle', () => {
   for (const job of [{}, { publish: true }, { publish: true, autoMerge: false }]) assert.ok(!runnerArgs(job, '/tmp/a').includes('--auto-merge'));
@@ -102,14 +196,18 @@ test('exit codes and journal outcomes map conservatively', async () => {
 test('real child process retains local logs and parses bounded final journal without passing token', async () => {
   const stateDir = mkdtempSync(path.join(os.tmpdir(), 'team-worker-'));
   const previous = process.env.AGENT_TEAM_TOKEN; process.env.AGENT_TEAM_TOKEN = 'private-control-plane-token';
+  const priorLinear = process.env.LINEAR_API_KEY; const priorFuture = process.env.AGENT_TEAM_FUTURE_TOKEN;
+  process.env.LINEAR_API_KEY = 'synthetic-private-api-key'; process.env.AGENT_TEAM_FUTURE_TOKEN = 'synthetic-future-token';
   try {
     const result = await runProcess({ stateDir, job: { id: 'synthetic' }, signal: new AbortController().signal,
-      args: ['-e', `if (process.env.AGENT_TEAM_TOKEN) process.exit(7); console.log('x'.repeat(300000)); console.error('local stderr'); console.log(JSON.stringify({outcome:'ready'}));`] });
+      args: ['-e', `if (process.env.AGENT_TEAM_TOKEN || process.env.LINEAR_API_KEY || process.env.AGENT_TEAM_FUTURE_TOKEN) process.exit(7); console.log('x'.repeat(300000)); console.error('local stderr'); console.log(JSON.stringify({outcome:'ready'}));`] });
     assert.equal(result.code, 0); assert.equal(result.journal.outcome, 'ready');
     assert.ok(readFileSync(result.evidence, 'utf8').length > 300000);
     assert.match(readFileSync(path.join(stateDir, 'synthetic.stderr.log'), 'utf8'), /local stderr/);
   } finally {
     if (previous === undefined) delete process.env.AGENT_TEAM_TOKEN; else process.env.AGENT_TEAM_TOKEN = previous;
+    if (priorLinear === undefined) delete process.env.LINEAR_API_KEY; else process.env.LINEAR_API_KEY = priorLinear;
+    if (priorFuture === undefined) delete process.env.AGENT_TEAM_FUTURE_TOKEN; else process.env.AGENT_TEAM_FUTURE_TOKEN = priorFuture;
     rmSync(stateDir, { recursive: true, force: true });
   }
 });

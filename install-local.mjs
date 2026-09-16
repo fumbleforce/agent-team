@@ -5,10 +5,11 @@ import { homedir, hostname } from 'node:os';
 import path from 'node:path';
 import { isDeepStrictEqual } from 'node:util';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { validateEngine } from './engines.mjs';
 
 const toolkitRoot = path.dirname(fileURLToPath(import.meta.url));
 const url = 'http://127.0.0.1:4310';
-const usage = 'Usage: install-local.mjs --project /absolute/checkout --key myntbase --repository fumbleforce/stockapp [--dry-run | --install]';
+const usage = 'Usage: install-local.mjs --project /absolute/checkout --key myntbase --repository fumbleforce/stockapp [--engine opencode|claude] [--dry-run | --install]';
 
 export function parseArgs(args) {
   const options = {}; const seen = new Set();
@@ -17,15 +18,16 @@ export function parseArgs(args) {
     if (seen.has(flag)) throw new Error(usage);
     seen.add(flag);
     if (flag === '--install' || flag === '--dry-run') options.install = flag === '--install';
-    else if (['--project', '--key', '--repository'].includes(flag) && args[i + 1] && !args[i + 1].startsWith('--')) options[flag.slice(2)] = args[++i];
+    else if (['--project', '--key', '--repository', '--engine'].includes(flag) && args[i + 1] && !args[i + 1].startsWith('--')) options[flag.slice(2)] = args[++i];
     else throw new Error(usage);
   }
   if (seen.has('--install') && seen.has('--dry-run')) throw new Error(usage);
   if (!options.project || !options.key || !options.repository) throw new Error(usage);
+  if (options.engine !== undefined) validateEngine(options.engine);
   return options;
 }
 
-function clean(value) {
+export function clean(value) {
   if (typeof value !== 'string' || !value || /[\x00-\x1f\x7f]/.test(value)) throw new Error('Expected a nonempty value without control characters');
   return value;
 }
@@ -37,7 +39,7 @@ function stat(file) {
   try { return lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return null; throw error; }
 }
 // Check every component, including existing ancestors of not-yet-created files.
-function inspect(file, directory = false) {
+export function inspect(file, directory = false) {
   const parent = path.dirname(file);
   if (parent !== file) inspect(parent, true);
   const info = stat(file);
@@ -45,7 +47,7 @@ function inspect(file, directory = false) {
   if (info && !directory && (info.nlink !== 1 || info.uid !== process.getuid())) throw new Error(`Unsafe file ownership or links: ${file}`);
   return info;
 }
-function readExisting(file) {
+export function readExisting(file) {
   if (!inspect(file)) return null;
   const fd = openSync(file, constants.O_RDONLY | constants.O_NOFOLLOW);
   try {
@@ -54,14 +56,14 @@ function readExisting(file) {
     return readFileSync(fd, 'utf8');
   } finally { closeSync(fd); }
 }
-function privateDirectory(dir) {
+export function privateDirectory(dir) {
   inspect(dir, true);
   mkdirSync(dir, { recursive: true, mode: 0o700 });
   const info = inspect(dir, true);
   if (info.uid !== process.getuid()) throw new Error(`Directory is not owned by current user: ${dir}`);
   chmodSync(dir, 0o700);
 }
-function atomicWrite(file, contents, previous) {
+export function atomicWrite(file, contents, previous) {
   if (readExisting(file) !== previous) throw new Error(`File changed during installation: ${file}`);
   if (previous === contents) { chmodSync(file, 0o600); return; }
   const temp = `${file}.${randomBytes(12).toString('hex')}.tmp`;
@@ -89,7 +91,7 @@ function config(file, text, defaults, key, registration) {
   return JSON.stringify({ ...existing, ...defaults, projects: { ...existing.projects, [key]: registration } }, null, 2) + '\n';
 }
 // systemd specifiers apply to paths; dollar expansion additionally applies to ExecStart.
-function quote(value, exec = false) {
+export function quote(value, exec = false) {
   let result = clean(value).replaceAll('\\', '\\\\').replaceAll('"', '\\"').replaceAll('%', '%%');
   if (exec) result = result.replaceAll('$', () => '$$');
   return `"${result}"`;
@@ -103,20 +105,27 @@ function unit(role, { toolkit, nodePath, configDir }) {
 }
 
 // Dependency injection is deliberately API-only; the CLI always uses the actual user/runtime.
-export function install({ project, key, repository, install: write = false, home = homedir(), toolkit = toolkitRoot,
+function which(name) {
+  const result = spawnSync('which', [name], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } });
+  return result.status === 0 ? result.stdout.replace(/\r?\n$/, '') : null;
+}
+
+export function install({ project, key, repository, engine, install: write = false, home = homedir(), toolkit = toolkitRoot,
   nodePath = process.execPath, workerId = hostname(), existingPath = process.env.PATH ?? '',
-  resolveOpencode = () => {
-    const result = spawnSync('which', ['opencode'], { encoding: 'utf8', env: { PATH: process.env.PATH ?? '' } });
-    if (result.status !== 0) throw new Error('Cannot resolve opencode on PATH');
-    return result.stdout.replace(/\r?\n$/, '');
-  }, log = console.log } = {}) {
+  resolveOpencode = () => which('opencode'), resolveClaude = () => which('claude'), log = console.log } = {}) {
   if (process.platform !== 'linux') throw new Error('Local installation requires Linux');
   project = absolute(project); home = absolute(home); toolkit = absolute(toolkit); nodePath = absolute(nodePath);
   if (!/^[a-zA-Z0-9][\w.-]{0,127}$/.test(key ?? '') || !/^[\w.-]+\/[\w.-]+$/.test(repository ?? '')) throw new Error(usage);
   if (!/^[\w.-]{1,128}$/.test(workerId)) throw new Error('Invalid worker hostname');
   if (!stat(project)?.isDirectory()) throw new Error('Project must be an existing directory');
-  const opencode = absolute(resolveOpencode());
-  const servicePath = [path.dirname(nodePath), path.dirname(opencode), clean(existingPath)].join(':');
+  if (engine !== undefined) validateEngine(engine);
+  // Both engines join the service PATH when installed; the selected one must resolve.
+  const binaries = { opencode: resolveOpencode(), claude: resolveClaude() };
+  for (const [name, binary] of Object.entries(binaries)) {
+    if (binary === null && (engine ?? 'opencode') === name) throw new Error(`Cannot resolve ${name} on PATH`);
+    if (binary !== null) binaries[name] = absolute(binary);
+  }
+  const servicePath = [...new Set([path.dirname(nodePath), ...Object.values(binaries).filter(Boolean).map(path.dirname), clean(existingPath)])].join(':');
   const configDir = path.join(home, '.config/agent-team');
   const stateDir = path.join(home, '.local/state/agent-team');
   const unitDir = path.join(home, '.config/systemd/user');
@@ -138,7 +147,7 @@ export function install({ project, key, repository, install: write = false, home
   const files = [];
   for (const [role, defaults, registration] of [
     ['coordinator', { host: '127.0.0.1', port: 4310, db: path.join(stateDir, 'queue.sqlite') }, { repository }],
-    ['worker', { coordinatorUrl: url, workerId, concurrency: 1, stateDir: path.join(stateDir, 'worker') }, project]
+    ['worker', { coordinatorUrl: url, workerId, concurrency: 1, stateDir: path.join(stateDir, 'worker'), ...(engine === undefined ? {} : { engine }) }, project]
   ]) {
     const file = path.join(configDir, `${role}.json`); const previous = readExisting(file);
     files.push({ file, previous, contents: config(file, previous, defaults, key, registration) });

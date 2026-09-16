@@ -14,7 +14,7 @@ function fixture(t) {
   const logs = [];
   const options = { home, project, key: 'myntbase', repository: 'fumbleforce/stockapp',
     toolkit: path.join(root, 'team kit'), nodePath: path.join(root, 'nvm node/bin/node'),
-    workerId: 'x3d', existingPath: '/usr/bin:/bin', resolveOpencode: () => '/opt/open code/bin/opencode', log: line => logs.push(line) };
+    workerId: 'x3d', existingPath: '/usr/bin:/bin', resolveOpencode: () => '/opt/open code/bin/opencode', resolveClaude: () => null, log: line => logs.push(line) };
   const configDir = path.join(home, '.config/agent-team'); const unitDir = path.join(home, '.config/systemd/user');
   const read = file => readFileSync(file, 'utf8');
   return { root, home, options, logs, configDir, unitDir, read, run: extra => install({ ...options, install: true, ...extra }) };
@@ -26,6 +26,18 @@ test('CLI requires all three arguments, rejects unsupported flags, defaults to d
   assert.equal(parseArgs([...args, '--install']).install, true);
   assert.equal(parseArgs([...args, '--dry-run']).install, false);
   for (const invalid of [args.slice(0, 4), [...args, '--home', '/tmp'], [...args, '--replace'], [...args, '--install', '--dry-run'], [...args, '--key', 'other']]) assert.throws(() => parseArgs(invalid));
+});
+
+test('engine selection requires that engine on PATH and records the worker default', t => {
+  const f = fixture(t);
+  assert.equal(parseArgs(['--project', '/repo', '--key', 'k', '--repository', 'o/r', '--engine', 'claude']).engine, 'claude');
+  assert.throws(() => parseArgs(['--project', '/repo', '--key', 'k', '--repository', 'o/r', '--engine', 'codex']), /Unknown engine/);
+  assert.throws(() => f.run({ engine: 'claude' }), /Cannot resolve claude/);
+  assert.throws(() => f.run({ resolveOpencode: () => null }), /Cannot resolve opencode/);
+  f.run({ engine: 'claude', resolveOpencode: () => null, resolveClaude: () => '/home/user/.local/bin/claude' });
+  assert.equal(JSON.parse(f.read(path.join(f.configDir, 'worker.json'))).engine, 'claude');
+  assert.match(f.read(path.join(f.configDir, 'service.env')), /PATH=".*\/home\/user\/\.local\/bin:\/usr\/bin:\/bin"/);
+  assert.throws(() => f.run({ engine: 'opencode' }), /Conflicting engine/);
 });
 
 test('dry-run writes nothing and reports only paths and start commands', t => {

@@ -1,6 +1,6 @@
 # Agent Team
 
-Reusable OpenCode delivery teams for multiple repositories. One copy of the roles and execution engine serves every project; each project supplies only its own product goals, engineering instructions and Linear routing.
+Reusable delivery teams for multiple repositories, executed by either the OpenCode CLI or the official Claude Code CLI. One copy of the roles and runner serves every project; each project supplies only its own product goals, engineering instructions and Linear routing.
 
 Status: working initial implementation with synthetic automated tests. Real model/Linear/GitHub delivery and Tailscale service deployment require an integration pilot. No service is enabled merely by checking out this package.
 
@@ -19,7 +19,8 @@ Project A, Project B      Project C, Project D
           |                     |
    disposable worktrees    disposable worktrees
           |                     |
-   OpenCode coordinator -> PM -> UX -> developer -> tester -> reviewer
+   coordinator -> PM -> UX -> developer -> tester -> reviewer
+   (OpenCode or Claude Code engine per worker/job)
           |                     |
        Linear evidence + optional GitHub PRs
 ```
@@ -42,7 +43,8 @@ Do not copy a live SQLite database or synchronize active Git worktrees with Sync
 
 ## Why these tools
 
-- **OpenCode CLI:** already installed/authenticated, supports named agents, independent subagents, structured run output and headless execution. A thin CLI adapter avoids introducing another agent framework. An OpenCode server/SDK can later provide streamed sessions and richer UI without changing the queue contract.
+- **OpenCode CLI:** supports named agents, independent subagents, structured run output and headless execution. A thin CLI adapter avoids introducing another agent framework.
+- **Claude Code CLI:** the official `claude` binary runs the same roles headlessly on the worker's logged-in claude.ai subscription: appended system prompt for the coordinator, `--agents` for role subagents, stream-json evidence, Linear as its only MCP server. No API key, token extraction or proxy is involved; see Execution engines.
 - **Linear:** product planning and human-visible workflow. It is not the execution lock; check-then-update issue status is not an atomic distributed claim.
 - **Git/GitHub CLI:** reproducible bases, worktree isolation and optional PR delivery. Worktrees are not security sandboxes. Dedicated worker accounts/containers are the next isolation layer.
 - **SQLite on one coordinator:** transactional claims and durable state without provisioning another service. Node 22.21.1+ includes the experimental `node:sqlite` API used here. Multiple workers/projects do not require multiple database writers on different hosts.
@@ -53,7 +55,7 @@ We do not yet need Redis, Kubernetes, Temporal or a second agent framework. Revi
 
 ## Prerequisites
 
-- Linux workers with Node >=22.21.1, Git and OpenCode; authenticate the model provider and Linear on each worker.
+- Linux workers with Node >=22.21.1, Git and the chosen engine: OpenCode with its provider login, or Claude Code (`claude auth status` must report a claude.ai login). Authenticate Linear for that engine on each worker.
 - GitHub CLI (`gh auth login`) and Git push access only for jobs explicitly submitted with publishing enabled.
 - Per-project toolchains and synthetic test data. Dependency installation happens in the worktree, not the user's normal checkout.
 - A machine that stays awake. A sleeping laptop cannot execute jobs; another online worker can claim new jobs, but uncertain expired jobs remain quarantined.
@@ -79,7 +81,7 @@ node runner.mjs --project /path/to/project --execute --issue TEAM-123
 node runner.mjs --project /path/to/project --status
 ```
 
-Use `--model provider/model-id`, `--timeout-minutes 45`, and optionally `--base origin/main`. Bases are local refs: nothing is fetched automatically. For repeatable cross-machine jobs, fetch the repository separately and enqueue an immutable commit SHA as `--base` available on every worker. The default HEAD may differ between machines.
+Use `--engine claude` to run on Claude Code, `--model` for an engine model identifier, `--timeout-minutes 45`, and optionally `--base origin/main`. Bases are local refs unless `--fetch` is given with a `REMOTE/BRANCH` base: the runner then fetches only that remote-tracking ref before resolving it, leaving the primary working tree, index and HEAD untouched. Dry-run never fetches. For repeatable cross-machine jobs, enqueue an immutable commit SHA available on every worker. The default HEAD may differ between machines.
 
 The runner overlays only manifest/charter/instruction files from the configured checkout, supporting initial uncommitted setup. Ordinary uncommitted application changes, node_modules, databases and local secrets are not copied. Before initial checkout, tracked filenames are inspected and known environment, database/sidecar and private-key filenames are excluded using sparse checkout. Examples/templates remain available. Dry-run and journals list excluded paths without reading contents. Unrecognized committed secrets can still be present: this is not a secret scanner or OS sandbox. Common inherited database/profile environment overrides are filtered.
 
@@ -98,6 +100,38 @@ Alternatively, register the shared plugin once in global OpenCode configuration:
 ```
 
 It loads the same role definitions and owner preferences for every project, adds `/team` as the owner-facing command, and preserves explicit user agent overrides and the existing MCP/default-agent settings. The local x3d installation now has this reference; restart its OpenCode server to load it. Other machines install one reference to their own toolkit checkout, not copies of the role files.
+
+## Execution engines
+
+`--engine opencode` (default) runs `opencode run --agent team-coordinator` with the shared roles injected through `OPENCODE_CONFIG_CONTENT`. `--engine claude` runs `claude --print` in the same isolated worktree with identical prompts, reports, cancellation, timeouts and delivery gates:
+
+- Preflight runs `claude --version` and `claude auth status`; the run fails before any model call unless the status reports a logged-in first-party claude.ai account. Journals record only the auth method and subscription type.
+- The child environment drops `ANTHROPIC_*`, `CLAUDE_CODE_*` and nested-session variables in addition to the usual filters, so an inherited API key, auth token, base URL or Bedrock/Vertex switch cannot select API billing. `--bare`, `--max-budget-usd` and `--fallback-model` are never used.
+- Owner preferences, the coordinator role and the project's charter/instruction files form an appended system prompt (`system-prompt.md` in the run directory). Shared subagent roles become `--agents`; OpenCode edit/bash/task/Linear denials map to `disallowedTools`.
+- Permissions: `acceptEdits` with automatic denial of anything that would prompt, `Bash` and the `linear` MCP server allowed, and prefix deny rules for `git push --force`/`-f`, `git reset --hard`, `gh pr merge` and deploy/live-test/db-reset scripts. These are prefix rules, not a sandbox: rearranged commands are not caught, and the delivery helper remains the merge gate. Only user settings load (`--setting-sources user`), so the worker account's own hooks, permission rules and `env` still apply; project settings from the target repository and every MCP server except `linear` are excluded (`--strict-mcp-config`). Built-in Claude subagent types stay available to the Agent tool; the coordinator is instructed to use only the shared role agents, and approvals are attested by agent identifiers, not enforced by tooling. Sessions are not persisted; `events.jsonl` holds the stream.
+- Ideation runs `--restricted` with only Read, Grep, Glob and Write, no MCP servers and no subagents.
+- A subscription usage limit (rejected rate-limit event, limit error result or 429 text; a 429 from another service is classified the same way) ends the cycle as `blocked` (exit 2) with no retry loop and no API fallback. Like any blocked or failed job it quarantines that project: no claims and no intake until an operator inspects and requeues it after the limit window resets.
+
+Linear for Claude Code uses the remote MCP server at `https://mcp.linear.app/mcp`, which needs one interactive OAuth login per worker account. Run this once and authenticate with `/mcp`, using the same server name and URL the runner passes:
+
+```sh
+claude --strict-mcp-config --mcp-config '{"mcpServers":{"linear":{"type":"http","url":"https://mcp.linear.app/mcp"}}}'
+```
+
+Until that login exists, Claude-engine development cycles report blocked without writes; ideation cycles do not need it. Workers choose a default engine through `engine` in their configuration (`install-local.mjs --engine claude`); an enqueued job's `engine` field overrides it.
+
+## Ideation and owner approval
+
+A project enables ideation in `.agent-team.json`:
+
+```json
+{ "ideation": { "enabled": true, "backlogCap": 10, "batchSize": 3, "minimumIntervalHours": 24,
+  "ideaLabel": "Idea", "proposedState": "Backlog", "approvedState": "Todo", "rejectedState": "Canceled" } }
+```
+
+`enqueue PROJECT --ideate --proposal-limit N` (or `runner.mjs --ideate`) runs the read-only `team-ideation` role once. It proposes substantial features with problem, benefit, scope, success criteria, relative effort, evidence and timing; the runner fails the cycle if the worktree or branch changed. The worker validates the proposals, then creates Linear issues in the proposed state carrying the idea label, deduplicated by title and a durable marker, never beyond `backlogCap` unfinished ideas per project (Done/Canceled free capacity). The worker needs `LINEAR_API_KEY` for that publication and skips the model entirely when the backlog is full or the key is missing.
+
+The owner approves by moving a card to the approved state and declines by moving it to the rejected state. The team never changes those states, never adds the ready label to an unapproved idea and never implements a pending proposal. The intake service (`linear-intake.mjs`) polls Linear without a model: approved, unblocked ideas without `agent:blocked`/`owner:decision` labels become `--publish` development jobs pinned to that issue (`--auto-merge` when the project authorizes delivery) on the freshly fetched delivery branch; approvals withdrawn while a job is still queued cancel it, and an idea whose earlier job was canceled or skipped can be approved again. It refills proposals only when capacity remains, no job is active or quarantined, and the cooldown has passed. Before each development run the worker rechecks approval through the API and reports idle without a model if it was withdrawn.
 
 ## Owner interaction and visibility
 
@@ -173,13 +207,23 @@ systemctl --user daemon-reload
 systemctl --user start agent-team-coordinator.service agent-team-worker.service
 ```
 
-The installer does not start services or install/enable timers. It preserves existing project mappings and tokens, and refuses conflicting settings. The private service environment can be supplied to a one-off CLI invocation through `systemd-run --user --wait --pipe --collect -p EnvironmentFile=/absolute/path/to/service.env /absolute/path/to/node /absolute/path/to/cli.mjs list`.
+The installer does not start services or install/enable timers. It preserves existing project mappings and tokens, and refuses conflicting settings. `--engine claude` records the worker's default engine and requires `claude` on PATH.
 
-`systemd/` contains coordinator, worker and per-project enqueue timer examples. Adjust executable paths, toolkit location and environment before installing as user units. `%h/repo/agent-team` is an example location, not a requirement. Service files expect private configs and `service.env` under `~/.config/agent-team/` with `AGENT_TEAM_TOKEN`, `AGENT_TEAM_URL`, and a PATH containing OpenCode, Git and optionally gh. Credentials themselves remain outside repositories.
+`configure-linear.mjs` adds the approval intake. It reads the key from a hidden terminal prompt, `--key-file`, or piped stdin, validates every mapped project's workspace, team, states and labels against Linear, and only then writes a private `linear.env`, `intake.json`, the `agent-team-intake.service` unit and a worker drop-in that supplies the key to the worker process (the worker removes it again before starting the model runner). Nothing is started; it prints the paths and the `systemctl --user` commands. The key never appears in output, logs, model subprocesses or repositories.
+
+```sh
+node configure-linear.mjs --dry-run
+node configure-linear.mjs --install
+systemctl --user daemon-reload && systemctl --user restart agent-team-worker.service && systemctl --user start agent-team-intake.service
+```
+
+The private service environment can be supplied to a one-off CLI invocation through `systemd-run --user --wait --pipe --collect -p EnvironmentFile=/absolute/path/to/service.env /absolute/path/to/node /absolute/path/to/cli.mjs list`.
+
+`systemd/` contains coordinator, worker, intake and per-project enqueue timer examples. Adjust executable paths, toolkit location and environment before installing as user units. `%h/repo/agent-team` is an example location, not a requirement. Service files expect private configs and `service.env` under `~/.config/agent-team/` with `AGENT_TEAM_TOKEN`, `AGENT_TEAM_URL`, and a PATH containing OpenCode, Git and optionally gh. Credentials themselves remain outside repositories.
 
 Enable the worker/coordinator after a successful pilot, then enable `agent-team-enqueue@myntbase.timer` to submit an unpinned cycle hourly. Add timer instances for other registered projects. An active overlapping job produces HTTP 409; the timer submission fails without creating a duplicate. A sleeping/offline coordinator cannot enqueue or grant leases. User services may require login lingering for execution after logout.
 
-Do not enable schedules before deciding model-provider spending limits. The system bounds concurrency, role steps, cycle count and elapsed time, but does not enforce a dollar budget. An idle PM cycle can still consume model tokens.
+Do not enable schedules before deciding model-provider spending limits. The system bounds concurrency, role steps, cycle count and elapsed time, but does not enforce a dollar budget. An idle PM cycle can still consume model tokens. On the Claude engine, subscription limits apply instead of a bill; a limit stops the affected job rather than retrying.
 
 ## Leases, failures and recovery
 
@@ -201,12 +245,13 @@ All routes require `Authorization: Bearer ...`; JSON request bodies are limited 
 | --- | --- |
 | `GET /health` | Authenticated liveness |
 | `GET /jobs` | Job summaries (never lease tokens) |
-| `POST /jobs` | Validated enqueue; optional idempotency key |
+| `POST /jobs` | Validated enqueue; optional idempotency key, `engine`, `fetch`, `kind: ideation` |
 | `POST /claim` | Atomic claim for registered worker project keys |
 | `POST /jobs/:id/heartbeat` | Renew with current worker ID and lease token |
 | `POST /jobs/:id/complete` | Record ready/idle using current lease |
 | `POST /jobs/:id/fail` | Record blocked/failed using current lease |
 | `POST /jobs/:id/requeue` | Explicit recovery of blocked/failed work |
+| `POST /jobs/:id/cancel` | Cancel a still-queued job (intake uses this for withdrawn approvals) |
 
 ## Next stages
 

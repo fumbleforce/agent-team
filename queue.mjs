@@ -4,6 +4,8 @@ import { createServer } from 'node:http';
 import { mkdirSync, readFileSync, chmodSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { ENGINES } from './engines.mjs';
+import { remoteBase } from './git-base.mjs';
 
 export class QueueError extends Error {
   constructor(status, message) { super(message); this.status = status; }
@@ -46,15 +48,28 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
   const view = row => {
     if (!row) return null;
     const { leaseToken, request, result, ...rest } = row;
-    return { ...rest, autoMerge: false, ...JSON.parse(request), result: result ? JSON.parse(result) : null };
+    return { ...rest, kind: 'development', approvalRequired: false, autoMerge: false, ...JSON.parse(request), result: result ? JSON.parse(result) : null };
   };
   const get = id => { const row = db.prepare('SELECT * FROM jobs WHERE id=?').get(id); if (!row) reject('Job not found', 404); return row; };
   const normalize = input => {
-    object(input, ['projectId', 'issue', 'base', 'model', 'timeoutMinutes', 'publish', 'autoMerge', 'idempotencyKey']);
+    object(input, ['projectId', 'issue', 'base', 'fetch', 'engine', 'model', 'timeoutMinutes', 'publish', 'autoMerge', 'idempotencyKey', 'kind', 'proposalLimit', 'approvalRequired']);
+    const kind = input.kind ?? 'development';
+    if (!['development', 'ideation'].includes(kind)) reject('Invalid kind');
+    if (kind === 'ideation') {
+      if (['issue', 'publish', 'autoMerge', 'approvalRequired'].some(key => input[key] !== undefined)) reject('Ideation forbids issue, publish, autoMerge and approvalRequired');
+      if (!Number.isInteger(input.proposalLimit) || input.proposalLimit < 1 || input.proposalLimit > 10) reject('Ideation requires proposalLimit from 1 to 10');
+    } else {
+      if (input.proposalLimit !== undefined) reject('proposalLimit requires ideation');
+      if (input.approvalRequired !== undefined && typeof input.approvalRequired !== 'boolean') reject('Invalid approvalRequired');
+      if (input.approvalRequired && !input.issue) reject('approvalRequired requires pinned issue');
+    }
     registered(input.projectId);
     if (input.issue !== undefined && !/^[A-Z][A-Z0-9]*-[1-9][0-9]*$/.test(text(input.issue, 'issue', 80))) reject('Invalid issue');
     const base = input.base === undefined ? 'HEAD' : text(input.base, 'base');
     if (base.startsWith('-')) reject('Invalid base');
+    if (input.fetch !== undefined && typeof input.fetch !== 'boolean') reject('Invalid fetch');
+    if (input.fetch === true) { try { remoteBase(base); } catch { reject('fetch requires base REMOTE/BRANCH'); } }
+    if (input.engine !== undefined && !ENGINES.includes(input.engine)) reject('Invalid engine');
     if (input.model !== undefined && text(input.model, 'model').startsWith('-')) reject('Invalid model');
     const timeoutMinutes = input.timeoutMinutes === undefined ? 45 : input.timeoutMinutes;
     if (!Number.isInteger(timeoutMinutes) || timeoutMinutes < 1 || timeoutMinutes > 120) reject('Invalid timeoutMinutes');
@@ -62,8 +77,9 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     if (input.autoMerge !== undefined && typeof input.autoMerge !== 'boolean') reject('Invalid autoMerge');
     if (input.autoMerge === true && input.publish !== true) reject('autoMerge requires publish: true');
     if (input.idempotencyKey !== undefined) text(input.idempotencyKey, 'idempotencyKey');
-    return { projectId: input.projectId, ...(input.issue === undefined ? {} : { issue: input.issue }), base,
-      ...(input.model === undefined ? {} : { model: input.model }), timeoutMinutes, publish: input.publish ?? false, autoMerge: input.autoMerge ?? false };
+    return { projectId: input.projectId, kind, ...(kind === 'ideation' ? { proposalLimit: input.proposalLimit } : { approvalRequired: input.approvalRequired ?? false }), ...(input.issue === undefined ? {} : { issue: input.issue }), base,
+      ...(input.fetch === true ? { fetch: true } : {}), ...(input.engine === undefined ? {} : { engine: input.engine }),
+      ...(input.model === undefined ? {} : { model: input.model }), timeoutMinutes, ...(kind === 'ideation' ? {} : { publish: input.publish ?? false, autoMerge: input.autoMerge ?? false }) };
   };
   const updateLease = (id, input, state) => {
     object(input, state ? ['workerId', 'leaseToken', 'result'] : ['workerId', 'leaseToken']);
@@ -121,6 +137,14 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     heartbeat: (id, input) => updateLease(id, input),
     complete: (id, input) => updateLease(id, input, 'completed'),
     fail: (id, input) => updateLease(id, input, 'failed'),
+    cancel(id, input = {}) {
+      object(input, []);
+      return tx(() => {
+        if (get(id).state !== 'queued') reject('Only queued jobs can be canceled', 409);
+        db.prepare("UPDATE jobs SET state='canceled',updatedAt=? WHERE id=?").run(now(), id);
+        return view(get(id));
+      });
+    },
     requeue(id, input = {}) {
       object(input, []);
       return tx(() => {
@@ -150,7 +174,7 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       let body; try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { reject('Invalid JSON'); }
       if (url.pathname === '/jobs') return reply(201, queue.enqueue(body));
       if (url.pathname === '/claim') return reply(200, queue.claim(body));
-      const match = /^\/jobs\/([a-f0-9-]+)\/(heartbeat|complete|fail|requeue)$/.exec(url.pathname);
+      const match = /^\/jobs\/([a-f0-9-]+)\/(heartbeat|complete|fail|requeue|cancel)$/.exec(url.pathname);
       if (!match) reject('Not found', 404);
       reply(200, queue[match[2]](match[1], body));
     } catch (error) { reply(error.status ?? 500, { error: error.status ? error.message : 'Internal server error' }); }

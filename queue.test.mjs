@@ -9,6 +9,45 @@ import { createQueue, createQueueServer, validBind, validateRegistry } from './q
 const projects = { a: {}, b: {} };
 const claim = (q, workerId = 'w', projectIds = ['a', 'b']) => q.claim({ workerId, projectIds });
 const credentials = j => ({ workerId: j.workerId, leaseToken: j.leaseToken });
+test('ideation queue validation, idempotency and queued-only cancellation', () => {
+  const q = createQueue(':memory:', { projects });
+  try {
+    const input = { projectId: 'a', kind: 'ideation', proposalLimit: 3, idempotencyKey: 'ideas' };
+    for (const change of [{ proposalLimit: undefined }, { proposalLimit: 0 }, { proposalLimit: 11 }, { issue: 'TEST-1' }, { publish: false }, { autoMerge: false }, { approvalRequired: false }]) assert.throws(() => q.enqueue({ ...input, ...change }));
+    for (const change of [{ kind: 'other' }, { proposalLimit: 1 }, { approvalRequired: true }, { approvalRequired: 'yes' }]) assert.throws(() => q.enqueue({ projectId: 'a', ...change }));
+    const job = q.enqueue(input);
+    assert.equal(q.enqueue(input).id, job.id);
+    assert.throws(() => q.enqueue({ ...input, proposalLimit: 2 }), /Idempotency/);
+    assert.throws(() => q.cancel(job.id, { unexpected: true }));
+    assert.equal(q.cancel(job.id, {}).state, 'canceled');
+    assert.equal(q.enqueue(input).state, 'canceled');
+    assert.throws(() => q.cancel(job.id), /Only queued/);
+    const dev = q.enqueue({ projectId: 'a', issue: 'TEST-1', approvalRequired: true });
+    assert.equal(dev.kind, 'development');
+    const running = claim(q);
+    assert.throws(() => q.cancel(running.id), /Only queued/);
+    q.complete(running.id, { ...credentials(running), result: { outcome: 'idle', summary: 'Approval withdrawn' } });
+    assert.throws(() => q.cancel(running.id), /Only queued/);
+    assert.throws(() => q.requeue(running.id));
+  } finally { q.close(); }
+});
+
+test('HTTP cancellation accepts only empty bodies and queued jobs', async () => {
+  const q = createQueue(':memory:', { projects });
+  const token = 'synthetic-token-at-least-24-characters';
+  const server = createQueueServer(q, { token });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const job = q.enqueue({ projectId: 'a', kind: 'ideation', proposalLimit: 3 });
+    const cancel = body => fetch(`http://127.0.0.1:${server.address().port}/jobs/${job.id}/cancel`, {
+      method: 'POST', headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' }, body: JSON.stringify(body),
+    });
+    assert.equal((await cancel({ wrong: true })).status, 400);
+    const response = await cancel({});
+    assert.equal(response.status, 200); assert.equal((await response.json()).state, 'canceled');
+    assert.equal((await cancel({})).status, 409);
+  } finally { await new Promise(resolve => server.close(resolve)); q.close(); }
+});
 test('autoMerge is opt-in, validated, durable and part of idempotency intent', () => {
   const dir = mkdtempSync(path.join(os.tmpdir(), 'team-merge-')); const dbPath = path.join(dir, 'queue.sqlite');
   let q = createQueue(dbPath, { projects });
@@ -30,6 +69,7 @@ test('autoMerge is opt-in, validated, durable and part of idempotency intent', (
     try {
       const request = JSON.parse(db.prepare('SELECT request FROM jobs WHERE id=?').get(legacy.id).request);
       delete request.autoMerge;
+      delete request.kind; delete request.approvalRequired;
       db.prepare('UPDATE jobs SET request=? WHERE id=?').run(JSON.stringify(request), legacy.id);
     } finally { db.close(); }
     q = createQueue(dbPath, { projects });
@@ -113,6 +153,17 @@ test('failed execution also quarantines its project for other workers', () => {
     assert.equal(claim(q, 'other', ['a']), null);
     assert.equal(claim(q, 'other').projectId, 'b');
     q.requeue(first.id); assert.equal(claim(q, 'other', ['a']).id, first.id);
+  } finally { q.close(); }
+});
+test('engine and fetch are optional, validated and retained', () => {
+  const q = createQueue(':memory:', { projects });
+  try {
+    for (const invalid of [{ engine: 'codex' }, { engine: 1 }, { fetch: 'yes' }, { fetch: true }, { fetch: true, base: 'main' }, { fetch: true, base: '-origin/main' }]) assert.throws(() => q.enqueue({ projectId: 'a', issue: 'FUM-9', ...invalid }));
+    const job = q.enqueue({ projectId: 'a', issue: 'FUM-1', engine: 'claude', base: 'origin/main', fetch: true });
+    assert.equal(job.engine, 'claude'); assert.equal(job.fetch, true); assert.equal(job.base, 'origin/main');
+    const plain = q.enqueue({ projectId: 'b', fetch: false });
+    assert.equal(plain.engine, undefined); assert.equal(plain.fetch, undefined);
+    assert.equal(claim(q, 'w', ['a']).engine, 'claude');
   } finally { q.close(); }
 });
 test('startup registry requires registered IDs and repository strings', () => {

@@ -49,6 +49,30 @@
         }
       }
     },
+    "team-ideation": {
+      "description": "Proposes substantial, evidence-based product features for owner approval in Linear.",
+      "mode": "primary",
+      "prompt": "{file:./agents/team-ideation.md}",
+      "steps": 40,
+      "permission": {
+        "task": "deny",
+        "question": "deny",
+        "linear_*": "deny",
+        "bash": {
+          "*": "deny",
+          "git log --oneline*": "allow",
+          "git status*": "allow",
+          "git ls-files*": "allow",
+          "ls*": "allow",
+          "cat*": "allow",
+          "head*": "allow",
+          "wc*": "allow",
+          "rg*": "allow",
+          "grep*": "allow",
+          "find*": "allow"
+        }
+      }
+    },
     "team-pm": {
       "description": "Maintains a project's scoped Linear backlog and selects actionable work.",
       "mode": "subagent",

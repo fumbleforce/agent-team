@@ -5,8 +5,10 @@ import plugin from './opencode-plugin.mjs';
 test('shared roles load preferences and prompts without project-specific configuration', async () => {
   const config = {};
   (await plugin()).config(config);
-  assert.equal(Object.keys(config.agent).length, 7);
+  assert.equal(Object.keys(config.agent).length, 8);
   assert.equal(config.command.team.agent, 'team-owner');
+  assert.equal(config.agent['team-ideation'].mode, 'primary');
+  assert.match(config.agent['team-ideation'].prompt, /read-only/);
   for (const agent of Object.values(config.agent)) {
     assert.match(agent.prompt, /Owner preferences/);
     assert.doesNotMatch(agent.prompt, /\{file:/);

@@ -12,6 +12,8 @@ import { setTimeout as delay } from 'node:timers/promises';
 import { acquireLock, main, parseArgs, validateResult, modelEnvironment, isSensitivePath, sparsePatterns } from './runner.mjs';
 
 const runner = fileURLToPath(new URL('./runner.mjs', import.meta.url));
+const proposal = { title: 'Bulk reconciliation', problem: 'Manual matching', benefit: 'Fewer errors', scope: 'Review and confirm matches', successCriteria: ['Can confirm a batch'], effort: 'M', evidence: ['Existing matching workflow'], whyNow: 'Repeated manual work' };
+const ideation = { enabled: true, backlogCap: 10, batchSize: 3, minimumIntervalHours: 24, ideaLabel: 'Idea', proposedState: 'Backlog', approvedState: 'Todo', rejectedState: 'Canceled' };
 const resultName = '.agent-team-result.json';
 const fakeOpenCode = String.raw`#!${process.execPath}
 import fs from 'node:fs';
@@ -38,7 +40,8 @@ const count = fs.existsSync(countFile) ? Number(fs.readFileSync(countFile, 'utf8
 fs.writeFileSync(countFile, String(count));
 console.log(JSON.stringify({type: 'fake', cycle: count}));
 console.error('fake stderr ' + count);
-fs.writeFileSync(path.join(cwd, 'agent-change.txt'), 'cycle ' + count);
+if (process.env.READ_ONLY !== '1') fs.writeFileSync(path.join(cwd, 'agent-change.txt'), 'cycle ' + count);
+if (process.env.IDEA_COMMIT === '1') spawnSync('git', ['-c', 'user.name=Test', '-c', 'user.email=test@example.invalid', 'commit', '--allow-empty', '-m', 'unauthorized'], { cwd });
 const modes = JSON.parse(process.env.MODES || '["ready"]');
 const mode = modes[count - 1] || modes.at(-1);
 if (mode === 'hang') {
@@ -60,6 +63,33 @@ if (mode === 'hang') {
 }
 `;
 
+const fakeClaude = String.raw`#!${process.execPath}
+import fs from 'node:fs';
+import path from 'node:path';
+const args = process.argv.slice(2);
+fs.appendFileSync(process.env.CALLS, JSON.stringify(['claude', ...args]) + '\n');
+if (args[0] === '--version') { console.log('2.1.273 (Claude Code)'); process.exit(0); }
+if (args[0] === 'auth') { console.log(process.env.FAKE_AUTH || JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty', subscriptionType: 'max', email: 'private@example.invalid' })); process.exit(0); }
+for (const name of ['ANTHROPIC_API_KEY', 'ANTHROPIC_AUTH_TOKEN', 'CLAUDECODE', 'CLAUDE_CODE_USE_BEDROCK', 'AGENT_TEAM_TOKEN', 'LINEAR_API_KEY', 'OPENCODE_CONFIG_CONTENT']) {
+  if (process.env[name] !== undefined) throw new Error('Forbidden variable reached Claude: ' + name);
+}
+const cwd = process.cwd();
+fs.writeFileSync(process.env.CONFIG_CAPTURE, JSON.stringify({ args, systemPrompt: fs.readFileSync(args[args.indexOf('--append-system-prompt-file') + 1], 'utf8') }));
+const mode = (JSON.parse(process.env.MODES || '["ready"]'))[0];
+console.log(JSON.stringify({ type: 'system', subtype: 'init', cwd }));
+if (mode === 'rate-limit') {
+  console.log(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } }));
+  console.error('You have hit your usage limit');
+  process.exit(1);
+}
+if (mode === 'crash') { console.error('unexpected engine failure'); process.exit(1); }
+if (mode === 'quiet-limit') { console.log(JSON.stringify({ type: 'result', subtype: 'error', is_error: true, result: 'Usage limit reached for this session' })); process.exit(0); }
+const report = { outcome: 'ready', issue: process.env.RESULT_ISSUE || 'TEST-1', summary: 'Fake targeted test evidence', prUrl: null };
+if (process.env.REPORT_OVERRIDE) Object.assign(report, JSON.parse(process.env.REPORT_OVERRIDE));
+fs.writeFileSync(path.join(cwd, '${resultName}'), JSON.stringify(report));
+console.log(JSON.stringify({ type: 'result', subtype: 'success', is_error: false, result: 'done' }));
+`;
+
 function git(cwd, ...args) {
   const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
   assert.equal(result.status, 0, result.stderr);
@@ -77,6 +107,9 @@ function fixture(t, modes = ['ready']) {
   fs.mkdirSync(path.join(packageDir, 'agents'), { recursive: true });
   fs.copyFileSync(runner, path.join(packageDir, 'runner.mjs'));
   fs.copyFileSync(fileURLToPath(new URL('./delivery.mjs', import.meta.url)), path.join(packageDir, 'delivery.mjs'));
+  fs.copyFileSync(fileURLToPath(new URL('./idea-schema.mjs', import.meta.url)), path.join(packageDir, 'idea-schema.mjs'));
+  fs.copyFileSync(fileURLToPath(new URL('./engines.mjs', import.meta.url)), path.join(packageDir, 'engines.mjs'));
+  fs.copyFileSync(fileURLToPath(new URL('./git-base.mjs', import.meta.url)), path.join(packageDir, 'git-base.mjs'));
   fs.writeFileSync(path.join(packageDir, 'agents', 'team-coordinator.md'), 'Shared generic coordinator prompt');
   fs.writeFileSync(path.join(packageDir, 'agents', 'team-developer.md'), 'Shared generic developer prompt');
   fs.writeFileSync(path.join(packageDir, 'opencode.json'), JSON.stringify({ agent: {
@@ -113,6 +146,7 @@ function fixture(t, modes = ['ready']) {
   };
   for (const [name, value] of Object.entries(setup)) fs.writeFileSync(path.join(root, name), value);
   fs.writeFileSync(path.join(bin, 'opencode'), fakeOpenCode, { mode: 0o755 });
+  fs.writeFileSync(path.join(bin, 'claude'), fakeClaude, { mode: 0o755 });
   fs.writeFileSync(path.join(bin, 'gh'), `#!${process.execPath}\nimport fs from 'node:fs';\nfs.appendFileSync(process.env.CALLS, JSON.stringify(['gh', ...process.argv.slice(2)]) + '\\n');\nprocess.exit(Number(process.env.GH_EXIT || 0));\n`, { mode: 0o755 });
   const env = { ...process.env, PATH: `${bin}:${process.env.PATH}`, CALLS: path.join(temporary, 'calls'),
     COUNT: path.join(temporary, 'count'), PIDS: path.join(temporary, 'pids'), MODES: JSON.stringify(modes),
@@ -149,7 +183,7 @@ function alive(pid) {
 }
 
 test('CLI defaults, bounds, conflicts and strict report schema', () => {
-  assert.deepEqual(parseArgs([]), { execute: false, cycles: 1, timeoutMinutes: 45, base: 'HEAD', publish: false, autoMerge: false });
+  assert.deepEqual(parseArgs([]), { execute: false, cycles: 1, timeoutMinutes: 45, base: 'HEAD', publish: false, autoMerge: false, engine: 'opencode', fetch: false });
   for (const args of [['--cycles', '0'], ['--cycles', '6'], ['--cycles', '1.5'], ['--timeout-minutes', '121'],
     ['--timeout-minutes', '0'], ['--model'], ['--wat'], ['--execute', '--dry-run'], ['--status', '--execute'], ['--execute', '--execute'],
     ['--publish', '--cycles', '2'], ['--issue', 'https://linear.app/issue'], ['--issue', 'FUM-0'], ['--project']]) {
@@ -162,6 +196,151 @@ test('CLI defaults, bounds, conflicts and strict report schema', () => {
     { ...good, issue: 2 }, { ...good, summary: '' }, { ...good, prUrl: 'not a URL' }]) {
     assert.throws(() => validateResult(report));
   }
+});
+
+test('ideation flags and reports enforce bounded proposals without issue work', () => {
+  const args = ['--ideate', '--proposal-limit', '2'];
+  assert.equal(parseArgs(args).proposalLimit, 2);
+  for (const extra of [['--issue', 'TEST-1'], ['--publish'], ['--cycles', '2'], ['--approval-required']]) assert.throws(() => parseArgs([...args, ...extra]));
+  assert.throws(() => parseArgs(['--ideate']));
+  assert.throws(() => parseArgs(['--proposal-limit', '2']));
+  const report = { outcome: 'ready', issue: null, prUrl: null, summary: 'Feature evidence', proposals: [proposal] };
+  const options = { ideate: true, proposalLimit: 1 };
+  assert.equal(validateResult(report, options).proposals.length, 1);
+  for (const change of [{ outcome: 'idle' }, { issue: 'TEST-1' }, { prUrl: 'https://example.invalid/pr' }, { proposals: [{ title: 'Incomplete' }] }, { proposals: [proposal, proposal] }]) assert.throws(() => validateResult({ ...report, ...change }, options));
+  const env = modelEnvironment({ LINEAR_API_KEY: 'private', AGENT_TEAM_FUTURE_TOKEN: 'private', PATH: '/bin' }, {});
+  assert.equal(env.LINEAR_API_KEY, undefined); assert.equal(env.AGENT_TEAM_FUTURE_TOKEN, undefined);
+});
+
+test('ideation executes in isolated worktree and rejects changes and commits', async t => {
+  for (const mode of ['read-only', 'change', 'commit']) {
+    const f = fixture(t);
+    const manifestFile = path.join(f.root, '.agent-team.json');
+    fs.writeFileSync(manifestFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(manifestFile)), ideation }));
+    const sharedFile = path.join(f.packageDir, 'opencode.json');
+    const shared = JSON.parse(fs.readFileSync(sharedFile));
+    shared.agent['team-ideation'] = { mode: 'primary', prompt: 'Inspect meaningful features' };
+    fs.writeFileSync(sharedFile, JSON.stringify(shared));
+    const env = { ...f.env, READ_ONLY: mode === 'change' ? '0' : '1', IDEA_COMMIT: mode === 'commit' ? '1' : '0',
+      REPORT_OVERRIDE: JSON.stringify({ issue: null, proposals: [proposal] }) };
+    const code = await f.run(['--execute', '--ideate', '--proposal-limit', '2'], { env });
+    assert.equal(code, mode === 'read-only' ? 0 : 1);
+    const journal = f.journals()[0];
+    if (mode === 'read-only') {
+      assert.equal(journal.proposals[0].title, proposal.title);
+      assert.ok(f.calls().some(args => args.includes('team-ideation')));
+    } else assert.match(journal.error, /read-only worktree/);
+  }
+});
+
+
+test('engine and fetch options are validated', () => {
+  assert.equal(parseArgs([]).engine, 'opencode');
+  assert.equal(parseArgs(['--engine', 'claude']).engine, 'claude');
+  assert.throws(() => parseArgs(['--engine', 'codex']), /Unknown engine/);
+  assert.equal(parseArgs(['--fetch', '--base', 'origin/main']).fetch, true);
+  for (const args of [['--fetch'], ['--fetch', '--base', 'main'], ['--fetch', '--base', 'origin/-x'], ['--fetch', '--base', 'origin/a..b']]) assert.throws(() => parseArgs(args), /REMOTE\/BRANCH/);
+});
+
+test('claude engine runs on the subscription login with shared roles, project instructions and Linear-only MCP', async t => {
+  const f = fixture(t);
+  const env = { ...f.env, ANTHROPIC_API_KEY: 'must-not-reach-claude', CLAUDECODE: '1', CLAUDE_CODE_USE_BEDROCK: '1', AGENT_TEAM_TOKEN: 'private-token' };
+  assert.equal(await f.run(['--execute', '--engine', 'claude', '--model', 'sonnet', '--issue', 'TEST-1'], { env }), 0);
+  const [journal] = f.journals();
+  assert.equal(journal.state, 'ready'); assert.equal(journal.engine, 'claude');
+  assert.deepEqual(journal.versions.claudeAuth, { authMethod: 'claude.ai', subscriptionType: 'max' });
+  assert.ok(!JSON.stringify(journal).includes('private@example.invalid'));
+  const calls = f.calls();
+  assert.deepEqual(calls.slice(0, 2), [['claude', '--version'], ['claude', 'auth', 'status']]);
+  assert.ok(!calls.some(call => call[0] === '--version'), 'OpenCode is not consulted for the Claude engine');
+  const capture = JSON.parse(fs.readFileSync(f.env.CONFIG_CAPTURE, 'utf8'));
+  assert.match(capture.args[0], /Pinned issue: TEST-1/);
+  assert.ok(capture.args.includes('--strict-mcp-config') && capture.args.includes('--no-session-persistence'));
+  assert.deepEqual(Object.keys(JSON.parse(capture.args[capture.args.indexOf('--mcp-config') + 1]).mcpServers), ['linear']);
+  assert.deepEqual(JSON.parse(capture.args[capture.args.indexOf('--agents') + 1])['team-developer'].prompt, 'Shared generic developer prompt');
+  assert.deepEqual(capture.args.slice(-2), ['--model', 'sonnet']);
+  assert.ok(!capture.args.some(arg => /max-budget|fallback-model|dangerously|--bare/.test(arg)));
+  for (const part of ['Shared generic coordinator prompt', 'Product scope', '## AGENTS.md', 'Project rules', 'Agent tool']) assert.ok(capture.systemPrompt.includes(part), part);
+  assert.ok(!capture.systemPrompt.includes('Shared generic developer prompt'));
+  const runDir = path.join(f.root, '.agent-team', 'runs', journal.id);
+  assert.equal(fs.statSync(path.join(runDir, 'system-prompt.md')).mode & 0o777, 0o600);
+  assert.match(fs.readFileSync(path.join(runDir, 'events.jsonl'), 'utf8'), /"type":"result"/);
+  assert.match(fs.readFileSync(path.join(runDir, 'summary.md'), 'utf8'), /Engine: claude/);
+});
+
+test('claude engine refuses API-key, third-party or logged-out authentication before any model call', async t => {
+  for (const status of [{ loggedIn: false }, { loggedIn: true, authMethod: 'console', apiProvider: 'firstParty' }, { loggedIn: true, authMethod: 'claude.ai', apiProvider: 'bedrock' }]) {
+    const f = fixture(t);
+    assert.equal(await f.run(['--execute', '--engine', 'claude'], { env: { ...f.env, FAKE_AUTH: JSON.stringify(status) } }), 1);
+    const [journal] = f.journals();
+    assert.match(journal.error, /claude\.ai subscription/);
+    assert.deepEqual(journal.cycles, []);
+    assert.equal(f.calls().filter(call => call[0] === 'claude' && call[1] !== '--version' && call[1] !== 'auth').length, 0);
+  }
+});
+
+test('claude usage limits block the run without retry; other engine failures fail', async t => {
+  const limited = fixture(t, ['rate-limit']);
+  assert.equal(await limited.run(['--execute', '--engine', 'claude', '--cycles', '3']), 2);
+  const [journal] = limited.journals();
+  assert.equal(journal.state, 'blocked'); assert.equal(journal.cycles.length, 1);
+  assert.equal(journal.cycles[0].stop, 'rate-limited');
+  assert.match(journal.summary, /usage limit reached/); assert.match(journal.summary, /No retry or API fallback/);
+  assert.equal(limited.calls().filter(call => call[0] === 'claude' && call[1] !== '--version' && call[1] !== 'auth').length, 1);
+  const quiet = fixture(t, ['quiet-limit']);
+  assert.equal(await quiet.run(['--execute', '--engine', 'claude']), 2);
+  assert.equal(quiet.journals()[0].cycles[0].stop, 'rate-limited');
+  const crashed = fixture(t, ['crash']);
+  assert.equal(await crashed.run(['--execute', '--engine', 'claude']), 1);
+  assert.equal(crashed.journals()[0].state, 'failed');
+});
+
+test('claude ideation is restricted to read-only file tools without MCP or subagents', async t => {
+  const f = fixture(t);
+  const manifestFile = path.join(f.root, '.agent-team.json');
+  fs.writeFileSync(manifestFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(manifestFile)), ideation }));
+  const sharedFile = path.join(f.packageDir, 'opencode.json');
+  const shared = JSON.parse(fs.readFileSync(sharedFile));
+  shared.agent['team-ideation'] = { mode: 'primary', prompt: 'Inspect meaningful features' };
+  fs.writeFileSync(sharedFile, JSON.stringify(shared));
+  const env = { ...f.env, REPORT_OVERRIDE: JSON.stringify({ issue: null, proposals: [proposal] }) };
+  assert.equal(await f.run(['--execute', '--engine', 'claude', '--ideate', '--proposal-limit', '2'], { env }), 0);
+  assert.equal(f.journals()[0].proposals[0].title, proposal.title);
+  const capture = JSON.parse(fs.readFileSync(f.env.CONFIG_CAPTURE, 'utf8'));
+  assert.ok(capture.args.includes('--restricted'));
+  assert.deepEqual(capture.args.slice(capture.args.indexOf('--tools'), capture.args.indexOf('--tools') + 2), ['--tools', 'Read,Grep,Glob,Write']);
+  assert.deepEqual(JSON.parse(capture.args[capture.args.indexOf('--mcp-config') + 1]), { mcpServers: {} });
+  assert.ok(!capture.args.includes('--agents'));
+  assert.ok(capture.systemPrompt.includes('Inspect meaningful features') && !capture.systemPrompt.includes('Agent tool'));
+});
+
+test('--fetch builds on the freshly fetched remote branch without touching the primary checkout', async t => {
+  const f = fixture(t);
+  const branch = git(f.root, 'symbolic-ref', '--short', 'HEAD');
+  const remote = path.join(path.dirname(f.root), 'remote.git');
+  git(f.root, 'init', '--bare', '--quiet', remote);
+  git(f.root, 'remote', 'add', 'origin', remote);
+  git(f.root, 'push', '--quiet', 'origin', branch);
+  const clone = path.join(path.dirname(f.root), 'clone');
+  git(f.root, 'clone', '--quiet', remote, clone);
+  fs.writeFileSync(path.join(clone, 'remote-only.txt'), 'pushed elsewhere\n');
+  git(clone, 'add', 'remote-only.txt');
+  git(clone, '-c', 'user.name=Remote', '-c', 'user.email=remote@example.invalid', 'commit', '-qm', 'remote progress');
+  git(clone, 'push', '--quiet', 'origin', branch);
+  const remoteHead = git(clone, 'rev-parse', 'HEAD');
+  const before = git(f.root, 'status', '--porcelain=v1', '--untracked-files=all');
+  assert.equal(await f.run(['--dry-run', '--base', `origin/${branch}`, '--fetch']), 0);
+  assert.equal(JSON.parse(f.output.at(-1)).baseCommit, f.base, 'dry-run does not fetch');
+  assert.equal(await f.run(['--execute', '--base', `origin/${branch}`, '--fetch']), 0);
+  const [journal] = f.journals();
+  assert.equal(journal.baseCommit, remoteHead);
+  assert.equal(fs.readFileSync(path.join(journal.worktree, 'remote-only.txt'), 'utf8'), 'pushed elsewhere\n');
+  assert.equal(git(f.root, 'rev-parse', 'HEAD'), f.base);
+  assert.equal(git(f.root, 'status', '--porcelain=v1', '--untracked-files=all'), before);
+  assert.equal(fs.readFileSync(path.join(f.root, 'tracked.txt'), 'utf8'), 'uncommitted main work\n');
+  assert.equal(fs.existsSync(path.join(f.root, 'remote-only.txt')), false);
+  assert.equal(await f.run(['--execute', '--base', 'origin/missing-branch', '--fetch']), 1);
+  assert.equal(f.journals().find(entry => entry.state === 'failed').cycles.length, 0);
 });
 
 test('auto-merge requires publish and one cycle; approvals only extend ready merge reports', () => {
@@ -547,6 +726,9 @@ test('model environment filters app overrides generically and retains model cred
     OPENCODE_CONFIG: '/existing/config.json', HOME: '/test/home', PATH: '/test/bin',
     OPENCODE_CONFIG_CONTENT: '{"agent":{}}' });
   assert.equal(source.E2E_FIKEN_LIVE, '1');
+  const claude = modelEnvironment({ ...source, CLAUDECODE: '1' }, null, 'claude');
+  assert.equal(claude.ANTHROPIC_API_KEY, undefined); assert.equal(claude.CLAUDECODE, undefined);
+  assert.equal(claude.OPENCODE_CONFIG_CONTENT, undefined); assert.equal(claude.OPENAI_API_KEY, 'test-token');
 });
 
 test('separate projects run concurrently using the same shared role package', async t => {
