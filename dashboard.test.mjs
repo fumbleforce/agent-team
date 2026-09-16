@@ -90,7 +90,7 @@ test('HTTP pages escape content, serve JSON, and reject writes and unknown paths
   const base = `http://127.0.0.1:${server.address().port}`;
   const index = await fetch(base + '/'); const html = await index.text();
   assert.equal(index.status, 200); assert.ok(!html.includes(MARKER)); assert.ok(html.includes('&lt;script&gt;'));
-  assert.ok(html.includes('on hold') && html.includes('15% used') && html.includes('Agent → team-pm') && html.includes('Release and rerun') && html.includes('25k'));
+  assert.ok(html.includes('on hold') && html.includes('15% used') && html.includes('Agent → team-pm') && html.includes('Release and rerun') && html.includes('25k') && html.includes('release the held job first'));
   const api = await (await fetch(base + '/api/state')).json();
   assert.equal(api.jobs[0].outcome, 'blocked');
   const run = await fetch(base + '/runs/myntbase/2026-09-16T06-00-00-000Z-aaaaaaaa');

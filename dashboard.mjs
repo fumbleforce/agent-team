@@ -172,7 +172,7 @@ h1{font:600 18px/1 var(--sans);margin:0;letter-spacing:-.01em}h1 span{color:var(
 .flash{margin:12px 0 0;padding:8px 12px;border-left:3px solid var(--wait);background:var(--panel);font-size:13px}.flash.err{border-color:var(--bad)}
 .projects{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin:14px 0}
 .card{background:var(--panel);border:1px solid var(--line);padding:10px 12px}.card.hold{border-color:#5a2b2f}.card .top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}.card .top b{font:600 13.5px var(--sans)}
-.card p{margin:2px 0;color:var(--muted);font-size:12.5px}.card p.n{font:11.5px var(--mono);color:var(--dim)}.card form{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+.card p{margin:2px 0;color:var(--muted);font-size:12.5px}.card p.n{font:11.5px var(--mono);color:var(--dim)}.card form{margin-top:8px;display:flex;gap:6px 10px;flex-wrap:wrap;align-items:center}.why{font:11.5px var(--mono);color:var(--dim)}
 button{font:12px var(--mono);color:var(--text);background:var(--panel-2);border:1px solid var(--line);padding:5px 10px;cursor:pointer;border-radius:3px}button:hover{border-color:var(--muted)}button[disabled]{opacity:.45;cursor:default}
 .cols{display:grid;grid-template-columns:minmax(0,3fr) minmax(0,2fr);gap:16px;align-items:start}.cols.even{grid-template-columns:1fr 1fr}@media(max-width:900px){.cols,.cols.even{grid-template-columns:1fr}}
 h2{font:600 12px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin:16px 0 8px;display:flex;gap:10px;align-items:baseline}h2 small{font-weight:400;text-transform:none;letter-spacing:0;color:var(--dim)}
@@ -212,7 +212,8 @@ export function renderIndex(state, flash = null) {
   const claude = state.usage;
   const usage = `<div class="usage">${gauge('Claude 5h', pct(claude?.fiveHour?.utilization), claude?.fiveHour?.resetsAt ? `resets ${clock(claude.fiveHour.resetsAt * 1000)} UTC` : 'from the last Claude run')}${gauge('Claude 7d', pct(claude?.sevenDay?.utilization), claude?.sevenDay?.resetsAt ? `resets ${clock(claude.sevenDay.resetsAt * 1000)} UTC` : '')}${gauge('OpenCode tokens 24h', state.openai.week ? compact(state.openai.day) : null, 'OpenCode reports tokens, not plan limits', 'raw')}${gauge('OpenCode tokens 7d', state.openai.week ? compact(state.openai.week) : null, state.openai.lastRun ? `last run ${compact(state.openai.lastRun.tokens)} tokens` : 'no OpenCode runs this week', 'raw')}</div>`;
   const cards = state.overview.map(p => {
-    const ideas = p.ideation ? (p.ideation.blockedBy ? `<button disabled title="${escape(p.ideation.blockedBy === 'cooldown' ? `Cooldown until ${when(p.ideation.cooldownEnds)} UTC` : `Waiting: ${p.ideation.blockedBy}`)}">Propose ideas</button>` : `<button type="submit" name="action" value="ideate">Propose ${p.ideation.batchSize} ideas</button>`) : '';
+    const why = { 'held job': 'release the held job first', 'active job': 'available when the current job finishes', cooldown: `cooldown until ${when(p.ideation?.cooldownEnds)} UTC` };
+    const ideas = p.ideation ? (p.ideation.blockedBy ? `<button disabled>Propose ideas</button><span class="why">${escape(why[p.ideation.blockedBy] ?? p.ideation.blockedBy)}</span>` : `<button type="submit" name="action" value="ideate">Propose ${p.ideation.batchSize} ideas</button>`) : '';
     const release = p.held.length ? `<button type="submit" name="action" value="requeue" title="Rerun the held job after you have inspected it">Release and rerun</button>` : '';
     return `<div class="card ${p.status === 'on hold' ? 'hold' : ''}"><div class="top"><b>${escape(p.name)}</b>${tag(p.status)}</div>
 <p>${p.running ? `${p.running.issue ? 'Building' : 'Running'} <a href="/runs/${escape(p.project)}/${escape(p.running.id)}">${escape(p.running.issue ?? (p.running.ideation ? 'ideation' : 'unpinned cycle'))}</a> · ${minutes(p.running.startedAt)} min` : p.status === 'on hold' ? `${p.held.length} job${p.held.length === 1 ? '' : 's'} on hold: ${escape(p.held[0].summary || p.held[0].issue || 'inspect the run')}` : p.queued.length ? `${p.queued.length} queued: ${escape(p.queued.map(job => job.issue ?? 'ideas').join(', '))}` : 'Idle, waiting for approved work'}</p>
@@ -240,8 +241,8 @@ ${ideas || release ? `<form method="post" action="/actions"><input type="hidden"
 <main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
 <div class="projects">${cards}</div>
 <div class="cols"><section><h2>Now</h2>${now}</section><section><h2>Upcoming <small>automatic runs in order</small></h2><div class="up">${upcomingHtml}</div></section></div>
-<div class="cols even"><section><h2>Queue <small>${state.jobs.filter(job => ['queued', 'running'].includes(job.state)).length || 'no'} active</small></h2><div class="list">${jobs || '<p class="empty">No jobs yet.</p>'}</div></section>
-<section><h2>Runs <small>latest ${state.runs.length}</small></h2><div class="list">${runs || '<p class="empty">No runs recorded yet.</p>'}</div></section></div></main>`;
+<div class="cols even"><section><h2>Queue <small>jobs asked of the coordinator · ${state.jobs.filter(job => ['queued', 'running'].includes(job.state)).length || 'none'} active</small></h2><div class="list">${jobs || '<p class="empty">No jobs yet.</p>'}</div></section>
+<section><h2>Runs <small>what the runner actually executed · latest ${state.runs.length}</small></h2><div class="list">${runs || '<p class="empty">No runs recorded yet.</p>'}</div></section></div></main>`;
   return page('Agent team', body, 10_000);
 }
 
