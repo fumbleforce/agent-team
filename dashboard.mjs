@@ -2,12 +2,14 @@ import { spawnSync } from 'node:child_process';
 import { createServer } from 'node:http';
 import * as fs from 'node:fs';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 import { validBind } from './queue.mjs';
 import { createClient } from './worker.mjs';
 import { localToken } from './cli.mjs';
 import { ROSTER } from './roster.mjs';
+
+const PORTRAITS = path.join(path.dirname(fileURLToPath(import.meta.url)), 'portraits');
 
 const UNITS = ['agent-team-coordinator', 'agent-team-worker', 'agent-team-intake'];
 const RUN_ID = /^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9-]+Z-[a-f0-9]{8}$/;
@@ -184,7 +186,7 @@ h1{font:600 18px/1 var(--sans);margin:0;letter-spacing:-.01em}h1 span{color:var(
 .g .bar{height:4px;background:var(--line);margin:5px 0 3px;position:relative}.g .bar i{position:absolute;inset:0 auto 0 0;background:var(--wait)}.g .bar i.hot{background:var(--run)}.g .bar i.full{background:var(--bad)}.g .n{font:11px var(--mono);color:var(--dim)}
 .meta{font:11.5px var(--mono);color:var(--dim);text-align:right}@media(max-width:900px){header{grid-template-columns:1fr 1fr}.meta{grid-column:1/-1;text-align:left}}
 .flash{margin:12px 0 0;padding:8px 12px;border-left:3px solid var(--wait);background:var(--panel);font-size:13px}.flash.err{border-color:var(--bad)}
-.team{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:14px 0 0}.member{background:var(--panel);border:1px solid var(--line);padding:8px 10px;font-size:12px;color:var(--muted)}.member.busy{border-color:#6b5a2c}.member b{display:block;color:var(--text);font-size:13px}.member small{display:block;font:11px var(--mono);color:var(--dim);margin-bottom:4px}.member.busy span{color:var(--run)}
+.team{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:8px;margin:14px 0 0}.member{background:var(--panel);border:1px solid var(--line);padding:8px 10px;font-size:12px;color:var(--muted);display:flex;gap:10px;align-items:center}.av{border-radius:50%;object-fit:cover;flex:none;vertical-align:-3px;margin-right:5px;background:var(--panel-2)}.member .av{margin:0;width:44px;height:44px}.member.busy{border-color:#6b5a2c}.member b{display:block;color:var(--text);font-size:13px}.member small{display:block;font:11px var(--mono);color:var(--dim);margin-bottom:4px}.member.busy span{color:var(--run)}
 .projects{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px;margin:14px 0}
 .card{background:var(--panel);border:1px solid var(--line);padding:10px 12px}.card.hold{border-color:#5a2b2f}.card .top{display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:6px}.card .top b{font:600 13.5px var(--sans)}
 .card p{margin:2px 0;color:var(--muted);font-size:12.5px}.card p.n{font:11.5px var(--mono);color:var(--dim)}.card form{margin-top:8px;display:flex;gap:6px 10px;flex-wrap:wrap;align-items:center}.why{font:11.5px var(--mono);color:var(--dim)}
@@ -205,9 +207,10 @@ h2{font:600 12px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;col
 .up{background:var(--panel);border:1px solid var(--line);padding:8px 12px}.up .item{display:grid;grid-template-columns:24px minmax(0,1fr);gap:8px;padding:5px 0;border-bottom:1px solid var(--line);font-size:12.5px}.up .item:last-child{border:0}.up i{font-style:normal;color:var(--dim);font:11.5px var(--mono);text-align:right}.up small{display:block;color:var(--dim);font:11px var(--mono)}
 pre{background:var(--panel);border:1px solid var(--line);padding:12px;overflow:auto;font:12px/1.5 var(--mono);white-space:pre-wrap;color:var(--muted)}
 .crumb{font:12px var(--mono);margin-bottom:12px}`;
+const avatar = (role, size = 20) => Object.hasOwn(ROSTER, role) ? `<img class="av" src="/portraits/${role}.webp" width="${size}" height="${size}" alt="">` : '';
 const tag = value => `<span class="st ${escape(value)}">${escape(value)}</span>`;
 const ticker = (steps, id, full = false) => steps.length
-  ? `<div class="ticker ${full ? 'full' : ''}" data-ticker="${escape(id)}">${steps.map((step, index) => `<div><i>${index + 1}</i><span class="${step.kind === 'text' ? 'say' : step.scope === 'subagent' ? 'agent' : 't'}">${step.member ? `<b>${escape(ROSTER[step.member]?.name ?? step.member)}</b> ` : ''}${escape(step.text)}</span></div>`).join('')}</div>`
+  ? `<div class="ticker ${full ? 'full' : ''}" data-ticker="${escape(id)}">${steps.map((step, index) => `<div><i>${index + 1}</i><span class="${step.kind === 'text' ? 'say' : step.scope === 'subagent' ? 'agent' : 't'}">${step.member ? `${avatar(step.member, 16)}<b>${escape(ROSTER[step.member]?.name ?? step.member)}</b> ` : ''}${escape(step.text)}</span></div>`).join('')}</div>`
   : '<p class="empty">Started; waiting for the first model step.</p>';
 const gauge = (name, value, note, kind = 'pct') => `<div class="g"><div class="l"><span>${escape(name)}</span><b>${value === null ? 'no data' : kind === 'pct' ? `${value}% used` : escape(value)}</b></div><div class="bar"><i class="${kind === 'pct' && value >= 95 ? 'full' : kind === 'pct' && value >= 75 ? 'hot' : ''}" style="width:${kind === 'pct' ? (value ?? 0) : 0}%"></i></div><div class="n">${escape(note)}</div></div>`;
 // Live refresh swaps <main> from a fresh render; tickers that were at the bottom glide to the new bottom.
@@ -256,7 +259,7 @@ ${ideas || release ? `<form method="post" action="/actions"><input type="hidden"
   const body = `<header><h1>Agent team <span>x3d</span></h1>${usage}<div class="meta">${escape(when(state.generatedAt))} UTC · live · <a href="/api/state">JSON</a></div></header>
 <div class="units">${units}</div>
 <main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
-<div class="team">${state.team.map(m => `<div class="member ${m.working ? 'busy' : ''}"><b>${escape(m.name)}</b><small>${escape(m.title)}</small><span>${m.working ? `on <a href="/runs/${escape(m.working.project)}/${escape(m.working.id)}">${escape(m.working.issue)}</a>${m.steps ? ` · ${m.steps} steps` : ''}` : 'idle'}</span></div>`).join('')}</div>
+<div class="team">${state.team.map(m => `<div class="member ${m.working ? 'busy' : ''}">${avatar(m.role, 44)}<div><b>${escape(m.name)}</b><small>${escape(m.title)}</small><span>${m.working ? `on <a href="/runs/${escape(m.working.project)}/${escape(m.working.id)}">${escape(m.working.issue)}</a>${m.steps ? ` · ${m.steps} steps` : ''}` : 'idle'}</span></div></div>`).join('')}</div>
 <div class="projects">${cards}</div>
 <div class="cols"><section><h2>Now</h2>${now}</section><section><h2>Upcoming <small>automatic runs in order</small></h2><div class="up">${upcomingHtml}</div></section></div>
 <div class="cols even"><section><h2>Queue <small>jobs asked of the coordinator · ${state.jobs.filter(job => ['queued', 'running'].includes(job.state)).length || 'none'} active</small></h2><div class="list">${jobs || '<p class="empty">No jobs yet.</p>'}</div></section>
@@ -321,6 +324,12 @@ export function createDashboardServer(config) {
         return reply(200, 'text/html; charset=utf-8', renderIndex(state(), flash));
       }
       if (url.pathname === '/api/state') return reply(200, 'application/json', JSON.stringify(state()));
+      const portrait = /^\/portraits\/(team-[a-z]+)\.webp$/.exec(url.pathname);
+      if (portrait) {
+        const file = path.join(config.portraits ?? PORTRAITS, `${portrait[1]}.webp`);
+        if (!Object.hasOwn(ROSTER, portrait[1]) || !fs.existsSync(file)) return reply(404, 'text/plain', 'Not found');
+        res.writeHead(200, { 'content-type': 'image/webp', 'cache-control': 'public, max-age=3600' }); return res.end(fs.readFileSync(file));
+      }
       const match = /^\/runs\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/([^/]+)$/.exec(url.pathname);
       const detail = match && runDetail({ projects, project: match[1], id: match[2] });
       if (!detail) return reply(404, 'text/plain', 'Not found');

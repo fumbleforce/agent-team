@@ -104,6 +104,10 @@ test('HTTP pages escape content, serve JSON, and reject writes and unknown paths
   assert.equal((await fetch(base + '/runs/other/2026-09-16T06-00-00-000Z-aaaaaaaa')).status, 404);
   assert.equal((await fetch(base + '/', { method: 'POST' })).status, 404);
   assert.equal((await fetch(base + '/', { method: 'PUT' })).status, 405);
+  const portrait = await fetch(base + '/portraits/team-pm.webp');
+  assert.equal(portrait.status, 200); assert.equal(portrait.headers.get('content-type'), 'image/webp');
+  for (const bad of ['/portraits/team-nobody.webp', '/portraits/../roster.mjs', '/portraits/team-pm.png']) assert.equal((await fetch(base + bad)).status, 404);
+  assert.ok(html.includes('src="/portraits/team-pm.webp"'));
   assert.ok(renderIndex({ generatedAt: new Date().toISOString(), services: {}, overview: [], team: [], jobs: [], runs: [], live: [], usage: null, openai: { day: 0, week: 0, lastRun: null }, quarantined: [], defaultEngine: 'claude' }).includes('No jobs yet'));
 });
 
