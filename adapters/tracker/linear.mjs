@@ -162,7 +162,22 @@ export function createClient({ apiKey = process.env.LINEAR_API_KEY, fetchImpl = 
     }
     return issue;
   }
-  return { context, snapshot, publishProposals, prepareApproved, checkApproved, inboxComments, issueComments, postComment, approvalStatus };
+  // Choices for the dashboard settings form: teams in the workspace, plus projects, labels and
+  // workflow states of one team. Returns only identifiers and names.
+  async function lookup({ teamId = null } = {}) {
+    const workspace = await request('query { organization { id name urlKey } teams(first: 100) { nodes { id key name } pageInfo { hasNextPage endCursor } } }');
+    const teams = (workspace.teams?.nodes ?? []).map(team => ({ id: team.id, key: team.key, name: team.name }));
+    const result = { workspace: { id: workspace.organization?.id ?? null, name: workspace.organization?.name ?? null, url: workspace.organization?.urlKey ? `https://linear.app/${workspace.organization.urlKey}` : null }, teams, projects: [], labels: [], states: [] };
+    const team = teamId ?? teams[0]?.id ?? null;
+    if (!team) return result;
+    const detail = await request(`query($id: String!) { team(id: $id) {
+      projects(first: 100) { nodes { id name url } pageInfo { hasNextPage endCursor } }
+      labels(first: 100) { nodes { id name } pageInfo { hasNextPage endCursor } }
+      states(first: 100) { nodes { id name type } pageInfo { hasNextPage endCursor } } } }`, { id: team });
+    const nodes = key => detail.team?.[key]?.nodes ?? [];
+    return { ...result, teamId: team, projects: nodes('projects').map(node => ({ id: node.id, name: node.name, url: node.url })), labels: nodes('labels').map(node => ({ id: node.id, name: node.name })), states: nodes('states').map(node => ({ id: node.id, name: node.name, type: node.type })) };
+  }
+  return { context, snapshot, publishProposals, prepareApproved, checkApproved, inboxComments, issueComments, postComment, approvalStatus, lookup };
 }
 
 export const createLinearClient = createClient;

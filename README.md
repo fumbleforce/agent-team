@@ -285,6 +285,9 @@ All routes require `Authorization: Bearer ...`; JSON request bodies are limited 
 | `POST /jobs/:id/fail` | Record blocked/failed using current lease |
 | `POST /jobs/:id/requeue` | Explicit recovery of blocked/failed work |
 | `POST /jobs/:id/cancel` | Cancel a still-queued job (intake uses this for withdrawn approvals) |
+| `GET/POST /projects/:id/settings` | Owner overrides for the manifest's operational sections, and the effective manifest they produce |
+| `GET /projects/:id/settings/history` | Every saved override document with author and note |
+| `GET /projects/:id/tracker/lookup` | Teams, projects, labels and states from the tracker for the settings form |
 
 ## Provider-neutral core and adapters
 
@@ -315,6 +318,12 @@ node core/seed-memory.mjs --project /path/to/project --coordinator http://127.0.
 ## Resident PM
 
 `core/pm.mjs` runs on the control plane with the engine named in `pm.json` (`npm run pm`). It answers owner messages from the dashboard chat, watches the tracker and job completions, curates memory proposals into commits, and acts within the manifest's `pm.autonomy` (`observe`, `suggest`, `act`): it may enqueue ready work, comment and write observations on its own; state moves, `decision` items and spend above `pm.dailyCapUsd` go to the decision inbox for the owner.
+
+## Project settings in the dashboard
+
+The repository's `.agent-team.json` says what the project *is*: source control, base branch, required checks, whether auto-merge may ever be authorized, charter and instructions. Changing those is a commit and a review. How the project is *run* is an owner decision that changes more often, so the dashboard's Settings page (`/projects/<id>/settings`) lets the owner override the `tracker` scope (team, project, ready label, inbox issue; never the tracker kind), `engine` defaults, `worker` launcher and size, `memory` injection budget, `pm` autonomy and spend cap, `team.roles`, and `ideation` cadence without a commit.
+
+Overrides live in the coordinator database as a small JSON document per project, validated by `validateOverrides` against an allowlist of sections and by normalizing the merged manifest before saving. Every consumer sees the same effective manifest: `GET /projects` returns it for intake and the resident PM, the coordinator's launcher reads it to choose compute, and workers fetch `/projects/<id>/settings` before each run and pass the document to the runner as `--settings-file`, which merges it and overlays the effective `.agent-team.json` in the worktree so the model reads exactly what the runner enforces (the overlay is never committed). The form shows the effective value of every field, marks overridden ones with the repository value on hover, stores only genuine deviations, and keeps a history with notes. Repository-owned values are listed read-only beneath the form.
 
 ## Ephemeral workers
 

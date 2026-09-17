@@ -313,3 +313,24 @@ test('workers register manifests, stream run evidence from the run directory, an
     assert.match(q.list().at(-1).result.summary, /No reply: Claude usage limit/); assert.equal(q.list().at(-1).state, 'blocked');
   } finally { q.close(); }
 });
+
+test('owner settings from the coordinator reach the runner as a settings file and shape ideation preflight', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'team-settings-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const checkout = path.join(root, 'checkout'); mkdirSync(checkout);
+  writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ ...manifest, queueProjectId: 'a' }));
+  const q = createQueue(':memory:', { projects: { a: {}, b: {} } });
+  try {
+    q.saveSettings('a', { overrides: { pm: { autonomy: 'act' }, engine: { default: 'claude' } }, author: 'owner' });
+    q.enqueue({ projectId: 'a', issue: 'FUM-1' });
+    let seen;
+    await runWorker({ ...config, stateDir: path.join(root, 'state'), projects: { a: checkout, b: '/tmp/synthetic-b' } }, { once: true, request: requestFor(q), run: async ({ args }) => { seen = args; return { code: 0, journal: { outcome: 'idle' } }; } });
+    const file = seen[seen.indexOf('--settings-file') + 1];
+    assert.deepEqual(JSON.parse(readFileSync(file, 'utf8')), { pm: { autonomy: 'act' }, engine: { default: 'claude' } });
+    assert.equal(statSync(file).mode & 0o777, 0o600);
+    // Without overrides no settings file is passed at all.
+    q.saveSettings('a', { overrides: {}, author: 'owner' });
+    q.enqueue({ projectId: 'a', issue: 'FUM-2' });
+    await runWorker({ ...config, stateDir: path.join(root, 'state'), projects: { a: checkout, b: '/tmp/synthetic-b' } }, { once: true, request: requestFor(q), run: async ({ args }) => { seen = args; return { code: 0, journal: { outcome: 'idle' } }; } });
+    assert.ok(!seen.includes('--settings-file'));
+  } finally { q.close(); }
+});

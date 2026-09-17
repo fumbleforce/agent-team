@@ -915,3 +915,20 @@ test('SIGINT and SIGTERM preserve interrupted journals and kill the group', asyn
     });
   }
 });
+
+test('--settings-file merges owner overrides into the manifest and overlays the effective document in the worktree', async t => {
+  const f = fixture(t);
+  const settings = path.join(f.root, '..', 'settings.json');
+  fs.writeFileSync(settings, JSON.stringify({ engine: { default: 'claude', model: 'sonnet' }, pm: { autonomy: 'act' } }));
+  const env = { ...f.env, CLAUDECODE: '1', AGENT_TEAM_TOKEN: 'private-token' };
+  assert.equal(await f.run(['--execute', '--issue', 'TEST-1', '--settings-file', settings], { env }), 0);
+  const [journal] = f.journals();
+  assert.equal(journal.engine, 'claude');
+  const capture = JSON.parse(fs.readFileSync(f.env.CONFIG_CAPTURE, 'utf8'));
+  assert.deepEqual(capture.args.slice(-2), ['--model', 'sonnet']);
+  const overlay = JSON.parse(fs.readFileSync(path.join(journal.worktree, '.agent-team.json'), 'utf8'));
+  assert.equal(overlay.version, 2); assert.equal(overlay.engine.default, 'claude'); assert.equal(overlay.pm.autonomy, 'act');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(f.root, '.agent-team.json'), 'utf8')).version, 1, 'the primary checkout is untouched');
+  fs.writeFileSync(settings, JSON.stringify({ scm: { kind: 'gitlab' } }));
+  await assert.rejects(f.run(['--execute', '--issue', 'TEST-1', '--settings-file', settings], { env }), /scm cannot be overridden/);
+});

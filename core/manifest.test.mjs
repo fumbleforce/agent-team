@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { normalizeManifest, approvalRoles, flatTracker, ALL_ROLES, DEFAULT_ROLES } from './manifest.mjs';
+import { normalizeManifest, approvalRoles, flatTracker, ALL_ROLES, DEFAULT_ROLES, validateOverrides, applyOverrides, OVERRIDABLE_SECTIONS } from './manifest.mjs';
 
 const v1 = { version: 1, name: 'Legacy', instructions: ['AGENTS.md'], workspaceId: 'w', workspaceUrl: 'https://tracker.example/w', teamId: 't', projectId: 'p', projectUrl: 'https://tracker.example/w/p', readyLabel: 'agent:ready', delivery: { repository: 'owner/repo', autoMergeAuthorized: true } };
 
@@ -29,4 +29,24 @@ test('a version 2 manifest fills defaults and validates each section', () => {
     assert.throws(() => normalizeManifest({ version: 2, name: 'Modern', instructions: [], tracker: { workspaceId: 'w', workspaceUrl: 'https://t.example/w', teamId: 't', projectId: 'p', projectUrl: 'https://t.example/p', readyLabel: 'r' }, scm: { repository: 'owner/repo' }, ...change }), `${JSON.stringify(change)} must be rejected`);
   }
   assert.ok(ALL_ROLES.includes('team-reviewer'));
+});
+
+test('dashboard overrides merge into allowlisted sections and are validated', () => {
+  const merged = normalizeManifest(v1, { tracker: { projectId: 'p2', ownerInboxIssue: null }, pm: { autonomy: 'act', dailyCapUsd: 5 }, team: { roles: ['team-dev'] }, engine: { default: 'claude' } });
+  assert.equal(merged.tracker.projectId, 'p2'); assert.equal(merged.tracker.kind, 'linear');
+  assert.equal(merged.pm.autonomy, 'act'); assert.equal(merged.pm.dailyCapUsd, 5);
+  assert.deepEqual(merged.team.roles, ['team-dev']); assert.equal(merged.engine.default, 'claude');
+  assert.deepEqual(approvalRoles(merged), []);
+  assert.deepEqual(normalizeManifest(v1, {}), normalizeManifest(v1));
+  assert.deepEqual(validateOverrides({ pm: {} }), {});
+  assert.throws(() => validateOverrides({ scm: { kind: 'gitlab' } }), /cannot be overridden/);
+  assert.throws(() => validateOverrides({ delivery: { autoMergeAuthorized: true } }), /cannot be overridden/);
+  assert.throws(() => validateOverrides({ tracker: { kind: 'jira' } }), /tracker\.kind cannot/);
+  assert.throws(() => validateOverrides({ pm: { autonomy: { nested: true } } }), /Invalid override value/);
+  assert.throws(() => validateOverrides({ pm: { 'bad key': 1 } }), /Invalid override key/);
+  assert.throws(() => normalizeManifest(v1, { pm: { autonomy: 'yolo' } }), /pm\.autonomy/);
+  assert.throws(() => normalizeManifest(v1, { worker: { launcher: 'balloon' } }), /worker\.launcher/);
+  const cleared = applyOverrides({ ...v1, version: 2, tracker: { kind: 'linear', workspaceId: 'w', workspaceUrl: 'https://t/w', teamId: 't', projectId: 'p', projectUrl: 'https://t/p', readyLabel: 'r', ownerInboxIssue: 'T-1' } }, { tracker: { ownerInboxIssue: null } });
+  assert.equal(Object.hasOwn(cleared.tracker, 'ownerInboxIssue'), false);
+  assert.ok(OVERRIDABLE_SECTIONS.includes('pm') && !OVERRIDABLE_SECTIONS.includes('scm'));
 });

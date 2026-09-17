@@ -10,6 +10,7 @@ import { ROSTER } from './roster.mjs';
 import { clip, eventSteps } from './evidence.mjs';
 import { linkText } from '../adapters/scm/index.mjs';
 import { ITEM_TYPES, ITEM_STATUS } from './memory.mjs';
+import { overridesFromForm, renderSettingsForm, renderSettingsHistory } from './settings.mjs';
 
 const PORTRAITS = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'portraits');
 const PM = 'team-pm';
@@ -113,7 +114,12 @@ pre{background:var(--panel);border:1px solid var(--line);padding:12px;overflow:a
 .mh{grid-template-columns:auto 1fr;align-items:start}.mh .av{width:96px;height:96px;margin:0}.voice{margin:6px 0;color:var(--muted);max-width:70ch}.mh p.n{font:11.5px var(--mono);color:var(--dim);margin:0}
 .chat{background:var(--panel);border:1px solid var(--line);padding:10px 12px;max-height:480px;overflow-y:auto;scroll-behavior:smooth}.msg{display:flex;gap:8px;padding:8px 0;border-bottom:1px solid var(--line);font-size:13px;white-space:pre-wrap}.msg:last-child{border:0}.msg .who{font:11.5px var(--mono);color:var(--dim);margin-bottom:2px;white-space:normal}.msg.owner .who{color:var(--wait)}.msg.failed,.msg.blocked{color:var(--bad)}.msg .av{margin-top:2px}
 .talk{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}.talk select{background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:5px;font:12px var(--mono);border-radius:3px}
-.compose{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.compose textarea,.compose select,.compose input{grid-column:1/-1;background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:8px;font:13px var(--sans);border-radius:3px}.compose select,.compose input{grid-column:auto}.compose button{grid-column:1/-1;justify-self:end}`;
+.compose{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.compose textarea,.compose select,.compose input{grid-column:1/-1;background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:8px;font:13px var(--sans);border-radius:3px}.compose select,.compose input{grid-column:auto}.compose button{grid-column:1/-1;justify-self:end}
+.settings fieldset{border:1px solid var(--line);border-radius:4px;padding:10px 14px;margin:14px 0;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px 18px}.settings legend{color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.08em;padding:0 6px}.settings legend small{text-transform:none;letter-spacing:0;margin-left:6px}
+.field{display:flex;flex-direction:column;gap:4px}.field label{font-size:12px;color:var(--muted)}.field input[type=text],.field input[type=number],.field select{background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:7px;font:13px var(--sans);border-radius:3px}.field small{color:var(--dim);font-size:11px}.field input[type=checkbox]{width:16px;height:16px;align-self:start}
+.roles{border:0;padding:0;margin:0;display:flex;flex-wrap:wrap;gap:6px 12px}.roles label{font-size:12px;display:inline-flex;gap:4px;align-items:center}.sr{position:absolute;left:-9999px}
+.actions{display:flex;gap:10px;justify-content:flex-end;margin-top:8px}.actions .secondary{background:transparent;color:var(--muted);border:1px solid var(--line)}
+.st.act{background:var(--run);color:#1a1200;font-size:10px;padding:1px 5px;border-radius:3px}`;
 const avatar = (role, size = 20) => Object.hasOwn(ROSTER, role) ? `<img class="av" src="/portraits/${role}.webp" width="${size}" height="${size}" alt="">` : '';
 const tag = value => `<span class="st ${escape(value)}">${escape(value)}</span>`;
 const ticker = (steps, id, full = false) => steps.length
@@ -265,7 +271,7 @@ export function renderProject({ project, state, thread, decisions, costs, flash 
     : '<p class="empty">Nothing waiting on you.</p>';
   const spend = costs ? `<div class="usage">${gauge('Spend today', usd(costs.day?.usd), `${costs.day?.entries ?? 0} entries`, 'raw')}${gauge('Spend 7d', usd(costs.week?.usd), `${compact(costs.week?.tokens ?? 0)} tokens`, 'raw')}${gauge('Spend 30d', usd(costs.month?.usd), '', 'raw')}</div>` : '';
   const board = state.jobs.filter(job => job.projectId === project.project && job.kind !== 'chat').slice(0, 12).map(job => `<div class="row"><span class="at">${escape(clock(job.createdAt))}</span><span class="who">${escape(job.issue ?? job.kind)}</span><span class="what">${escape(job.summary) || (job.state === 'queued' ? 'Waiting for a worker.' : job.state === 'running' ? 'In progress.' : '')}</span>${tag(job.state)}</div>`).join('');
-  const body = `<div class="crumb"><a href="/">← Agent team</a> · <a href="/projects/${escape(project.project)}/memory">Memory</a> · <a href="/team/${PM}?project=${escape(project.project)}">Tracker thread</a></div>
+  const body = `<div class="crumb"><a href="/">← Agent team</a> · <a href="/projects/${escape(project.project)}/memory">Memory</a> · <a href="/projects/${escape(project.project)}/settings">Settings</a> · <a href="/team/${PM}?project=${escape(project.project)}">Tracker thread</a></div>
 <header class="mh">${avatar(PM, 96)}<div><h1>${escape(project.name)} <span>with ${escape(pm.name)}, ${escape(pm.title)}</span></h1><p class="voice">${escape(pm.voice)}</p><p class="n">${escape([project.scm, project.tracker, project.engine, `PM autonomy ${project.autonomy ?? 'suggest'}`, project.status].filter(Boolean).join(' · '))}</p></div></header>
 ${spend}
 <main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
@@ -274,6 +280,16 @@ ${spend}
 <section><h2 id="decisions">Decisions <small>${decisions.length} open</small></h2>${inbox}
 <h2>Board mirror <small>latest jobs</small></h2><div class="list">${board || '<p class="empty">No jobs yet.</p>'}</div></section></div></main>`;
   return page(`${project.name} · ${pm.name}`, body, 8_000);
+}
+
+export function renderSettings({ project, settings, history, lookup, lookupError, flash }) {
+  const body = `<div class="crumb"><a href="/">← Agent team</a> · <a href="/projects/${escape(project.project)}">${escape(project.name)}</a> · Settings</div>
+<header><h1>Settings <span>${escape(project.name)}</span></h1><div></div><div class="meta">${settings.updatedAt ? `last saved ${escape(when(new Date(settings.updatedAt).toISOString()))} UTC by ${escape(settings.author)}` : 'repository values in force'}</div></header>
+<main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
+<p class="n">Values saved here override the repository's .agent-team.json for intake, the PM and every run, without a commit. Fields marked <span class="st act">override</span> differ from the repository. Clearing a field returns it to the repository value.</p>
+${renderSettingsForm({ projectId: project.project, settings, lookup, lookupError })}
+<h2>History <small>${history.length} changes</small></h2>${renderSettingsHistory(history)}</main>`;
+  return page(`Settings · ${project.name}`, body, 0);
 }
 
 export function renderMemory({ project, memory, proposals, flash }) {
@@ -337,7 +353,7 @@ export function createDashboardServer(config) {
       if (config.password && !basicAuth(req, config.password)) { req.resume(); res.writeHead(401, { 'www-authenticate': 'Basic realm="agent-team"', 'content-type': 'text/plain' }); return res.end('Sign in'); }
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'POST') {
-        const projectAction = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(message|memory|decision|proposal)$/.exec(url.pathname);
+        const projectAction = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(message|memory|decision|proposal|settings)$/.exec(url.pathname);
         if (!['/actions', '/chat'].includes(url.pathname) && !projectAction) return reply(404, 'text/plain', 'Not found');
         if (!sameOrigin(req)) { req.resume(); return reply(403, 'text/plain', 'Actions are accepted from the dashboard page only'); }
         let size = 0; const chunks = [];
@@ -347,10 +363,20 @@ export function createDashboardServer(config) {
         if (projectAction) {
           const [, projectId, what] = projectAction;
           const owner = { name: 'owner' };
-          const page = what === 'memory' ? `/projects/${projectId}/memory` : `/projects/${projectId}`;
+          const page = what === 'memory' || what === 'settings' ? `/projects/${projectId}/${what}` : `/projects/${projectId}`;
           const back = (text, to = page) => { res.writeHead(303, { location: `${to}${to.includes('?') ? '&' : '?'}${text.error ? 'error' : 'ok'}=${encodeURIComponent(text.text)}` }); res.end(); };
           if (!current.overview.some(p => p.project === projectId)) return back({ error: true, text: 'Unknown project.' }, '/');
           try {
+            if (what === 'settings') {
+              const note = (form.get('note') ?? '').trim() || undefined;
+              if (form.get('reset') === '1') { await request(`/projects/${projectId}/settings`, { overrides: {}, author: owner.name, note: note ?? 'Cleared all overrides' }); return back({ text: 'All overrides cleared; repository values are in force.' }); }
+              const current = await request(`/projects/${projectId}/settings`);
+              let overrides;
+              try { overrides = overridesFromForm(form, current.repoManifest ?? current.manifest); } catch (error) { return back({ error: true, text: error.message }); }
+              const saved = await request(`/projects/${projectId}/settings`, { overrides, author: owner.name, note });
+              const count = Object.values(saved.overrides).reduce((sum, section) => sum + Object.keys(section).length, 0);
+              return back({ text: count ? `Saved ${count} override${count === 1 ? '' : 's'}; they apply to the next intake poll, PM session and run.` : 'Saved; no values differ from the repository.' });
+            }
             if (what === 'message') {
               const body = (form.get('message') ?? '').trim();
               if (!body) return back({ error: true, text: 'Write a message first.' });
@@ -465,12 +491,19 @@ export function createDashboardServer(config) {
         if (url.searchParams.get('format') === 'json') return reply(200, 'application/json', JSON.stringify({ ...detail, injection, artifacts, proposals }));
         return reply(200, 'text/html; charset=utf-8', renderRun(detail, { injection, artifacts, proposals }));
       }
-      const projectPage = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})(\/memory(?:\/(file|history))?)?$/.exec(url.pathname);
+      const projectPage = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})(\/memory(?:\/(file|history))?|\/settings)?$/.exec(url.pathname);
       if (projectPage) {
         const [, projectId, memoryPath, sub] = projectPage;
         const current = await state();
         const project = current.overview.find(p => p.project === projectId);
         if (!project) return reply(404, 'text/plain', 'Unknown project');
+        if (memoryPath === '/settings') {
+          const [settings, history] = await Promise.all([request(`/projects/${projectId}/settings`), request(`/projects/${projectId}/settings/history?limit=30`)]);
+          const team = url.searchParams.get('team') ?? undefined;
+          let lookup = null; let lookupError = null;
+          try { lookup = await request(`/projects/${projectId}/tracker/lookup${team ? `?team=${encodeURIComponent(team)}` : ''}`); } catch (error) { lookupError = error.message; }
+          return reply(200, 'text/html; charset=utf-8', renderSettings({ project, settings, history, lookup, lookupError, flash }));
+        }
         if (!memoryPath) {
           const [thread, decisions, costs] = await Promise.all([request(`/projects/${projectId}/thread`), request(`/decisions?project=${projectId}&state=open`), request(`/projects/${projectId}/costs`).catch(() => null)]);
           return reply(200, 'text/html; charset=utf-8', renderProject({ project, state: current, thread, decisions, costs, flash }));

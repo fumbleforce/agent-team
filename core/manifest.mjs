@@ -27,11 +27,59 @@ function upgrade(config) {
     team: { roles: null } };
 }
 
-// Normalizes a manifest of either version into the version 2 shape with every default filled in.
-// Values are validated for shape; provider adapters validate their own sections.
-export function normalizeManifest(raw) {
+// Sections the owner may override from the dashboard. Everything about the repository itself
+// (scm, delivery gates, instructions, charter) stays in the committed manifest.
+export const OVERRIDABLE_SECTIONS = ['tracker', 'engine', 'worker', 'memory', 'pm', 'team', 'ideation'];
+// Keys inside overridable sections that still identify the repository and stay read-only.
+const PROTECTED_KEYS = { tracker: ['kind'], engine: [], worker: [], memory: [], pm: [], team: [], ideation: [] };
+// Keys where null is itself a meaningful value rather than "remove the repository's key".
+const NULLABLE_KEYS = { team: ['roles'] };
+
+// Checks the shape of a dashboard override document: allowlisted sections only, each a plain
+// object, nested values limited to strings, numbers, booleans, null and string arrays.
+export function validateOverrides(overrides) {
+  if (overrides === null || overrides === undefined) return {};
+  if (!plain(overrides)) throw new Error('Overrides must be an object of sections');
+  const result = {};
+  for (const [section, values] of Object.entries(overrides)) {
+    if (!OVERRIDABLE_SECTIONS.includes(section)) throw new Error(`Section ${section} cannot be overridden from the dashboard`);
+    if (!plain(values)) throw new Error(`Override section ${section} must be an object`);
+    const clean = {};
+    for (const [key, value] of Object.entries(values)) {
+      if (!/^[A-Za-z][A-Za-z0-9_]{0,63}$/.test(key)) throw new Error(`Invalid override key ${section}.${key}`);
+      if (PROTECTED_KEYS[section].includes(key)) throw new Error(`${section}.${key} cannot be overridden from the dashboard`);
+      const scalar = value === null || ['string', 'number', 'boolean'].includes(typeof value);
+      const list = Array.isArray(value) && value.length <= 64 && value.every(item => typeof item === 'string');
+      if (!scalar && !list) throw new Error(`Invalid override value ${section}.${key}`);
+      if (typeof value === 'string' && value.length > 2000) throw new Error(`Override ${section}.${key} is too long`);
+      clean[key] = value;
+    }
+    if (Object.keys(clean).length) result[section] = clean;
+  }
+  return result;
+}
+
+// Applies dashboard overrides on top of a repository manifest of either version. The result is a
+// version 2 document; a null override value removes the repository's key so the default applies.
+export function applyOverrides(raw, overrides) {
+  const clean = validateOverrides(overrides);
+  if (!Object.keys(clean).length) return raw;
   if (!plain(raw) || ![1, 2].includes(raw.version)) throw new Error('Invalid .agent-team.json: version 1 or 2 required');
-  const config = upgrade(raw);
+  const config = structuredClone(upgrade(raw));
+  for (const [section, values] of Object.entries(clean)) {
+    const merged = { ...(plain(config[section]) ? config[section] : {}) };
+    for (const [key, value] of Object.entries(values)) { if (value === null && !NULLABLE_KEYS[section]?.includes(key)) delete merged[key]; else merged[key] = value; }
+    config[section] = merged;
+  }
+  return config;
+}
+
+// Normalizes a manifest of either version into the version 2 shape with every default filled in,
+// after applying any dashboard overrides. Values are validated for shape; provider adapters
+// validate their own sections.
+export function normalizeManifest(raw, overrides = null) {
+  if (!plain(raw) || ![1, 2].includes(raw.version)) throw new Error('Invalid .agent-team.json: version 1 or 2 required');
+  const config = upgrade(applyOverrides(raw, overrides));
   for (const key of ['name']) if (typeof config[key] !== 'string' || !config[key].trim()) throw new Error(`Invalid .agent-team.json: ${key} is required`);
   if (!Array.isArray(config.instructions)) throw new Error('Invalid .agent-team.json: instructions must be an array');
   if (config.queueProjectId !== undefined && !ID.test(String(config.queueProjectId))) throw new Error('Invalid .agent-team.json: queueProjectId');

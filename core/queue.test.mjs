@@ -252,3 +252,40 @@ test('bind boundaries are loopback or private-network IPv4', () => {
   process.env.AGENT_TEAM_PUBLIC_BIND = '1';
   try { assert.ok(validBind('0.0.0.0')); assert.equal(validBind('192.168.1.1'), false); } finally { delete process.env.AGENT_TEAM_PUBLIC_BIND; }
 });
+
+const legacyManifest = { version: 1, name: 'A', instructions: [], workspaceId: 'w', workspaceUrl: 'https://t/w', teamId: 't', projectId: 'p', projectUrl: 'https://t/p', readyLabel: 'r' };
+test('project settings override the registered manifest, keep history and refuse invalid values', async () => {
+  const q = createQueue(':memory:', { projects });
+  const token = 'synthetic-token-at-least-24-characters';
+  const server = createQueueServer(q, { token });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  try {
+    const base = `http://127.0.0.1:${server.address().port}`;
+    const headers = { authorization: `Bearer ${token}`, 'content-type': 'application/json' };
+    const post = (route, body) => fetch(`${base}${route}`, { method: 'POST', headers, body: JSON.stringify(body) });
+    const get = route => fetch(`${base}${route}`, { headers });
+    // Settings can be saved before any worker registers the repository manifest.
+    let response = await post('/projects/a/settings', { overrides: { pm: { autonomy: 'act' } }, author: 'owner', note: 'more autonomy' });
+    assert.equal(response.status, 200);
+    let settings = await response.json();
+    assert.deepEqual(settings.overrides, { pm: { autonomy: 'act' } }); assert.equal(settings.manifest, null);
+    q.registerProject('a', { workerId: 'w', manifest: legacyManifest });
+    settings = await (await get('/projects/a/settings')).json();
+    assert.equal(settings.manifest.pm.autonomy, 'act'); assert.equal(settings.repoManifest.pm.autonomy, 'suggest'); assert.equal(settings.error, null);
+    // The registry and the launcher read the effective manifest.
+    const listed = q.projectsList().find(project => project.id === 'a');
+    assert.equal(listed.manifest.pm.autonomy, 'act'); assert.equal(listed.repoManifest.version, 1); assert.deepEqual(listed.overrides, { pm: { autonomy: 'act' } });
+    assert.equal((await post('/projects/a/settings', { overrides: { scm: { kind: 'gitlab' } }, author: 'owner' })).status, 400);
+    assert.equal((await post('/projects/a/settings', { overrides: { pm: { autonomy: 'yolo' } }, author: 'owner' })).status, 400);
+    assert.equal((await post('/projects/a/settings', { overrides: { tracker: { kind: 'jira' } }, author: 'owner' })).status, 400);
+    assert.equal((await post('/projects/zzz/settings', { overrides: {}, author: 'owner' })).status, 400);
+    response = await post('/projects/a/settings', { overrides: {}, author: 'owner', note: 'reset' });
+    assert.equal((await response.json()).manifest.pm.autonomy, 'suggest');
+    const history = await (await get('/projects/a/settings/history')).json();
+    assert.deepEqual(history.map(entry => entry.note), ['reset', 'more autonomy']);
+    assert.deepEqual(history[1].overrides, { pm: { autonomy: 'act' } });
+    // Tracker lookup is refused cleanly when the coordinator holds no tracker credential.
+    const saved = process.env.LINEAR_API_KEY; delete process.env.LINEAR_API_KEY;
+    try { assert.equal((await get('/projects/a/tracker/lookup')).status, 501); } finally { if (saved !== undefined) process.env.LINEAR_API_KEY = saved; }
+  } finally { server.close(); q.close(); }
+});

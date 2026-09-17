@@ -8,7 +8,7 @@ import { deliver, validateDelivery } from './delivery.mjs';
 import { validateIdeation, validateProposals } from './idea-schema.mjs';
 import { remoteBase } from './git-base.mjs';
 export { remoteBase };
-import { normalizeManifest, approvalRoles, ALL_ROLES } from './manifest.mjs';
+import { normalizeManifest, applyOverrides, approvalRoles, ALL_ROLES } from './manifest.mjs';
 import { engineAdapter, validateEngine, validateBilling, ENGINES } from '../adapters/engine/index.mjs';
 import { scmAdapter } from '../adapters/scm/index.mjs';
 import { trackerAdapter, TRACKER_KINDS } from '../adapters/tracker/index.mjs';
@@ -74,7 +74,7 @@ export function parseArgs(args) {
   const seen = new Set();
   const values = { '--cycles': 'cycles', '--timeout-minutes': 'timeoutMinutes', '--base': 'base', '--engine': 'engine', '--billing': 'billing',
     '--model': 'model', '--project': 'project', '--issue': 'issue', '--proposal-limit': 'proposalLimit', '--idea-context': 'ideaContext',
-    '--memory-file': 'memoryFile', '--memory-sha': 'memorySha', '--job': 'job' };
+    '--memory-file': 'memoryFile', '--memory-sha': 'memorySha', '--settings-file': 'settingsFile', '--job': 'job' };
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
     if (seen.has(flag)) throw new Error(`Duplicate option: ${flag}`);
@@ -240,12 +240,15 @@ function readSafeFile(root, relative, optional = false) {
   return fs.readFileSync(current, 'utf8');
 }
 
-export function loadProject(root) {
+// Owner overrides from the coordinator are merged into the manifest; the worktree then receives the
+// effective document as a setup overlay so the model reads the same settings the runner enforces.
+export function loadProject(root, overrides = null) {
   const raw = readSafeFile(root, '.agent-team.json');
-  const config = normalizeManifest(JSON.parse(raw));
+  const config = normalizeManifest(JSON.parse(raw), overrides);
+  const effective = overrides && Object.keys(overrides).length ? `${JSON.stringify(applyOverrides(JSON.parse(raw), overrides), null, 2)}\n` : raw;
   const charter = relativeFile(config.charter, true);
   const instructions = config.instructions.map(value => relativeFile(value, true));
-  const files = { '.agent-team.json': raw };
+  const files = { '.agent-team.json': effective };
   for (const relative of new Set(['AGENTS.md', '.gitignore', charter, ...instructions])) {
     const content = readSafeFile(root, relative, relative === 'AGENTS.md' && relative !== charter);
     if (content !== null) files[relative] = content;
@@ -397,7 +400,7 @@ ${options.publish ? `Publishing is explicitly authorized: commit only intended i
 ${options.autoMerge ? `AutoMerge mode: commit/push before ${gates} gates. All of them must examine the same exact final 40-hex git HEAD SHA in distinct Task sessions and return verdict, headSha and sessionId through Task. Assemble these facts in an additional approvals object with ${approvals.join(', ')} keys in the ready report. Any new commit invalidates all approvals. The agent NEVER merges itself; only the deterministic runner may merge. Keep In Review until a later reconciliation verifies the actual merged ${noun}. Session attestations provide traceability, not cryptographic proof.` : acceptance}
 Preserve existing work, setup overlays, secrets and databases. Do not access or modify the primary checkout or other worktrees. Do not start detached background work.
 This worktree uses sparse checkout to omit tracked sensitive artifacts. Preserve sparse rules and skip-worktree bits. Never restore, read through Git, stage, delete, or materialize excluded paths; use synthetic test data instead.
-Do not stage or commit ${REPORT} or .agent-team/. Never use blanket git add; inspect and stage only intended issue changes, excluding unrelated setup overlays.
+Do not stage or commit ${REPORT}, .agent-team/ or .agent-team.json (it is a setup overlay carrying the owner's effective settings). Never use blanket git add; inspect and stage only intended issue changes, excluding unrelated setup overlays.
 ${context.memoryInstructions ?? ''}
 Before exiting, write a regular UTF-8 JSON file ${REPORT} in the worktree root with EXACTLY these keys${options.autoMerge ? ' plus approvals for a ready outcome' : ''}, optionally plus learnings:
 {"outcome":"ready"|"blocked"|"idle","issue":string|null,"summary":string,"prUrl":string|null}
@@ -495,7 +498,13 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const stateDir = path.join(root, '.agent-team');
   if (options.status) { output(JSON.stringify(status(stateDir), null, 2)); return 0; }
   // Read and validate all project/shared inputs before creating any state.
-  const project = loadProject(root);
+  let overrides = null;
+  if (options.settingsFile) {
+    const stat = fs.lstatSync(options.settingsFile);
+    if (!stat.isFile() || stat.size > 65536) throw new Error('Invalid settings file');
+    overrides = JSON.parse(fs.readFileSync(options.settingsFile, 'utf8'));
+  }
+  const project = loadProject(root, overrides);
   const manifest = project.config;
   options.engine ??= manifest.engine.default;
   options.billing ??= options.engine === manifest.engine.default ? manifest.engine.billing : undefined;

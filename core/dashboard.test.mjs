@@ -33,9 +33,12 @@ function fixture(t) {
       if (url.pathname === '/evidence') return q.evidenceList({ limit: Number(url.searchParams.get('limit') ?? 40) });
       const m = /^\/jobs\/([^/]+)\/evidence$/.exec(url.pathname); if (m) { const e = q.evidenceFor(m[1]); if (!e) throw new Error('404'); return e; }
       const ev = /^\/jobs\/([^/]+)\/events$/.exec(url.pathname); if (ev) return q.eventsAfter(ev[1], { after: Number(url.searchParams.get('after') ?? 0), limit: Number(url.searchParams.get('limit') ?? 500) });
+      const settings = /^\/projects\/([^/]+)\/(settings|settings\/history|tracker\/lookup)$/.exec(url.pathname);
+      if (settings) { if (settings[2] === 'settings') return q.settings(settings[1]); if (settings[2] === 'settings/history') return q.settingsHistory(settings[1]); throw new Error('LINEAR_API_KEY is not available to the coordinator'); }
       throw new Error('unknown route');
     }
     if (url.pathname === '/jobs') return q.enqueue(body);
+    const save = /^\/projects\/([^/]+)\/settings$/.exec(url.pathname); if (save) return q.saveSettings(save[1], body);
     const m = /^\/jobs\/([^/]+)\/(requeue|cancel)$/.exec(url.pathname); if (m) return q[m[2]](m[1], body);
     throw new Error('unknown write');
   };
@@ -146,4 +149,30 @@ test('the stream endpoint relays formatted steps as server-sent events and close
   assert.ok(text.includes('"reason":"completed"'));
   const page = await (await fetch(`http://127.0.0.1:${server.address().port}/team/team-tester`)).text();
   assert.ok(page.includes('Joker'));
+});
+
+test('the settings page shows effective values, saves only deviations from the repository and keeps history', async t => {
+  const f = fixture(t);
+  f.q.registerProject('myntbase', { workerId: 'x3d', manifest: { version: 1, name: 'Myntbase', instructions: [], workspaceId: 'w', workspaceUrl: 'https://t/w', teamId: 't', projectId: 'p', projectUrl: 'https://t/p', readyLabel: 'agent:ready' } });
+  const server = createDashboardServer({ request: f.request, hostname: 'test' });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => new Promise(resolve => server.close(resolve)));
+  const base = `http://127.0.0.1:${server.address().port}`;
+  let html = await (await fetch(base + '/projects/myntbase/settings')).text();
+  assert.ok(html.includes('name="pm.autonomy"') && html.includes('<option selected>suggest</option>') && html.includes('Tracker choices unavailable') && html.includes('Repository-owned'));
+  assert.ok(!html.includes('PM autonomy <span class="st act"'), 'nothing is overridden yet');
+  const post = body => fetch(base + '/projects/myntbase/settings', { method: 'POST', redirect: 'manual', headers: { 'content-type': 'application/x-www-form-urlencoded', 'sec-fetch-site': 'same-origin' }, body });
+  const form = new URLSearchParams({ 'tracker.teamId': 't', 'tracker.projectId': 'p', 'tracker.readyLabel': 'agent:ready', 'engine.default': 'opencode', 'engine.billing': 'provider', 'worker.launcher': 'local', 'memory.injectCapTokens': '4000', 'pm.autonomy': 'act', 'pm.dailyCapUsd': '20', 'team.roles.all': 'on', note: 'let the PM act' });
+  let response = await post(form.toString());
+  assert.match(decodeURIComponent(response.headers.get('location')), /Saved 1 override/);
+  assert.deepEqual(f.q.settings('myntbase').overrides, { pm: { autonomy: 'act' } });
+  assert.equal(f.q.projectsList()[0].manifest.pm.autonomy, 'act');
+  html = await (await fetch(base + '/projects/myntbase/settings')).text();
+  assert.ok(html.includes('PM autonomy <span class="st act"') && html.includes('let the PM act'));
+  response = await post(new URLSearchParams({ ...Object.fromEntries(form), 'pm.dailyCapUsd': 'lots' }).toString());
+  assert.match(decodeURIComponent(response.headers.get('location')), /must be a number/);
+  response = await post(new URLSearchParams({ reset: '1' }).toString());
+  assert.match(decodeURIComponent(response.headers.get('location')), /All overrides cleared/);
+  assert.deepEqual(f.q.settings('myntbase').overrides, {});
+  assert.equal(f.q.settingsHistory('myntbase').length, 2);
+  assert.equal((await fetch(base + '/projects/nobody/settings')).status, 404);
 });

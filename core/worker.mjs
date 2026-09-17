@@ -21,6 +21,7 @@ export function runnerArgs(job, checkout, ideaContext, memory = null) {
     if (job[key] !== undefined && job[key] !== null) args.push(flag, String(job[key]));
   }
   if (memory?.file) args.push('--memory-file', memory.file, '--memory-sha', memory.sha);
+  if (memory?.settingsFile) args.push('--settings-file', memory.settingsFile);
   if (job.fetch === true) args.push('--fetch');
   if (job.publish === true) args.push('--publish');
   if (job.autoMerge === true) args.push('--auto-merge');
@@ -144,7 +145,10 @@ export async function runWorker(config, { once = false, jobId = null, signal = n
   const projectIds = Object.keys(config.projects);
   // The tracker client comes from the adapter named in the project's manifest.
   const trackerFor = async (manifest, fetchImpl) => tracker(normalizeManifest(manifest).tracker.kind, { fetchImpl });
-  const normalized = async checkout => { const manifest = normalizeManifest(await loadManifest(checkout)); return { manifest, flat: flatTracker(manifest) }; };
+  // Owner overrides saved in the dashboard apply on top of the checkout's manifest; a coordinator
+  // without the settings route (or an unreachable one) falls back to the repository file alone.
+  const overridesFor = async projectId => { try { return (await request(`/projects/${projectId}/settings`))?.overrides ?? {}; } catch { return {}; } };
+  const normalized = async (checkout, projectId) => { const manifest = normalizeManifest(await loadManifest(checkout), projectId ? await overridesFor(projectId) : null); return { manifest, flat: flatTracker(manifest) }; };
   // Manifests registered here let a remote coordinator, intake and dashboard work without checkouts.
   async function register() {
     for (const [projectId, checkout] of Object.entries(config.projects)) {
@@ -231,7 +235,7 @@ export async function runWorker(config, { once = false, jobId = null, signal = n
       const trackerFetch = (url, init = {}) => { active(); return fetch(url, { ...init, signal: init.signal ? AbortSignal.any([init.signal, control.signal]) : control.signal }); };
       if (job.kind === 'ideation' || job.approvalRequired === true) {
         active();
-        ({ manifest: full, flat: manifest } = await normalized(checkout));
+        ({ manifest: full, flat: manifest } = await normalized(checkout, job.projectId));
         const ideation = validateIdeation(manifest.ideation);
         client = await trackerFor(full, trackerFetch);
         active();
@@ -270,7 +274,7 @@ export async function runWorker(config, { once = false, jobId = null, signal = n
       }
       active();
       if (job.kind === 'chat') {
-        if (!full) ({ manifest: full, flat: manifest } = await normalized(checkout));
+        if (!full) ({ manifest: full, flat: manifest } = await normalized(checkout, job.projectId));
         client ??= await trackerFor(full, trackerFetch);
         const work = memberActivity({ projects: { [job.projectId]: checkout }, role: job.role, runLimit: 6 }).flatMap(item => [
           `${item.run.issue ?? 'ideation'} run ${item.run.id}: ${item.run.state}${item.run.delivery ? `, delivery ${item.run.delivery}` : ''}${item.run.prUrl ? ` (${item.run.prUrl})` : ''}`,
@@ -287,9 +291,16 @@ export async function runWorker(config, { once = false, jobId = null, signal = n
       } else if (skip) execution = { code: 0, journal: { outcome: 'idle' } };
       else {
         // The runner validates the manifest itself; here it only decides memory injection.
-        if (!full) { try { ({ manifest: full, flat: manifest } = await normalized(checkout)); } catch (error) { onError(new Error(`Memory injection skipped: ${error.message}`)); } }
+        if (!full) { try { ({ manifest: full, flat: manifest } = await normalized(checkout, job.projectId)); } catch (error) { onError(new Error(`Memory injection skipped: ${error.message}`)); } }
         // Project memory assembled at this commit is appended to the system prompt and journaled.
         let memory = null;
+        const overrides = await overridesFor(job.projectId);
+        if (Object.keys(overrides).length) {
+          mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+          const settingsFile = path.join(stateDir, `${job.id}.settings.json`);
+          writeFileSyncAtomic(settingsFile, JSON.stringify(overrides), 0o600);
+          memory = { settingsFile };
+        }
         if (full && job.kind !== 'ideation' && full.memory.injectCapTokens > 0) {
           try {
             const scopes = [job.issue, ...(full.instructions ?? [])].filter(Boolean);
@@ -298,7 +309,7 @@ export async function runWorker(config, { once = false, jobId = null, signal = n
               mkdirSync(stateDir, { recursive: true, mode: 0o700 });
               const file = path.join(stateDir, `${job.id}.memory.md`);
               writeFileSyncAtomic(file, assembled.markdown, 0o600);
-              memory = { file, sha: assembled.sha, itemIds: assembled.itemIds, tokens: assembled.tokens ?? 0 };
+              memory = { ...memory, file, sha: assembled.sha, itemIds: assembled.itemIds, tokens: assembled.tokens ?? 0 };
               await request(`/jobs/${job.id}/injection`, { ...credentials, sha: assembled.sha, itemIds: assembled.itemIds, tokens: memory.tokens });
             }
           } catch (error) { onError(new Error(`Memory injection skipped: ${error.message}`)); }

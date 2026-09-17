@@ -155,3 +155,22 @@ test('labels and blockers beyond their first pages are included', async () => {
   assert.equal(snapshot.ideas.length, 1); assert.equal(snapshot.ideas[0].blocked, true);
   assert.equal(snapshot.ideas[0].labels.length, 2);
 });
+
+test('lookup returns workspace, teams and one team\'s projects, labels and states without leaking secrets', async () => {
+  const calls = [];
+  const fetchImpl = async (_url, options) => {
+    const { query, variables } = JSON.parse(options.body); calls.push({ query, variables });
+    const data = query.includes('organization')
+      ? { organization: { id: 'w', name: 'Acme', urlKey: 'acme' }, teams: { nodes: [{ id: 't1', key: 'ONE', name: 'One' }, { id: 't2', key: 'TWO', name: 'Two' }], pageInfo: { hasNextPage: false } } }
+      : { team: { projects: { nodes: [{ id: 'p', name: 'Platform', url: 'https://linear.app/acme/project/p' }] }, labels: { nodes: [{ id: 'l', name: 'agent:ready' }] }, states: { nodes: [{ id: 's', name: 'Todo', type: 'unstarted' }] } } };
+    return { ok: true, json: async () => ({ data }) };
+  };
+  const client = createLinearClient({ apiKey: 'secret-test-key', fetchImpl });
+  const result = await client.lookup({ teamId: 't2' });
+  assert.deepEqual(result.workspace, { id: 'w', name: 'Acme', url: 'https://linear.app/acme' });
+  assert.deepEqual(result.teams.map(team => team.key), ['ONE', 'TWO']); assert.equal(result.teamId, 't2');
+  assert.deepEqual(result.labels, [{ id: 'l', name: 'agent:ready' }]); assert.deepEqual(result.states, [{ id: 's', name: 'Todo', type: 'unstarted' }]);
+  assert.equal(calls[1].variables.id, 't2');
+  assert.equal((await client.lookup()).teamId, 't1', 'the first team is the default');
+  assert.ok(!JSON.stringify(result).includes('secret-test-key'));
+});

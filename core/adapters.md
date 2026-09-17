@@ -60,8 +60,10 @@ mcpServers(trackerConfig) -> { tracker: { type, url } }
 validateManifest(trackerSection) -> trackerSection
 scopeInstructions(trackerSection) -> string
 approvalStatus(manifest, issue) -> status
-createClient({ apiKey, fetchImpl }) -> { snapshot, checkApproved, prepareApproved, publishProposals, issueComments, inboxComments, postComment, transition }
+createClient({ apiKey, fetchImpl }) -> { snapshot, checkApproved, prepareApproved, publishProposals, issueComments, inboxComments, postComment, transition, lookup }
 ```
+
+`lookup({ teamId })` is optional and returns `{ workspace, teams, teamId, projects, labels, states }` as identifiers and names only; the dashboard settings page uses it to offer choices, and falls back to free text when the adapter has none or the coordinator holds no tracker credential.
 
 The MCP server is always exposed to engines under the neutral name `tracker`, so role permissions (`tracker_*`) do not change per provider.
 

@@ -9,6 +9,8 @@ import { createLauncher } from '../adapters/launcher/index.mjs';
 import { remoteBase } from './git-base.mjs';
 import { ROSTER } from './roster.mjs';
 import { createMemory, MemoryError, ITEM_TYPES } from './memory.mjs';
+import { normalizeManifest, validateOverrides, OVERRIDABLE_SECTIONS } from './manifest.mjs';
+import { trackerAdapter, trackerClient, DEFAULT_TRACKER } from '../adapters/tracker/index.mjs';
 
 const KINDS = ['development', 'ideation', 'chat', 'graduate'];
 const ISSUE = /^[A-Za-z][A-Za-z0-9_]*-[1-9][0-9]*$/;
@@ -60,6 +62,8 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     CREATE TABLE IF NOT EXISTS injections (jobId TEXT PRIMARY KEY, projectId TEXT NOT NULL, sha TEXT NOT NULL, itemIds TEXT NOT NULL, tokens INTEGER NOT NULL, createdAt INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS launches (jobId TEXT PRIMARY KEY, projectId TEXT NOT NULL, kind TEXT NOT NULL, handle TEXT, startedAt INTEGER NOT NULL, state TEXT NOT NULL, error TEXT);
     CREATE TABLE IF NOT EXISTS artifacts (jobId TEXT PRIMARY KEY, projectId TEXT NOT NULL, payload TEXT NOT NULL, createdAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS settings (projectId TEXT PRIMARY KEY, overrides TEXT NOT NULL, author TEXT NOT NULL, updatedAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS settings_history (id INTEGER PRIMARY KEY AUTOINCREMENT, projectId TEXT NOT NULL, overrides TEXT NOT NULL, author TEXT NOT NULL, note TEXT, createdAt INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, title TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, threadId TEXT NOT NULL, projectId TEXT NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL, createdAt INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'final', meta TEXT);
     CREATE TABLE IF NOT EXISTS decisions (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, options TEXT NOT NULL, createdAt INTEGER NOT NULL, state TEXT NOT NULL, choice TEXT, note TEXT, resolvedAt INTEGER, threadId TEXT, payload TEXT);
@@ -148,7 +152,11 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
   };
   // Launcher per project: the manifest's worker section selects the kind; coordinator-wide
   // launcher options (credentials, network, AMI defaults) come from `launcher`.
-  const manifestOf = projectId => { const row = db.prepare('SELECT manifest FROM projects WHERE id=?').get(projectId); return row ? JSON.parse(row.manifest) : null; };
+  const overridesOf = projectId => { const row = db.prepare('SELECT overrides FROM settings WHERE projectId=?').get(projectId); return row ? JSON.parse(row.overrides) : {}; };
+  // The effective manifest: the repository's file with the owner's dashboard overrides applied.
+  // Falls back to the stored document when normalization fails so an invalid override never hides a project.
+  const effective = (projectId, stored) => { if (!stored) return null; try { return normalizeManifest(stored, overridesOf(projectId)); } catch { return stored; } };
+  const manifestOf = projectId => { const row = db.prepare('SELECT manifest FROM projects WHERE id=?').get(projectId); return row ? effective(projectId, JSON.parse(row.manifest)) : null; };
   const launcherFor = projectId => {
     const kind = manifestOf(projectId)?.worker?.launcher ?? launcher?.kind ?? 'local';
     if (kind === 'local') return null;
@@ -299,7 +307,59 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     },
     projectsList() {
       const rows = Object.fromEntries(db.prepare('SELECT * FROM projects').all().map(row => [row.id, row]));
-      return Object.entries(projects).map(([id, project]) => ({ id, repository: project.repository ?? null, manifest: rows[id] ? JSON.parse(rows[id].manifest) : null, workerId: rows[id]?.workerId ?? null, seenAt: rows[id]?.updatedAt ?? null }));
+      return Object.entries(projects).map(([id, project]) => {
+        const stored = rows[id] ? JSON.parse(rows[id].manifest) : null;
+        const overrides = overridesOf(id);
+        return { id, repository: project.repository ?? null, manifest: effective(id, stored), repoManifest: stored, overrides, workerId: rows[id]?.workerId ?? null, seenAt: rows[id]?.updatedAt ?? null };
+      });
+    },
+    // Owner overrides for the allowlisted manifest sections; validated against the stored repository
+    // manifest when one is registered so a save that would break normalization is refused.
+    settings(projectId) {
+      registered(projectId);
+      const row = db.prepare('SELECT * FROM settings WHERE projectId=?').get(projectId);
+      const stored = db.prepare('SELECT manifest FROM projects WHERE id=?').get(projectId);
+      const repoManifest = stored ? JSON.parse(stored.manifest) : null;
+      let error = null; let manifest = null; let repo = repoManifest;
+      if (repoManifest) {
+        try { repo = normalizeManifest(repoManifest); } catch (failure) { error = failure.message; }
+        try { manifest = normalizeManifest(repoManifest, row ? JSON.parse(row.overrides) : {}); } catch (failure) { error = failure.message; }
+      }
+      return { projectId, overrides: row ? JSON.parse(row.overrides) : {}, author: row?.author ?? null, updatedAt: row?.updatedAt ?? null, repoManifest: repo, manifest, error, sections: OVERRIDABLE_SECTIONS };
+    },
+    saveSettings(projectId, input) {
+      registered(projectId); object(input, ['overrides', 'author', 'note']);
+      let overrides;
+      try { overrides = validateOverrides(input.overrides); } catch (failure) { reject(failure.message); }
+      const author = typeof input.author === 'string' ? input.author : input.author?.name ?? 'owner';
+      text(author, 'author', 120);
+      if (input.note !== undefined && input.note !== null) text(input.note, 'note', 400);
+      const stored = db.prepare('SELECT manifest FROM projects WHERE id=?').get(projectId);
+      if (stored) { try { normalizeManifest(JSON.parse(stored.manifest), overrides); } catch (failure) { reject(`Settings rejected: ${failure.message}`); } }
+      const serialized = JSON.stringify(overrides);
+      if (serialized.length > 32768) reject('Settings exceed 32KB', 413);
+      return tx(() => {
+        db.prepare('INSERT INTO settings(projectId,overrides,author,updatedAt) VALUES(?,?,?,?) ON CONFLICT(projectId) DO UPDATE SET overrides=excluded.overrides, author=excluded.author, updatedAt=excluded.updatedAt').run(projectId, serialized, author, now());
+        db.prepare('INSERT INTO settings_history(projectId,overrides,author,note,createdAt) VALUES(?,?,?,?,?)').run(projectId, serialized, author, input.note ?? null, now());
+        return this.settings(projectId);
+      });
+    },
+    settingsHistory(projectId, { limit = 30 } = {}) {
+      registered(projectId);
+      return db.prepare('SELECT id, overrides, author, note, createdAt FROM settings_history WHERE projectId=? ORDER BY id DESC LIMIT ?').all(projectId, Math.min(200, Math.max(1, limit)))
+        .map(row => ({ id: row.id, overrides: JSON.parse(row.overrides), author: row.author, note: row.note, createdAt: row.createdAt }));
+    },
+    // Live tracker choices for the settings form (teams, projects, labels, states), through the
+    // tracker adapter with the coordinator's own credential; absent credentials yield 501.
+    async trackerLookup(projectId, params = {}) {
+      registered(projectId);
+      const manifest = manifestOf(projectId);
+      const kind = manifest?.tracker?.kind ?? DEFAULT_TRACKER;
+      const adapter = trackerAdapter(kind);
+      if (!process.env[adapter.API_KEY_VARIABLE]) reject(`${adapter.API_KEY_VARIABLE} is not available to the coordinator`, 501);
+      const client = trackerClient(kind);
+      if (typeof client.lookup !== 'function') reject('Tracker adapter has no lookup', 501);
+      return client.lookup({ teamId: params.teamId ?? manifest?.tracker?.teamId ?? null });
     },
     // Memory injected into a run, recorded by the worker before the runner starts.
     injection(id, input) {
@@ -514,6 +574,13 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (req.method === 'GET' && url.pathname === '/health') return reply(200, { ok: true });
       if (req.method === 'GET' && url.pathname === '/jobs') return reply(200, queue.list());
       if (req.method === 'GET' && url.pathname === '/projects') return reply(200, queue.projectsList());
+      const settingsGet = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(settings|settings\/history|tracker\/lookup)$/.exec(url.pathname);
+      if (req.method === 'GET' && settingsGet) {
+        const [, projectId, what] = settingsGet;
+        if (what === 'settings') return reply(200, queue.settings(projectId));
+        if (what === 'settings/history') return reply(200, queue.settingsHistory(projectId, { limit: Number(url.searchParams.get('limit') ?? 30) }));
+        return reply(200, await queue.trackerLookup(projectId, { teamId: url.searchParams.get('team') ?? undefined }));
+      }
       if (req.method === 'GET' && url.pathname === '/evidence') return reply(200, queue.evidenceList({ limit: url.searchParams.has('limit') ? Number(url.searchParams.get('limit')) : 40 }));
       const evidenceMatch = /^\/jobs\/([a-f0-9-]+)\/evidence$/.exec(url.pathname);
       if (req.method === 'GET' && evidenceMatch) { const found = queue.evidenceFor(evidenceMatch[1]); return found ? reply(200, found) : reject('No evidence yet', 404); }
@@ -563,10 +630,11 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (decision) return reply(200, queue.resolveDecision(decision[1], body));
       const message = /^\/messages\/([A-Za-z0-9-]{1,64})$/.exec(url.pathname);
       if (message) return reply(200, queue.updateMessage(message[1], body));
-      const projectPost = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(manifest|messages|decisions|costs|memory\/[a-z]+)$/.exec(url.pathname);
+      const projectPost = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(manifest|settings|messages|decisions|costs|memory\/[a-z]+)$/.exec(url.pathname);
       if (projectPost) {
         const [, projectId, what] = projectPost;
         if (what === 'manifest') return reply(200, queue.registerProject(projectId, body));
+        if (what === 'settings') return reply(200, queue.saveSettings(projectId, body));
         if (what === 'messages') return reply(201, queue.postMessage(projectId, body));
         if (what === 'decisions') return reply(201, queue.openDecision(projectId, body));
         if (what === 'costs') return reply(200, queue.recordCost(projectId, body));
