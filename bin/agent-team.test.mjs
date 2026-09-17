@@ -33,7 +33,7 @@ test('init derives the project from its manifest, asks only for the credentials,
   const aws = fakeAws();
   const answers = ['eu-north-1', 'lin_api_secret', 'glpat-secret'];
   const log = [];
-  assert.equal(await main(['init', checkout, '--config-dir', dir], { ask: prompter({ answers }), log: line => log.push(line), awsRun: aws.run }), 0);
+  assert.equal(await main(['init', checkout, '--config-dir', dir], { ask: prompter({ answers }), log: line => log.push(line), awsRun: aws.run, region: async () => 'eu-central-1' }), 0);
   assert.deepEqual(answers, [], 'every scripted answer was consumed: region, tracker key, SCM token');
   const deployment = readDeployment('example', dir);
   assert.equal(deployment.aws.region, 'eu-north-1'); assert.equal(deployment.aws.subnetId, 'subnet-1'); assert.equal(deployment.aws.accountId, '123456789012');
@@ -54,7 +54,7 @@ test('commands resolve the only deployment without a name and fail plainly when 
   const checkout = mkdtempSync(path.join(os.tmpdir(), 'cli-checkout-')); t.after(() => rmSync(checkout, { recursive: true, force: true }));
   writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify(manifest));
   const aws = fakeAws();
-  await main(['init', checkout, '--config-dir', dir, '--yes'], { ask: prompter({ answers: ['k', 't'] }), log: () => {}, awsRun: aws.run });
+  await main(['init', checkout, '--config-dir', dir, '--yes'], { ask: prompter({ answers: ['k', 't'] }), log: () => {}, awsRun: aws.run, region: async () => 'eu-central-1' });
   const log = [];
   assert.equal(await main(['status', '--config-dir', dir], { ask: prompter({ answers: [] }), log: line => log.push(line), awsRun: aws.run }), 0);
   assert.match(log.join('\n'), /control plane\s+not launched/); assert.match(log.join('\n'), /worker image\s+not built/);

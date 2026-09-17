@@ -68,11 +68,11 @@ const myIp = () => new Promise(resolve => execFile('curl', ['-fsS', 'https://che
 const configuredRegion = () => new Promise(resolve => execFile('aws', ['configure', 'get', 'region'], { timeout: 10_000 }, (error, stdout) => resolve(error ? null : stdout.trim() || null)));
 
 // init: derive everything from the manifest, ask for what cannot be derived, store secrets.
-export async function init(options, { ask, log, awsRun = aws }) {
+export async function init(options, { ask, log, awsRun = aws, region = configuredRegion }) {
   const checkoutInput = options.positional[1] ?? await ask('Path to the project checkout', { fallback: process.cwd() });
   const derived = deriveFromManifest(path.resolve(checkoutInput));
   const existing = readDeployment(derived.projectId, options.configDir);
-  const deployment = existing ? { ...existing, ...derived, aws: existing.aws } : newDeployment(derived, { region: await configuredRegion() });
+  const deployment = existing ? { ...existing, ...derived, aws: existing.aws } : newDeployment(derived, { region: await region() });
   if (!deployment.aws.region) deployment.aws.region = await ask('AWS region', { fallback: 'eu-central-1' });
   else if (!options.yes && !existing) deployment.aws.region = await ask('AWS region', { fallback: deployment.aws.region });
   log(`Project ${deployment.name} (${deployment.projectId}): ${deployment.scm.kind} ${deployment.scm.repository}, ${deployment.tracker.kind}, ${deployment.engine.default} via ${deployment.engine.billing}, workers on ${deployment.worker.launcher}`);
@@ -118,11 +118,11 @@ async function withCoordinator(deployment, fn) {
   } finally { session.kill(); }
 }
 
-export async function main(argv = process.argv.slice(2), { ask = prompter(), log = console.log, awsRun = aws } = {}) {
+export async function main(argv = process.argv.slice(2), { ask = prompter(), log = console.log, awsRun = aws, region = configuredRegion } = {}) {
   const options = parse(argv);
   const [command, name] = options.positional;
   if (!command || command === 'help' || command === '--help') { log(USAGE); return 0; }
-  if (command === 'init') { await init(options, { ask, log, awsRun }); return 0; }
+  if (command === 'init') { await init(options, { ask, log, awsRun, region }); return 0; }
   const deployment = resolveProject(options, name);
   const save = current => writeDeployment(current, options.configDir);
   if (command === 'deploy' || command === 'image') {
