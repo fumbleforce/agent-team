@@ -3,12 +3,15 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
+  "bin": {
+    "agent-team": "bin/agent-team.mjs"
+  },
   "description": "Provider-neutral agent delivery teams: adapters for engines, SCMs, trackers, launchers and hosting, with a durable multi-project queue, git-backed project memory and a resident PM",
   "engines": {
     "node": ">=22.21.1"
   },
   "scripts": {
-    "test": "node --test 'core/**/*.test.mjs' 'adapters/**/*.test.mjs'",
+    "test": "node --test 'core/**/*.test.mjs' 'adapters/**/*.test.mjs' 'bin/**/*.test.mjs'",
     "coordinator": "node core/queue.mjs --config coordinator.example.json",
     "worker": "node core/worker.mjs --config worker.example.json",
     "intake": "node core/intake.mjs --config intake.example.json",

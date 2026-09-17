@@ -158,7 +158,7 @@ node core/worker.mjs --config worker.local.json
 
 # A client on the same host, or set URL to the Tailscale HTTPS endpoint
 export AGENT_TEAM_URL=http://127.0.0.1:4310
-node core/cli.mjs enqueue myntbase --issue FUM-6 --key myntbase-first-pilot
+node core/cli.mjs enqueue my-project --issue KEY-6 --key my-project-first-pilot
 node core/cli.mjs list
 ```
 
@@ -187,8 +187,6 @@ The developer implements, the tester verifies behavior, one reviewer approves th
 The model cannot merge. After it exits, `delivery.mjs` validates local/remote HEAD, exact assigned branch, configured repository/base, clean source changes and the approvals. It requires every configured check to pass, re-reads immediately before one squash-merge attempt, and uses `--match-head-commit` without administrative bypass. The default `github-required` enforcement additionally requires GitHub-protected checks; unavailable protected-check lookup blocks delivery. Explicit `checkEnforcement: "runner"` uses configured checks without protected-check lookup, for owner-approved repositories whose plans lack branch protection. It does not prevent manual pushes and never activates as an automatic fallback.
 
 Missing/stale approvals, new commits, pending/failed/skipped/missing required checks, GitHub refusal and uncertain merge results all block delivery. A confirmed MERGED state and actual merge commit are required for success. Logs retain the PR and recovery reason; there is no automatic CI-wait/retry loop yet. The next PM/coordinator cycle can reconcile confirmed merged PRs to Done; approval alone never closes an issue. Existing merge-triggered deployment follows each project's explicit authorization and is reported separately from merge success.
-
-Myntbase authorizes runner-enforced checks on master and retains its existing Fly web deployment. Its `Agent verification` workflow contract is tracked by FUM-6. Activation requires authenticated GitHub CLI and the end-to-end delivery pilot.
 
 ### Tailscale access
 
@@ -221,7 +219,7 @@ The private service environment can be supplied to a one-off CLI invocation thro
 
 `systemd/` contains coordinator, worker, intake and per-project enqueue timer examples. Adjust executable paths, toolkit location and environment before installing as user units. `%h/repo/agent-team` is an example location, not a requirement. Service files expect private configs and `service.env` under `~/.config/agent-team/` with `AGENT_TEAM_TOKEN`, `AGENT_TEAM_URL`, and a PATH containing OpenCode, Git and optionally gh. Credentials themselves remain outside repositories.
 
-Enable the worker/coordinator after a successful pilot, then enable `agent-team-enqueue@myntbase.timer` to submit an unpinned cycle hourly. Add timer instances for other registered projects. An active overlapping job produces HTTP 409; the timer submission fails without creating a duplicate. A sleeping/offline coordinator cannot enqueue or grant leases. User services may require login lingering for execution after logout.
+Enable the worker/coordinator after a successful pilot, then enable `agent-team-enqueue@my-project.timer` to submit an unpinned cycle hourly. Add timer instances for other registered projects. An active overlapping job produces HTTP 409; the timer submission fails without creating a duplicate. A sleeping/offline coordinator cannot enqueue or grant leases. User services may require login lingering for execution after logout.
 
 Do not enable schedules before deciding model-provider spending limits. The system bounds concurrency, role steps, cycle count and elapsed time, but does not enforce a dollar budget. An idle PM cycle can still consume model tokens. On the Claude engine, subscription limits apply instead of a bill; a limit stops the affected job rather than retrying.
 
@@ -253,7 +251,7 @@ Each member has a name, a voice and a portrait (`roster.mjs`, `portraits/`, rege
 
 ```sh
 node core/cli.mjs list
-node core/cli.mjs enqueue myntbase --issue FUM-5 --publish --auto-merge --engine claude --base origin/master --fetch
+node core/cli.mjs enqueue my-project --issue KEY-5 --publish --auto-merge --engine claude --base origin/master --fetch
 node core/cli.mjs requeue JOB_UUID      # only after inspecting a blocked or failed job
 node core/cli.mjs cancel JOB_UUID       # queued jobs only
 ```
@@ -331,11 +329,12 @@ With `worker.launcher: ec2` the coordinator starts an instance per job from `wor
 
 ## Pilot runbook for a new project
 
-1. Add `.agent-team.json` (version 2) to the repository with `scm`, `tracker`, `engine`, `worker`, `team.roles` and `delivery.requiredChecks`; leave `autoMergeAuthorized: false`.
-2. Deploy the control plane (`adapters/hosting/aws` or `adapters/hosting/fly`) with the project in `AGENT_TEAM_PROJECTS`, then seed memory with `core/seed-memory.mjs` and edit the charter in the dashboard.
-3. Build the worker image (`adapters/hosting/aws/build-worker-ami.sh`) and check that `worker.ami` resolves.
-4. Label one ticket with the ready label and enqueue it pinned (`node core/cli.mjs enqueue <project> --issue KEY-1 --publish`) with concurrency 1; review the merge request, the run page and the memory proposals.
-5. When the pilot run is clean, start `core/intake.mjs` so approved tickets flow automatically, and raise concurrency.
+1. Add `.agent-team.json` (version 2) to the repository with `scm`, `tracker`, `engine`, `worker` (including `setup`, the command that installs the project's dependencies) and `delivery.requiredChecks`; leave `autoMergeAuthorized: false`.
+2. `agent-team init /path/to/checkout`, then `agent-team deploy`. Open the dashboard it prints and edit the charter; `agent-team seed` fills memory from the instruction files.
+3. Label one ticket with the ready label and `agent-team enqueue --issue KEY-1 --publish`; review the merge request, the run page and the memory proposals.
+4. When the pilot run is clean, raise `pm.autonomy` and let intake pick up approved tickets on its own; both are settings in the dashboard.
+
+See [adapters/hosting/aws/README.md](adapters/hosting/aws/README.md) for what the commands create and how to do it by hand.
 
 ## Next stages
 

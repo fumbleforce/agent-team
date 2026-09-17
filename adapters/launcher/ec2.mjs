@@ -7,7 +7,7 @@ import { execFile } from 'node:child_process';
 // credentials come from the instance role or the environment.
 export const NAME = 'ec2';
 
-function aws(args, { env = process.env, timeoutMs = 60_000 } = {}) {
+export function aws(args, { env = process.env, timeoutMs = 60_000 } = {}) {
   return new Promise((resolve, reject) => {
     execFile('aws', [...args, '--output', 'json'], { env, timeout: timeoutMs, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => {
       if (error) return reject(new Error(`aws ${args.slice(0, 2).join(' ')}: ${String(stderr).trim().slice(-400) || error.message}`));

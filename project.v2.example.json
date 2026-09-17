@@ -16,7 +16,7 @@
     "ownerInboxIssue": "TEAM-1"
   },
   "engine": { "default": "claude", "billing": "bedrock", "model": "sonnet" },
-  "worker": { "launcher": "ec2", "ami": "ssm:/agent-team/example-project/worker-ami", "instanceType": "c6i.2xlarge" },
+  "worker": { "launcher": "ec2", "ami": "ssm:/agent-team/example-project/worker-ami", "instanceType": "c6i.2xlarge", "setup": "npm ci" },
   "memory": { "injectCapTokens": 4000 },
   "pm": { "autonomy": "suggest", "dailyCapUsd": 20 },
   "team": { "roles": ["team-dev", "team-tester"] },

@@ -99,7 +99,7 @@ export function normalizeManifest(raw, overrides = null) {
 
   const worker = { launcher: DEFAULT_LAUNCHER, ...(plain(config.worker) ? config.worker : {}) };
   if (!LAUNCHER_KINDS.includes(worker.launcher)) throw new Error(`Invalid .agent-team.json: worker.launcher must be one of ${LAUNCHER_KINDS.join(', ')}`);
-  for (const key of ['image', 'ami', 'instanceType', 'sizeHint', 'subnetId', 'securityGroupId', 'instanceProfile', 'region']) {
+  for (const key of ['image', 'ami', 'instanceType', 'sizeHint', 'subnetId', 'securityGroupId', 'instanceProfile', 'region', 'setup']) {
     if (worker[key] !== undefined && (typeof worker[key] !== 'string' || !worker[key].trim())) throw new Error(`Invalid .agent-team.json: worker.${key}`);
   }
 

@@ -37,7 +37,7 @@ ask({ systemPromptFile, prompt, cwd, timeoutMs, env, signal, onDelta, onUsage, b
 Talks to the code host for change requests. Implemented by `github` (gh) and `gitlab` (glab + REST).
 
 ```
-NAME, CLI, CHANGE_NOUN, CHANGE_ABBREVIATION, MERGE_DENIALS
+NAME, CLI, TOKEN_VARIABLE, CHANGE_NOUN, CHANGE_ABBREVIATION, MERGE_DENIALS
 validateRepository(repository) -> boolean
 parseChangeUrl(url) -> { repository, number } | null
 isChangeUrl(url) -> boolean

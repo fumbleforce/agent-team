@@ -2,7 +2,7 @@
 # Deploy from the repository root: fly deploy --config adapters/hosting/fly/fly.toml Workers stay on your own
 # machines and connect outbound. Set secrets before the first deploy:
 #   fly secrets set AGENT_TEAM_TOKEN=... AGENT_TEAM_DASHBOARD_PASSWORD=... LINEAR_API_KEY=...
-app = "fumbleforce-agents"
+app = "my-agent-team"
 primary_region = "arn"
 
 [build]
@@ -10,7 +10,7 @@ primary_region = "arn"
   ignorefile = ".dockerignore"
 
 [env]
-  AGENT_TEAM_PROJECTS = '{"myntbase":{"repository":"fumbleforce/stockapp"}}'
+  AGENT_TEAM_PROJECTS = '{"my-project":{"repository":"owner/repo"}}'
 
 [mounts]
   source = "agent_team_data"

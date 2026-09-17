@@ -3,5 +3,5 @@
   "workerId": "x3d",
   "concurrency": 2,
   "stateDir": ".agent-team-worker",
-  "projects": { "myntbase": "/home/jorgen/repo/stockapp" }
+  "projects": { "my-project": "/absolute/path/to/project" }
 }

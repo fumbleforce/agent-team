@@ -3,6 +3,7 @@
 // head `sha`, which GitLab rejects when the source branch moved.
 export const NAME = 'gitlab';
 export const CLI = 'glab';
+export const TOKEN_VARIABLE = 'GITLAB_TOKEN';
 export const CHANGE_NOUN = 'merge request';
 export const CHANGE_ABBREVIATION = 'MR';
 export const HOST = process.env.GITLAB_HOST ? `https://${process.env.GITLAB_HOST.replace(/^https?:\/\//, '')}` : 'https://gitlab.com';

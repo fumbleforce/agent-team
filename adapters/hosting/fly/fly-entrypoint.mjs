@@ -12,7 +12,7 @@ const configDir = path.join(data, 'config');
 mkdirSync(configDir, { recursive: true, mode: 0o700 });
 
 let projects;
-try { projects = JSON.parse(process.env.AGENT_TEAM_PROJECTS ?? ''); } catch { throw new Error('AGENT_TEAM_PROJECTS must be a JSON registry such as {"myntbase":{"repository":"owner/repo"}}'); }
+try { projects = JSON.parse(process.env.AGENT_TEAM_PROJECTS ?? ''); } catch { throw new Error('AGENT_TEAM_PROJECTS must be a JSON registry such as {"my-project":{"repository":"owner/repo"}}'); }
 if (!process.env.AGENT_TEAM_TOKEN) throw new Error('AGENT_TEAM_TOKEN secret is required');
 if (!process.env.AGENT_TEAM_DASHBOARD_PASSWORD) throw new Error('AGENT_TEAM_DASHBOARD_PASSWORD secret is required for a public dashboard');
 

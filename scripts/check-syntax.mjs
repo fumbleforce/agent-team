@@ -13,7 +13,7 @@ function* files(dir) {
   }
 }
 let failed = false;
-for (const dir of ['core', 'adapters', 'scripts']) {
+for (const dir of ['core', 'adapters', 'scripts', 'bin']) {
   for (const file of files(path.join(root, dir))) {
     const result = spawnSync(process.execPath, ['--check', file], { encoding: 'utf8' });
     if (result.status !== 0) { failed = true; console.error(result.stderr); }

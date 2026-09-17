@@ -9,7 +9,7 @@ import { validateEngine, ENGINES, engineAdapter } from '../../engine/index.mjs';
 
 const toolkitRoot = path.dirname(path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url)))));
 const url = 'http://127.0.0.1:4310';
-const usage = 'Usage: install-local.mjs --project /absolute/checkout --key myntbase --repository fumbleforce/stockapp [--engine NAME] [--dry-run | --install]';
+const usage = 'Usage: install-local.mjs --project /absolute/checkout --key my-project --repository owner/repo [--engine NAME] [--dry-run | --install]';
 
 export function parseArgs(args) {
   const options = {}; const seen = new Set();

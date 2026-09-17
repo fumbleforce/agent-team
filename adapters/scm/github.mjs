@@ -2,6 +2,7 @@
 // and merges with --match-head-commit so the server rejects a moved head.
 export const NAME = 'github';
 export const CLI = 'gh';
+export const TOKEN_VARIABLE = 'GH_TOKEN';
 export const CHANGE_NOUN = 'pull request';
 export const CHANGE_ABBREVIATION = 'PR';
 export const HOST = 'https://github.com';

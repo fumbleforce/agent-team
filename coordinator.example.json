@@ -3,6 +3,6 @@
   "port": 4310,
   "db": ".agent-team-coordinator/queue.sqlite",
   "projects": {
-    "myntbase": { "repository": "git@github.com:fumbleforce/stockapp.git" }
+    "my-project": { "repository": "git@github.com:owner/repo.git" }
   }
 }

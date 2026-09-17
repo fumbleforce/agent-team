@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 const root = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
 const roots = ['core', 'agents'];
 const allow = new Set(['core/adapters.md']);
-const terms = ['github', 'gitlab', 'linear', 'fly', 'tailscale', 'opencode', 'claude', 'cursor', 'codex', 'myntbase', 'manti', 'anthropic', 'bedrock', 'gh', 'glab'];
+const terms = ['github', 'gitlab', 'linear', 'fly', 'tailscale', 'opencode', 'claude', 'cursor', 'codex', 'myntbase', 'manti', 'hubro', 'stockapp', 'fumbleforce/stockapp', 'anthropic', 'bedrock', 'gh', 'glab'];
 const pattern = new RegExp(`\\b(${terms.join('|')})\\b`, 'i');
 // Generic English uses of otherwise-provider words.
 const benign = [/\bcursor\b.*(pagination|page|position|pointer)/i, /(pagination|page|position|pointer).*\bcursor\b/i, /\bon the fly\b/i, /\bfly\.(mjs|toml)\b/i, /\blinear(ly)? (time|scan|search)\b/i];

@@ -23,7 +23,7 @@
         { "name": "AGENT_TEAM_DATA", "value": "/data" },
         { "name": "AGENT_TEAM_HOSTNAME", "value": "aws" },
         { "name": "AGENT_TEAM_SSM_PREFIX", "value": "/agent-team" },
-        { "name": "AGENT_TEAM_PROJECTS", "value": "{\"manti\":{\"repository\":\"hubro/manti\"}}" },
+        { "name": "AGENT_TEAM_PROJECTS", "value": "{\"my-project\":{\"repository\":\"group/project\"}}" },
         { "name": "AGENT_TEAM_PM_ENGINE", "value": "claude" },
         { "name": "AGENT_TEAM_PM_BILLING", "value": "bedrock" },
         { "name": "AGENT_TEAM_LAUNCHER", "value": "{\"kind\":\"ec2\",\"options\":{\"region\":\"REGION\",\"subnetId\":\"subnet-CHANGEME\",\"securityGroupId\":\"sg-CHANGEME\",\"instanceProfile\":\"agent-team-worker\",\"coordinatorUrl\":\"https://agents.example.internal:4310\"}}" },
