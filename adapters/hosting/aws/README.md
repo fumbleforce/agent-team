@@ -4,7 +4,16 @@ Control plane (coordinator, tracker intake, resident PM, dashboard) on AWS, ephe
 
 ## Control plane
 
-Two options, same `entrypoint.mjs`:
+Quickest route, one command from a laptop with the AWS CLI signed in:
+
+```bash
+AGENT_TEAM_TOKEN=$(openssl rand -hex 24) AGENT_TEAM_DASHBOARD_PASSWORD=... LINEAR_API_KEY=... GITLAB_TOKEN=... \
+PROJECT=manti PROJECT_REPO=group/manti adapters/hosting/aws/launch-control-plane.sh
+```
+
+`launch-control-plane.sh` stores the secrets in SSM, creates the `agent-team-control` and `agent-team-worker` roles and instance profiles, a security group that admits the dashboard from your current address only, and launches one `t3.small` in the default VPC with a persistent `/data` volume. It prints the dashboard URL, how to tail logs over Session Manager, and the teardown command. Rerun with `STEP=instance` to replace just the host.
+
+Two options for doing it by hand, same `entrypoint.mjs`:
 
 - **Single EC2 host** (cheapest): launch a `t4g.small`/`t3.small` with an attached EBS data volume and `control-plane-user-data.sh` as user data. The script installs Node, clones the toolkit, mounts `/data`, and runs the entrypoint as `agent-team.service`.
 - **ECS Fargate service**: build `Dockerfile` from the repository root (`docker build -f adapters/hosting/aws/Dockerfile .`), push to ECR, register `ecs-task-definition.json` with the placeholders replaced, and create a service with one task and an EFS volume for `/data`.
