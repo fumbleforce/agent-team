@@ -1,0 +1,8 @@
+{
+  "coordinatorUrl": "http://127.0.0.1:4310",
+  "engine": "claude",
+  "billing": "subscription",
+  "dataDir": ".agent-team-pm",
+  "pollSeconds": 20,
+  "dailyHourUtc": 7
+}

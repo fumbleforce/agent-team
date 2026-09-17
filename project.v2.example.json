@@ -1,0 +1,34 @@
+{
+  "version": 2,
+  "name": "Example project",
+  "queueProjectId": "example-project",
+  "charter": "docs/PRODUCT_CHARTER.md",
+  "instructions": ["AGENTS.md"],
+  "scm": { "kind": "gitlab", "repository": "group/project", "baseBranch": "main", "branchPrefix": "agents/" },
+  "tracker": {
+    "kind": "linear",
+    "workspaceId": "YOUR_LINEAR_WORKSPACE_UUID",
+    "workspaceUrl": "https://linear.app/your-workspace",
+    "teamId": "YOUR_LINEAR_TEAM_UUID",
+    "projectId": "YOUR_LINEAR_PROJECT_UUID",
+    "projectUrl": "https://linear.app/your-workspace/project/your-project",
+    "readyLabel": "agent:ready",
+    "ownerInboxIssue": "TEAM-1"
+  },
+  "engine": { "default": "claude", "billing": "bedrock", "model": "sonnet" },
+  "worker": { "launcher": "ec2", "ami": "ssm:/agent-team/example-project/worker-ami", "instanceType": "c6i.2xlarge" },
+  "memory": { "injectCapTokens": 4000 },
+  "pm": { "autonomy": "suggest", "dailyCapUsd": 20 },
+  "team": { "roles": ["team-dev", "team-tester"] },
+  "delivery": { "repository": "group/project", "baseBranch": "main", "requiredChecks": ["test"], "autoMergeAuthorized": false },
+  "ideation": {
+    "enabled": false,
+    "backlogCap": 10,
+    "batchSize": 3,
+    "minimumIntervalHours": 24,
+    "ideaLabel": "Idea",
+    "proposedState": "Backlog",
+    "approvedState": "Todo",
+    "rejectedState": "Canceled"
+  }
+}

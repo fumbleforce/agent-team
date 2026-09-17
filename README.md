@@ -76,9 +76,9 @@ The `repository` field in coordinator configuration is registry metadata, not au
 ## One local cycle
 
 ```sh
-node runner.mjs --project /path/to/project --dry-run
-node runner.mjs --project /path/to/project --execute --issue TEAM-123
-node runner.mjs --project /path/to/project --status
+node core/runner.mjs --project /path/to/project --dry-run
+node core/runner.mjs --project /path/to/project --execute --issue TEAM-123
+node core/runner.mjs --project /path/to/project --status
 ```
 
 Use `--engine claude` to run on Claude Code, `--model` for an engine model identifier, `--timeout-minutes 45`, and optionally `--base origin/main`. Bases are local refs unless `--fetch` is given with a `REMOTE/BRANCH` base: the runner then fetches only that remote-tracking ref before resolving it, leaving the primary working tree, index and HEAD untouched. Dry-run never fetches. For repeatable cross-machine jobs, enqueue an immutable commit SHA available on every worker. The default HEAD may differ between machines.
@@ -88,7 +88,7 @@ The runner overlays only manifest/charter/instruction files from the configured 
 Shared agent prompts are loaded once from this toolkit and injected into the child OpenCode configuration. Existing global/project OpenCode settings still merge; inspect them before sustained unattended use. The runner does not modify global config or require copied agents. To inspect roles interactively:
 
 ```sh
-OPENCODE_CONFIG=/absolute/path/to/agent-team/opencode.json opencode debug agent team-coordinator
+OPENCODE_CONFIG=/absolute/path/to/agent-team/roles.json opencode debug agent team-coordinator
 ```
 
 To use shared roles in a new interactive OpenCode instance, launch with that same `OPENCODE_CONFIG` variable from a configured project. Restart OpenCode after config/role changes; existing instances do not reload them.
@@ -131,7 +131,7 @@ A project enables ideation in `.agent-team.json`:
 
 `enqueue PROJECT --ideate --proposal-limit N` (or `runner.mjs --ideate`) runs the read-only `team-ideation` role once. It proposes substantial features with problem, benefit, scope, success criteria, relative effort, evidence and timing; the runner fails the cycle if the worktree or branch changed. The worker validates the proposals, then creates Linear issues in the proposed state carrying the idea label, deduplicated by title and a durable marker, never beyond `backlogCap` unfinished ideas per project (Done/Canceled free capacity). The worker needs `LINEAR_API_KEY` for that publication and skips the model entirely when the backlog is full or the key is missing.
 
-The owner approves by moving a card to the approved state and declines by moving it to the rejected state. The team never changes those states, never adds the ready label to an unapproved idea and never implements a pending proposal. The intake service (`linear-intake.mjs`) polls Linear without a model: approved, unblocked ideas without `agent:blocked`/`owner:decision` labels become `--publish` development jobs pinned to that issue (`--auto-merge` when the project authorizes delivery) on the freshly fetched delivery branch; approvals withdrawn while a job is still queued cancel it, and an idea whose earlier job was canceled or skipped can be approved again. It refills proposals only when capacity remains, no job is active or quarantined, and the cooldown has passed. Before each development run the worker rechecks approval through the API and reports idle without a model if it was withdrawn.
+The owner approves by moving a card to the approved state and declines by moving it to the rejected state. The team never changes those states, never adds the ready label to an unapproved idea and never implements a pending proposal. The intake service (`core/intake.mjs`, through the tracker adapter) polls Linear without a model: approved, unblocked ideas without `agent:blocked`/`owner:decision` labels become `--publish` development jobs pinned to that issue (`--auto-merge` when the project authorizes delivery) on the freshly fetched delivery branch; approvals withdrawn while a job is still queued cancel it, and an idea whose earlier job was canceled or skipped can be approved again. It refills proposals only when capacity remains, no job is active or quarantined, and the cooldown has passed. Before each development run the worker rechecks approval through the API and reports idle without a model if it was withdrawn.
 
 ## Owner interaction and visibility
 
@@ -151,15 +151,15 @@ Provide `AGENT_TEAM_TOKEN` through a private environment/service file on the coo
 
 ```sh
 # Coordinator machine; token already in environment
-node queue.mjs --config coordinator.local.json
+node core/queue.mjs --config coordinator.local.json
 
 # Any eligible worker; token already in environment
-node worker.mjs --config worker.local.json
+node core/worker.mjs --config worker.local.json
 
 # A client on the same host, or set URL to the Tailscale HTTPS endpoint
 export AGENT_TEAM_URL=http://127.0.0.1:4310
-node cli.mjs enqueue myntbase --issue FUM-6 --key myntbase-first-pilot
-node cli.mjs list
+node core/cli.mjs enqueue myntbase --issue FUM-6 --key myntbase-first-pilot
+node core/cli.mjs list
 ```
 
 Omit `--issue` to let the PM select from Todo + agent:ready in that project's Linear queue. PM can add at most two scoped supporting issues per cycle and maintains at most five ready issues. Ineligible pinned issues fail rather than silently substituting work.
@@ -201,8 +201,8 @@ An alternative is binding the API directly to the host's Tailscale IPv4 address 
 Use `install-local.mjs` to create private local configuration, a reusable token, and coordinator/worker user units with the actual Node/OpenCode paths:
 
 ```sh
-node install-local.mjs --project /path/to/project --key project-key --repository owner/repository --dry-run
-node install-local.mjs --project /path/to/project --key project-key --repository owner/repository --install
+node adapters/hosting/systemd/install-local.mjs --project /path/to/project --key project-key --repository owner/repository --dry-run
+node adapters/hosting/systemd/install-local.mjs --project /path/to/project --key project-key --repository owner/repository --install
 systemctl --user daemon-reload
 systemctl --user start agent-team-coordinator.service agent-team-worker.service
 ```
@@ -212,8 +212,8 @@ The installer does not start services or install/enable timers. It preserves exi
 `configure-linear.mjs` adds the approval intake. It reads the key from a hidden terminal prompt, `--key-file`, or piped stdin, validates every mapped project's workspace, team, states and labels against Linear, and only then writes a private `linear.env`, `intake.json`, the `agent-team-intake.service` unit and a worker drop-in that supplies the key to the worker process (the worker removes it again before starting the model runner). Nothing is started; it prints the paths and the `systemctl --user` commands. The key never appears in output, logs, model subprocesses or repositories.
 
 ```sh
-node configure-linear.mjs --dry-run
-node configure-linear.mjs --install
+node adapters/hosting/systemd/configure-linear.mjs --dry-run
+node adapters/hosting/systemd/configure-linear.mjs --install
 systemctl --user daemon-reload && systemctl --user restart agent-team-worker.service && systemctl --user start agent-team-intake.service
 ```
 
@@ -238,24 +238,24 @@ The coordinator, the Linear intake and the dashboard can run away from your mach
 fly launch --no-deploy --copy-config --name agent-team     # once; accept the app and volume
 fly volumes create agent_team_data --size 1 --region arn
 fly secrets set AGENT_TEAM_TOKEN=... AGENT_TEAM_DASHBOARD_PASSWORD=... LINEAR_API_KEY=...
-fly deploy
+fly deploy --config adapters/hosting/fly/fly.toml
 ```
 
 Then point each worker's `coordinatorUrl` at `https://<app>.fly.dev:8443`, restart it, and stop the local coordinator, intake and dashboard services. The local dashboard can also stay and point at the same URL (`coordinatorUrl` in `dashboard.json`).
 
 ## Dashboard and everyday commands
 
-`dashboard.mjs` serves the status page (default `http://127.0.0.1:4311`, or the Fly app address): worker presence per project, Claude subscription window usage and OpenCode token consumption as reported by runs, what the running coordinator and its subagents are doing right now, the queue with quarantine warnings, upcoming automatic runs, and every reported run with its delivery result, PR link and a detail page of steps, summary and stderr. Its only writes are the operator actions (propose ideas, release a held job, send a message), all sent to the coordinator API. `install-local.mjs` installs it locally as `agent-team-dashboard.service`.
+`core/dashboard.mjs` serves the status page (default `http://127.0.0.1:4311`, or the Fly app address): worker presence per project, Claude subscription window usage and OpenCode token consumption as reported by runs, what the running coordinator and its subagents are doing right now, the queue with quarantine warnings, upcoming automatic runs, and every reported run with its delivery result, PR link and a detail page of steps, summary and stderr. Its only writes are the operator actions (propose ideas, release a held job, send a message), all sent to the coordinator API. `install-local.mjs` installs it locally as `agent-team-dashboard.service`.
 
 Each member has a name, a voice and a portrait (`roster.mjs`, `portraits/`, regenerated with `portraits.mjs` and a Replicate key in `.env`). Clicking a member opens their page: current work, recent steps across runs, and a conversation panel. A message there is posted on the chosen Linear card of the selected project (the owner inbox by default) as "Owner → Name (title): …"; the member answers in a bounded read-only Claude session with the card's thread and its own recent work as context, from the latest retained worktree, and the reply is posted back signed "Name (title): …". Threads are the chat jobs themselves, so they follow the coordinator wherever it runs. Replies count against the worker's Claude subscription and are never retried.
 
 `cli.mjs` finds the control-plane token in `~/.config/agent-team/service.env` when `AGENT_TEAM_TOKEN` is not exported, so the everyday commands are short:
 
 ```sh
-node cli.mjs list
-node cli.mjs enqueue myntbase --issue FUM-5 --publish --auto-merge --engine claude --base origin/master --fetch
-node cli.mjs requeue JOB_UUID      # only after inspecting a blocked or failed job
-node cli.mjs cancel JOB_UUID       # queued jobs only
+node core/cli.mjs list
+node core/cli.mjs enqueue myntbase --issue FUM-5 --publish --auto-merge --engine claude --base origin/master --fetch
+node core/cli.mjs requeue JOB_UUID      # only after inspecting a blocked or failed job
+node core/cli.mjs cancel JOB_UUID       # queued jobs only
 ```
 
 ## Leases, failures and recovery
@@ -263,7 +263,7 @@ node cli.mjs cancel JOB_UUID       # queued jobs only
 - SQLite transactions atomically claim jobs; a unique index allows one running job per project.
 - Workers renew leases every third of the 90-second TTL. A failed heartbeat stops the runner; the worker allows the runner to terminate its detached child processes before escalation.
 - Expired jobs become blocked, never automatically reassigned. Blocked/failed jobs quarantine the whole project from new claims while other projects continue.
-- `node cli.mjs requeue JOB_UUID` is an explicit recovery action after inspecting the old worker's processes, retained changes and Linear state. Reconcile In Progress work before rerunning; the PM will not steal it.
+- `node core/cli.mjs requeue JOB_UUID` is an explicit recovery action after inspecting the old worker's processes, retained changes and Linear state. Reconcile In Progress work before rerunning; the PM will not steal it.
 - Requeue preserves the job ID/request but resets its result and lease; worker log files append across attempts. This is not a full attempt audit trail yet.
 - New invocations create fresh worktrees; model sessions are not automatically resumed after a crash. Recovery is deliberate to avoid duplicate edits or publishing.
 - Direct `runner.mjs` calls bypass the central queue and must not run on multiple hosts for the same project. Use workers for distributed operation.
@@ -285,6 +285,48 @@ All routes require `Authorization: Bearer ...`; JSON request bodies are limited 
 | `POST /jobs/:id/fail` | Record blocked/failed using current lease |
 | `POST /jobs/:id/requeue` | Explicit recovery of blocked/failed work |
 | `POST /jobs/:id/cancel` | Cancel a still-queued job (intake uses this for withdrawn approvals) |
+
+## Provider-neutral core and adapters
+
+Everything under `core/` and `agents/` is provider-neutral; `npm run lint` fails on any provider or project name there. Providers live in `adapters/`:
+
+| Kind | Adapters | Chosen by |
+| --- | --- | --- |
+| engine | `opencode`, `claude` (billing `subscription`, `api`, `bedrock`), `cursor`, `codex` | worker/job `engine`, manifest `engine.default` |
+| scm | `github` (gh), `gitlab` (glab + REST) | manifest `scm.kind` |
+| tracker | `linear` | manifest `tracker.kind` |
+| launcher | `local`, `ec2`, stubs `fargate`, `fly-machine` | manifest `worker.launcher` |
+| artifacts | `local`, `s3` | worker `artifacts.kind` |
+| hosting | `systemd`, `fly`, `aws` | deployment only |
+
+Interfaces are documented in [core/adapters.md](core/adapters.md). A version 2 manifest (`project.v2.example.json`) selects providers per project; version 1 manifests keep working with the original defaults.
+
+## Project memory
+
+Each project has a git-backed memory owned by the coordinator (`<data>/memory/<project>/`): `charter.md`, `items/*.md` with frontmatter (`type`, `scope`, `confirmed`, `hits`, `status`) and `runs/<ticket>.md`. Every write is one commit; the dashboard's memory pages show items, history, diffs and let the owner edit, retire or revert. Before a run the worker asks the coordinator to `assemble` the most relevant items for the ticket's scopes under `memory.injectCapTokens`, appends them to the system prompt and journals the memory sha. Inside a run the `memory` command offers `memory search` and `memory propose`; proposals and the report's `learnings[]` land in a review queue that the resident PM curates after each run.
+
+Seed a project's memory from its instruction files:
+
+```bash
+node core/seed-memory.mjs --project /path/to/project --dry-run
+node core/seed-memory.mjs --project /path/to/project --coordinator http://127.0.0.1:4310
+```
+
+## Resident PM
+
+`core/pm.mjs` runs on the control plane with the engine named in `pm.json` (`npm run pm`). It answers owner messages from the dashboard chat, watches the tracker and job completions, curates memory proposals into commits, and acts within the manifest's `pm.autonomy` (`observe`, `suggest`, `act`): it may enqueue ready work, comment and write observations on its own; state moves, `decision` items and spend above `pm.dailyCapUsd` go to the decision inbox for the owner.
+
+## Ephemeral workers
+
+With `worker.launcher: ec2` the coordinator starts an instance per job from `worker.ami` (or `ssm:/parameter` holding the current image) whose user-data runs `core/worker.mjs --once --job ID` and shuts down. Jobs unclaimed after `claimTimeoutMinutes` fail and their instance is terminated. `artifacts.kind: s3` uploads journal, events, stderr and diff at the end of each run and the dashboard links to them. See [adapters/hosting/aws/README.md](adapters/hosting/aws/README.md) for the control plane on AWS and the nightly AMI build.
+
+## Pilot runbook for a new project
+
+1. Add `.agent-team.json` (version 2) to the repository with `scm`, `tracker`, `engine`, `worker`, `team.roles` and `delivery.requiredChecks`; leave `autoMergeAuthorized: false`.
+2. Deploy the control plane (`adapters/hosting/aws` or `adapters/hosting/fly`) with the project in `AGENT_TEAM_PROJECTS`, then seed memory with `core/seed-memory.mjs` and edit the charter in the dashboard.
+3. Build the worker image (`adapters/hosting/aws/build-worker-ami.sh`) and check that `worker.ami` resolves.
+4. Label one ticket with the ready label and enqueue it pinned (`node core/cli.mjs enqueue <project> --issue KEY-1 --publish`) with concurrency 1; review the merge request, the run page and the memory proposals.
+5. When the pilot run is clean, start `core/intake.mjs` so approved tickets flow automatically, and raise concurrency.
 
 ## Next stages
 

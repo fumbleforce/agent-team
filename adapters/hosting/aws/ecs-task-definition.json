@@ -1,0 +1,40 @@
+{
+  "family": "agent-team-control-plane",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/agent-team-execution",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/agent-team-control-plane",
+  "volumes": [
+    { "name": "data", "efsVolumeConfiguration": { "fileSystemId": "fs-CHANGEME", "transitEncryption": "ENABLED", "rootDirectory": "/" } }
+  ],
+  "containerDefinitions": [
+    {
+      "name": "control-plane",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/agent-team:latest",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 4310, "protocol": "tcp" },
+        { "containerPort": 4311, "protocol": "tcp" }
+      ],
+      "mountPoints": [{ "sourceVolume": "data", "containerPath": "/data" }],
+      "environment": [
+        { "name": "AGENT_TEAM_DATA", "value": "/data" },
+        { "name": "AGENT_TEAM_HOSTNAME", "value": "aws" },
+        { "name": "AGENT_TEAM_SSM_PREFIX", "value": "/agent-team" },
+        { "name": "AGENT_TEAM_PROJECTS", "value": "{\"manti\":{\"repository\":\"hubro/manti\"}}" },
+        { "name": "AGENT_TEAM_PM_ENGINE", "value": "claude" },
+        { "name": "AGENT_TEAM_PM_BILLING", "value": "bedrock" },
+        { "name": "AGENT_TEAM_LAUNCHER", "value": "{\"kind\":\"ec2\",\"options\":{\"region\":\"REGION\",\"subnetId\":\"subnet-CHANGEME\",\"securityGroupId\":\"sg-CHANGEME\",\"instanceProfile\":\"agent-team-worker\",\"coordinatorUrl\":\"https://agents.example.internal:4310\"}}" },
+        { "name": "CLAUDE_CODE_USE_BEDROCK", "value": "1" },
+        { "name": "AWS_REGION", "value": "REGION" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": { "awslogs-group": "/agent-team/control-plane", "awslogs-region": "REGION", "awslogs-stream-prefix": "control-plane", "awslogs-create-group": "true" }
+      },
+      "healthCheck": { "command": ["CMD-SHELL", "curl -fs http://127.0.0.1:4311/health || exit 1"], "interval": 30, "timeout": 5, "retries": 3, "startPeriod": 20 }
+    }
+  ]
+}
