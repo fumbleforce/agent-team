@@ -4,7 +4,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { createQueue, createQueueServer, validBind, validateRegistry } from './queue.mjs';
+import { createQueue, createQueueServer, jobToken, validBind, validateRegistry } from './queue.mjs';
 
 const projects = { a: {}, b: {} };
 const claim = (q, workerId = 'w', projectIds = ['a', 'b']) => q.claim({ workerId, projectIds });
@@ -288,4 +288,36 @@ test('project settings override the registered manifest, keep history and refuse
     const saved = process.env.LINEAR_API_KEY; delete process.env.LINEAR_API_KEY;
     try { assert.equal((await get('/projects/a/tracker/lookup')).status, 501); } finally { if (saved !== undefined) process.env.LINEAR_API_KEY = saved; }
   } finally { server.close(); q.close(); }
+});
+
+test('a job token claims and reports only its own job, reads only its project, and dies with the job', async t => {
+  const token = 'a'.repeat(32); const q = createQueue(':memory:', { projects });
+  const server = createQueueServer(q, { token });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  t.after(async () => { await new Promise(resolve => server.close(resolve)); q.close(); });
+  const url = `http://127.0.0.1:${server.address().port}`;
+  const mine = q.enqueue({ projectId: 'a' }); const other = q.enqueue({ projectId: 'b' });
+  const scoped = jobToken(token, mine.id);
+  const call = (route, body, bearer = scoped) => fetch(url + route, { method: body === undefined ? 'GET' : 'POST', headers: { authorization: `Bearer ${bearer}` }, ...(body === undefined ? {} : { body: JSON.stringify(body) }) });
+  assert.notEqual(scoped, jobToken(token, other.id)); assert.ok(!scoped.includes(token));
+  assert.equal((await call('/health')).status, 200);
+  // Forged, foreign and malformed tokens are refused outright.
+  assert.equal((await call('/health', undefined, `job.${mine.id}.${'x'.repeat(43)}`)).status, 401);
+  assert.equal((await call('/health', undefined, jobToken('b'.repeat(32), mine.id))).status, 401);
+  assert.equal((await call('/health', undefined, 'job.nope.nope')).status, 401);
+  // Administration and other projects stay closed.
+  for (const route of ['/jobs', '/projects', '/evidence', '/launches', '/projects/b/settings', '/projects/a/memory', '/projects/a/threads']) assert.equal((await call(route)).status, 403, route);
+  for (const [route, body] of [['/jobs', { projectId: 'a' }], ['/projects/a/settings', { overrides: {} }], ['/projects/a/manifest', { workerId: 'w', manifest: {} }], ['/projects/b/manifest', {}], [`/jobs/${other.id}/heartbeat`, {}], [`/jobs/${mine.id}/requeue`, {}], [`/jobs/${mine.id}/cancel`, {}], ['/projects/a/memory/items', {}], ['/projects/a/messages', {}]]) assert.equal((await call(route, body)).status, 403, route);
+  assert.equal((await call('/claim', { workerId: 'w', projectIds: ['a', 'b'], job: mine.id })).status, 403);
+  assert.equal((await call('/claim', { workerId: 'w', projectIds: ['b'], job: other.id })).status, 403);
+  assert.equal((await call('/claim', { workerId: 'w', projectIds: ['a'] })).status, 403);
+  assert.equal((await call('/projects/a/costs', { jobId: other.id, kind: 'run', usd: 1 })).status, 403);
+  // Its own job works end to end.
+  const job = await (await call('/claim', { workerId: 'w', projectIds: ['a'], job: mine.id })).json();
+  assert.equal(job.id, mine.id); assert.ok(job.leaseToken);
+  assert.equal((await call('/projects/a/settings')).status, 200);
+  assert.equal((await call(`/jobs/${mine.id}/heartbeat`, credentials(job))).status, 200);
+  assert.equal((await call('/projects/a/costs', { jobId: mine.id, kind: 'run', usd: 0.5 })).status, 200);
+  assert.equal((await call(`/jobs/${mine.id}/complete`, { ...credentials(job), result: { outcome: 'idle', summary: 'none' } })).status, 200);
+  assert.equal((await call('/health')).status, 401, 'a finished job leaves no usable token behind');
 });

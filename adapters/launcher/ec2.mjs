@@ -19,7 +19,8 @@ export function aws(args, { env = process.env, timeoutMs = 60_000 } = {}) {
 // The worker on the instance reads its configuration from the files the user-data writes. When the
 // image has an unprivileged `agent` account (the AMI build script creates one) the worker runs as it.
 // With `ssmPrefix`, every parameter under that path (tracker key, SCM token, engine key) is exported
-// to the worker through the instance role, so no credential travels inside the user-data.
+// to the worker through the instance role. The only credential inside the user-data is the token,
+// which the coordinator supplies per job (`job.token`) so it is useless for anything but that job.
 export function userData({ job, coordinatorUrl, token, checkout, workerConfig = {}, toolkit = '/opt/agent-team', shutdown = true, ssmPrefix = null, region = null }) {
   const config = JSON.stringify({ workerId: `ec2-${job.id.slice(0, 8)}`, coordinatorUrl, projects: { [job.projectId]: checkout }, stateDir: '/var/lib/agent-team', ...workerConfig });
   const quoted = `'${token.replace(/'/g, `'\\''`)}'`;
@@ -49,10 +50,10 @@ export function create({ region, ami, instanceType = 't3.large', subnetId, secur
   const base = (job, market, image) => {
     const spec = { ImageId: image, InstanceType: job.worker?.instanceType ?? instanceType, MinCount: 1, MaxCount: 1,
       InstanceInitiatedShutdownBehavior: 'terminate',
-      UserData: Buffer.from(userData({ job, coordinatorUrl: requireOption('coordinatorUrl', coordinatorUrl), token: requireOption('token', token), checkout, workerConfig, toolkit, ssmPrefix, region })).toString('base64'),
+      UserData: Buffer.from(userData({ job, coordinatorUrl: requireOption('coordinatorUrl', coordinatorUrl), token: requireOption('token', job.token ?? token), checkout, workerConfig, toolkit, ssmPrefix, region })).toString('base64'),
       BlockDeviceMappings: [{ DeviceName: '/dev/xvda', Ebs: { VolumeSize: volumeGb, VolumeType: 'gp3', DeleteOnTermination: true } }],
       TagSpecifications: [{ ResourceType: 'instance', Tags: [{ Key: 'Name', Value: `agent-team-${job.projectId}-${job.id.slice(0, 8)}` }, { Key: 'agent-team:job', Value: job.id }, { Key: 'agent-team:project', Value: job.projectId }, ...Object.entries(tags).map(([Key, Value]) => ({ Key, Value }))] }],
-      MetadataOptions: { HttpTokens: 'required', HttpEndpoint: 'enabled' } };
+      MetadataOptions: { HttpTokens: 'required', HttpEndpoint: 'enabled', HttpPutResponseHopLimit: 1 } };
     if (subnetId) spec.SubnetId = subnetId;
     if (securityGroupId) spec.SecurityGroupIds = [securityGroupId];
     if (instanceProfile) spec.IamInstanceProfile = { Name: instanceProfile };

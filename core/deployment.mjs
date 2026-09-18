@@ -21,14 +21,15 @@ export function deploymentPath(projectId, dir = CONFIG_DIR) {
 }
 
 // Which secrets a deployment needs, from the adapters the manifest names. Generated secrets are
-// created by `init` when missing; provided ones are asked for.
+// created by `init` when missing; provided ones are asked for. `scope: 'control'` marks secrets
+// that only the control plane may read; hosting adapters keep them where workers have no access.
 export function secretPlan(manifest) {
   const scm = scmAdapter(manifest.scm.kind);
   const tracker = trackerAdapter(manifest.tracker.kind);
   const engine = engineAdapter(manifest.engine.default);
   const plan = [
-    { name: 'AGENT_TEAM_TOKEN', generated: true, purpose: 'coordinator bearer token' },
-    { name: 'AGENT_TEAM_DASHBOARD_PASSWORD', generated: true, purpose: 'dashboard password' },
+    { name: 'AGENT_TEAM_TOKEN', generated: true, scope: 'control', purpose: 'coordinator bearer token' },
+    { name: 'AGENT_TEAM_DASHBOARD_PASSWORD', generated: true, scope: 'control', purpose: 'dashboard password' },
     { name: tracker.API_KEY_VARIABLE, generated: false, purpose: `${tracker.NAME} API key`, adapter: tracker.NAME },
     { name: scm.TOKEN_VARIABLE, generated: false, purpose: `${scm.NAME} token able to push branches and open ${scm.CHANGE_NOUN}s`, adapter: scm.NAME }
   ];
@@ -63,9 +64,14 @@ export function deriveFromManifest(checkout, manifestOverride = null) {
 export function generateSecret(bytes = 24) { return randomBytes(bytes).toString('base64url'); }
 
 // Shape of the file on disk. `aws` holds account facts and the ids of created resources, filled in
-// as deploy progresses so every command is idempotent and resumable.
-export function newDeployment(derived, { region, hostingKind = 'aws' } = {}) {
-  return { version: 1, hosting: hostingKind, createdAt: new Date().toISOString(), ...derived, aws: { region: region ?? null, accountId: null, vpcId: null, subnetId: null, securityGroupId: null, instanceId: null, publicIp: null, privateIp: null, amiId: null, dataVolumeId: null, roles: { control: 'agent-team-control', worker: 'agent-team-worker' } } };
+// as deploy progresses so every command is idempotent and resumable. Roles are named per project so
+// one project's policy never widens another's. `network: 'dedicated'` keeps the hosts in a VPC of
+// their own, `dashboard: 'tunnel'` keeps the dashboard off the internet, and `permissionsBoundary`
+// (a policy ARN) is attached to both roles for accounts that require one. `toolkit` names the
+// repository and revision the hosts run; null follows the hosting adapter's default branch.
+export function newDeployment(derived, { region, hostingKind = 'aws', permissionsBoundary = null, toolkit = null } = {}) {
+  return { version: 1, hosting: hostingKind, createdAt: new Date().toISOString(), ...derived, toolkit, aws: { region: region ?? null, accountId: null, vpcId: null, subnetId: null, securityGroupId: null, instanceId: null, publicIp: null, privateIp: null, amiId: null, dataVolumeId: null, network: 'dedicated', dashboard: 'tunnel', permissionsBoundary,
+    roles: { control: `agent-team-${derived.projectId.slice(0, 44)}-control`, worker: `agent-team-${derived.projectId.slice(0, 44)}-worker` } } };
 }
 
 export function readDeployment(projectId, dir = CONFIG_DIR) {

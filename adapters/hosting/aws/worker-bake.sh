@@ -30,14 +30,20 @@ curl -fsSL https://cursor.com/install | bash || true
 install -m 755 /root/.local/bin/agent /usr/local/bin/agent 2>/dev/null || true
 
 id agent >/dev/null 2>&1 || useradd --create-home --shell /bin/bash agent
-git clone --branch "${TOOLKIT_REF}" "${TOOLKIT_REPO}" /opt/agent-team
+# A branch, a tag or a commit: pin a commit so a later push to the toolkit cannot change what runs here.
+git clone "${TOOLKIT_REPO}" /opt/agent-team
+git -C /opt/agent-team checkout "${TOOLKIT_REF}"
 chown -R agent:agent /opt/agent-team
 
+# Tracing stays off while the token is in hand: this output reaches the instance console log.
+set +x
 TOKEN="$(aws ssm get-parameter --region "${REGION}" --with-decryption --name "${SSM_PREFIX}/${TOKEN_VARIABLE}" --query Parameter.Value --output text)"
 install -d -m 700 -o agent -g agent /home/agent
 sudo -u agent -H git config --global credential.helper store
 printf 'https://oauth2:%s@%s\n' "${TOKEN}" "${PROJECT_HOST}" > /home/agent/.git-credentials
 chown agent:agent /home/agent/.git-credentials && chmod 600 /home/agent/.git-credentials
+unset TOKEN
+set -x
 mkdir -p /srv && chown agent:agent /srv
 sudo -u agent -H git clone "https://${PROJECT_HOST}/${PROJECT_REPO}.git" /srv/project
 sudo -u agent -H bash -lc 'cd /srv/project && __PROJECT_SETUP__'

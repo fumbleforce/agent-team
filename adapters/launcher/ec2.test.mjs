@@ -59,3 +59,13 @@ test('the index creates launchers by kind and rejects unknown kinds', async () =
   assert.deepEqual(await local.status({}), { state: 'external' });
   assert.throws(() => createLauncher('balloon'), /Unknown launcher/);
 });
+
+test('the token the coordinator issues for the job travels in the user data, never the shared one', async () => {
+  const calls = [];
+  const launcher = create({ ami: 'ami-0123456789abcdef0', coordinatorUrl: 'http://10.0.0.1:4310', token: 'shared-token-that-must-not-travel', run: async args => { calls.push(args); return { Instances: [{ InstanceId: 'i-1' }] }; } });
+  await launcher.start({ ...job, token: `job.${job.id}.mac` });
+  const spec = JSON.parse(calls[0][calls[0].indexOf('--cli-input-json') + 1]);
+  const script = Buffer.from(spec.UserData, 'base64').toString();
+  assert.ok(script.includes(`job.${job.id}.mac`)); assert.ok(!script.includes('shared-token-that-must-not-travel'));
+  assert.deepEqual(spec.MetadataOptions, { HttpTokens: 'required', HttpEndpoint: 'enabled', HttpPutResponseHopLimit: 1 });
+});

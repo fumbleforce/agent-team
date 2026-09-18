@@ -36,9 +36,11 @@ fi
 chmod 700 /data
 
 id agent-team >/dev/null 2>&1 || useradd --system --home /opt/agent-team --shell /usr/sbin/nologin agent-team
-if [ ! -d /opt/agent-team/.git ]; then git clone --branch "$TOOLKIT_REF" "$TOOLKIT_REPO" /opt/agent-team; fi
+# A branch, a tag or a commit: pin a commit so a later push to the toolkit cannot change what runs here.
+if [ ! -d /opt/agent-team/.git ]; then git clone "$TOOLKIT_REPO" /opt/agent-team && git -C /opt/agent-team checkout "$TOOLKIT_REF"; fi
 chown -R agent-team:agent-team /opt/agent-team /data
 
+IMDS_TOKEN="$(curl -fs -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http://169.254.169.254/latest/api/token || true)"
 cat > /etc/agent-team.env <<EOF
 AGENT_TEAM_DATA=/data
 AGENT_TEAM_HOSTNAME=aws
@@ -47,7 +49,7 @@ AGENT_TEAM_PROJECTS=${PROJECTS_JSON}
 AGENT_TEAM_PM_ENGINE=${PM_ENGINE}
 AGENT_TEAM_PM_BILLING=${PM_BILLING}
 CLAUDE_CODE_USE_BEDROCK=1
-AWS_REGION=$(curl -fs http://169.254.169.254/latest/meta-data/placement/region || echo eu-north-1)
+AWS_REGION=$(curl -fs -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" http://169.254.169.254/latest/meta-data/placement/region || echo eu-north-1)
 EOF
 if [ -n "$LAUNCHER_JSON" ]; then echo "AGENT_TEAM_LAUNCHER=${LAUNCHER_JSON}" >> /etc/agent-team.env; fi
 chmod 600 /etc/agent-team.env
