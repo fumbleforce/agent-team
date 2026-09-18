@@ -105,9 +105,11 @@ The index exposes `validateIntegrations(list)` (manifest normalization), `integr
 
 Deployment glue, not imported by core: `systemd` (user units and installer), `fly` (entrypoint, `fly.toml`, Dockerfile), `aws` (control-plane deployment and worker AMI build).
 
-## Team blueprints
+## Teams and environments
 
-Personas are not adapters: they are data. `core/blueprint.mjs` resolves `AGENT_TEAM_BLUEPRINT` to a directory holding `roles.json`, `roster.json`, `agents/*.md` and optional `portraits/`, and the roster, manifest role list, runner and dashboard read from it; unset, the toolkit root is the blueprint. See `teams/README.md`.
+Personas are not adapters: they are data the coordinator stores (`core/teams.mjs`, tables `teams` and `teams_history`). Directory blueprints (`core/blueprint.mjs`: the toolkit root and `teams/<name>`) seed the store once; afterwards the dashboard edits teams and every save is a version a run records. The committed `roles.json` stays the permission ceiling: `materialize(team, ceiling)` takes every role's permissions from it (or a fixed floor for subagents it does not know) and lets the stored team only add denials. A project selects a team with `team.blueprint` and reaches it through `GET /projects/<id>/team`; the worker writes it to a file the runner reads with `--team-file`.
+
+Worker environments (`core/environments.mjs`, tables `environments` and `environments_history`) name what a machine offers a run: a fixed catalog of capabilities (`browser`, `docker`, `display`), launcher defaults and image packages. A project selects one with `worker.environment`; the coordinator folds its launcher fields into the launch, the worker passes it to the runner with `--environment-file`, and capabilities become MCP servers (`type: stdio`, which engines translate: OpenCode `local`, Claude Code `command/args`) plus a prompt note. `agent-team image` installs the environment's packages into the worker image.
 
 ## Manifest
 

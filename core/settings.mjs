@@ -16,11 +16,13 @@ export const SETTINGS_FIELDS = [
   { section: 'engine', key: 'billing', label: 'Billing mode', type: 'text', hint: 'Adapter-specific; leave empty for the engine default.' },
   { section: 'engine', key: 'model', label: 'Model', type: 'text', hint: 'Adapter-specific model alias. Empty uses the engine default.' },
   { section: 'worker', key: 'launcher', label: 'Worker launcher', type: 'select', options: LAUNCHER_KINDS },
+  { section: 'worker', key: 'environment', label: 'Worker environment', type: 'select', optionsFrom: 'environments', options: ['standard'], hint: 'What the worker machine offers a run: browser, containers, display. Edit the catalog under Environments.' },
   { section: 'worker', key: 'instanceType', label: 'Instance type', type: 'text', hint: 'Cloud launchers only.' },
   { section: 'memory', key: 'injectCapTokens', label: 'Memory injected per run (tokens)', type: 'number', min: 0, max: 60000 },
   { section: 'pm', key: 'autonomy', label: 'PM autonomy', type: 'select', options: AUTONOMY_LEVELS, hint: 'observe: reads only. suggest: asks before acting. act: enqueues and curates memory on its own.' },
   { section: 'pm', key: 'dailyCapUsd', label: 'PM daily spend cap (USD)', type: 'number', min: 0, max: 10000, step: 0.5 },
-  { section: 'team', key: 'roles', label: 'Team roles', type: 'multi', options: ALL_ROLES, hint: 'Subagents available to the coordinator. Auto-merge needs team-tester.' },
+  { section: 'team', key: 'blueprint', label: 'Team', type: 'select', optionsFrom: 'blueprints', options: ['default'], hint: 'Which stored team runs this project. Edit teams under Teams.' },
+  { section: 'team', key: 'roles', label: 'Team roles', type: 'multi', optionsFrom: 'roles', options: ALL_ROLES, hint: 'Subagents the coordinator delegates to. Auto-merge needs team-tester.' },
   { section: 'ideation', key: 'enabled', label: 'Ideation enabled', type: 'boolean' },
   { section: 'ideation', key: 'batchSize', label: 'Ideas per cycle', type: 'number', min: 1, max: 10 },
   { section: 'ideation', key: 'backlogCap', label: 'Idea backlog cap', type: 'number', min: 1, max: 100 },
@@ -42,7 +44,7 @@ export function overridesFromForm(form, repoManifest) {
     const name = `${field.section}.${field.key}`;
     let value;
     if (field.type === 'multi') {
-      const chosen = form.getAll(name).filter(role => field.options.includes(role));
+      const chosen = form.getAll(name).filter(role => /^team-[a-z]+$/.test(role));
       if (form.get(`${name}.all`) === 'on') value = null;
       else value = chosen;
     } else if (field.type === 'boolean') {
@@ -50,7 +52,8 @@ export function overridesFromForm(form, repoManifest) {
       if (value === Boolean(repoValue(field))) continue;
     } else {
       const raw = (form.get(name) ?? '').trim();
-      if (!raw) { if (repoValue(field) !== undefined && repoValue(field) !== null) set(field, null); continue; }
+      // A select always submits a value; an absent one means the form predates the field.
+      if (!raw) { if (field.type !== 'select' && repoValue(field) !== undefined && repoValue(field) !== null) set(field, null); continue; }
       if (field.type === 'number') { value = Number(raw); if (!Number.isFinite(value)) throw new Error(`${field.label} must be a number`); }
       else value = raw;
     }
@@ -75,11 +78,13 @@ function renderField(field, { effective, repoManifest, overrides, lookup }) {
   const hint = field.hint ? `<small id="${id}-hint">${escape(field.hint)}</small>` : '';
   const describe = field.hint ? ` aria-describedby="${id}-hint"` : '';
   let control;
-  if (field.type === 'select') control = `<select id="${id}" name="${name}"${describe}>${field.options.map(option => `<option${option === value ? ' selected' : ''}>${escape(option)}</option>`).join('')}</select>`;
+  // Options may come from the coordinator's stores (teams, environments, the team's roles).
+  const options = field.optionsFrom && lookup?.[field.optionsFrom]?.length ? lookup[field.optionsFrom] : field.options;
+  if (field.type === 'select') control = `<select id="${id}" name="${name}"${describe}>${[...new Set([...options, ...(value ? [value] : [])])].map(option => `<option${option === value ? ' selected' : ''}>${escape(option)}</option>`).join('')}</select>`;
   else if (field.type === 'boolean') control = `<input type="checkbox" id="${id}" name="${name}"${value ? ' checked' : ''}${describe}>`;
   else if (field.type === 'multi') {
     const all = value === null || value === undefined;
-    control = `<fieldset class="roles"><legend class="sr">${escape(field.label)}</legend><label><input type="checkbox" name="${name}.all"${all ? ' checked' : ''}> all shared roles</label>${field.options.map(option => `<label><input type="checkbox" name="${name}" value="${escape(option)}"${!all && value.includes(option) ? ' checked' : ''}> ${escape(option)}</label>`).join('')}</fieldset>`;
+    control = `<fieldset class="roles"><legend class="sr">${escape(field.label)}</legend><label><input type="checkbox" name="${name}.all"${all ? ' checked' : ''}> all shared roles</label>${options.map(option => `<label><input type="checkbox" name="${name}" value="${escape(option)}"${!all && value.includes(option) ? ' checked' : ''}> ${escape(option)}</label>`).join('')}</fieldset>`;
   } else {
     const choices = field.lookup && lookup?.[field.lookup]?.length ? lookup[field.lookup] : null;
     const list = choices ? `<datalist id="${id}-list">${choices.map(choice => `<option value="${escape(field.lookup === 'teams' || field.lookup === 'projects' ? choice.id : choice.name)}">${escape(choice.name)}${choice.key ? ` (${escape(choice.key)})` : ''}</option>`).join('')}</datalist>` : '';

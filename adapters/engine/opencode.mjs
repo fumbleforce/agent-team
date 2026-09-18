@@ -16,9 +16,12 @@ export function environment(env, { roles, denied = [], mcp = {}, access = {} } =
   const filtered = { ...env };
   if (roles) {
     const config = structuredClone(roles);
+    for (const key of ['team', 'roster', 'blueprint']) delete config[key];
     const coordinator = config.agent?.['team-coordinator'];
     if (coordinator?.permission?.bash && typeof coordinator.permission.bash === 'object') for (const rule of denied) coordinator.permission.bash[`*${rule}*`] = 'deny';
-    if (Object.keys(mcp).length) config.mcp = Object.fromEntries(Object.entries(mcp).map(([name, server]) => [name, { type: 'remote', url: server.url, enabled: true, ...(server.headers ? { headers: server.headers } : {}) }]));
+    if (Object.keys(mcp).length) config.mcp = Object.fromEntries(Object.entries(mcp).map(([name, server]) => [name, server.type === 'stdio'
+      ? { type: 'local', command: [server.command, ...(server.args ?? [])], enabled: true }
+      : { type: 'remote', url: server.url, enabled: true, ...(server.headers ? { headers: server.headers } : {}) }]));
     // A server granted to named roles only is denied to every other agent as a tool pattern.
     for (const [server, allowed] of Object.entries(access)) {
       if (!Array.isArray(allowed)) continue;

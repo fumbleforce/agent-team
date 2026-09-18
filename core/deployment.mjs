@@ -7,6 +7,7 @@ import { scmAdapter } from '../adapters/scm/index.mjs';
 import { trackerAdapter } from '../adapters/tracker/index.mjs';
 import { engineAdapter } from '../adapters/engine/index.mjs';
 import { integrationAdapter } from '../adapters/integration/index.mjs';
+import { builtinEnvironments, provisioning } from './environments.mjs';
 
 // A deployment file describes one project's hosted control plane: where the checkout is, which
 // cloud resources exist and which secret names the hosts read. It never holds a secret value.
@@ -62,10 +63,19 @@ export function deriveFromManifest(checkout, manifestOverride = null) {
     scm: { kind: manifest.scm.kind, repository: manifest.scm.repository, host, cloneUrl: `https://${host}/${manifest.scm.repository}.git`, baseBranch: manifest.scm.baseBranch },
     tracker: { kind: manifest.tracker.kind },
     engine: { default: manifest.engine.default, billing: manifest.engine.billing },
-    worker: { launcher: manifest.worker.launcher, instanceType: manifest.worker.instanceType ?? 'c6i.2xlarge', setup: manifest.worker.setup ?? DEFAULT_SETUP, amiParameter: ami.startsWith('ssm:') ? ami.slice(4) : null, ami: ami.startsWith('ssm:') ? null : ami },
+    worker: { launcher: manifest.worker.launcher, instanceType: manifest.worker.instanceType ?? 'c6i.2xlarge', setup: manifest.worker.setup ?? DEFAULT_SETUP, amiParameter: ami.startsWith('ssm:') ? ami.slice(4) : null, ami: ami.startsWith('ssm:') ? null : ami,
+      environment: manifest.worker.environment, provisioning: environmentProvisioning(manifest.worker.environment) },
     ssmPrefix: prefix,
     secrets: secretPlan(manifest)
   };
+}
+
+// Packages and setup the worker image needs for the project's environment. Built-in
+// environments resolve here; a stored custom one is refreshed from the coordinator by
+// `agent-team image` when it can reach it, otherwise the image carries only the standard tools.
+export function environmentProvisioning(id, stored = null) {
+  const environment = stored ?? builtinEnvironments().find(item => item.id === id) ?? null;
+  return environment ? provisioning(environment) : { packages: [], setup: [] };
 }
 
 export function generateSecret(bytes = 24) { return randomBytes(bytes).toString('base64url'); }

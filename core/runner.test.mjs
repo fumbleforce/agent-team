@@ -938,3 +938,35 @@ test('integration credentials never reach the model process, whichever engine ru
   const filtered = modelEnvironment(env, null, 'opencode', { integrations: [{ kind: 'mcp', name: 'crm', url: 'https://crm.example/' }] });
   assert.deepEqual(filtered, { PATH: '/bin', KEEP_ME: '1' });
 });
+
+test('a coordinator-resolved team file replaces roles under the committed ceiling and an environment file adds tools', async t => {
+  const f = fixture(t);
+  const teamFile = path.join(f.root, '..', 'team.json');
+  fs.writeFileSync(teamFile, JSON.stringify({ id: 'ops', name: 'Ops', version: 4, roles: ['team-analyst'], defaultRoles: ['team-analyst'],
+    roster: { 'team-coordinator': { name: 'Atlas', title: 'c', voice: 'v' }, 'team-pm': { name: 'B', title: 'p', voice: 'v' }, 'team-owner': { name: 'C', title: 'o', voice: 'v' }, 'team-analyst': { name: 'D', title: 'analyst', voice: 'v' } },
+    agents: { 'team-coordinator': { mode: 'primary', prompt: 'Stored coordinator prompt' }, 'team-pm': { mode: 'subagent', prompt: 'plan' }, 'team-owner': { mode: 'primary', prompt: 'desk' }, 'team-analyst': { mode: 'subagent', prompt: 'Analyse the numbers', deny: ['bash'] } } }));
+  const environmentFile = path.join(f.root, '..', 'environment.json');
+  fs.writeFileSync(environmentFile, JSON.stringify({ id: 'browser', name: 'Browser', capabilities: ['browser'], version: 2 }));
+  // The fixture's committed roles file knows only the coordinator and a developer.
+  await assert.rejects(f.run(['--execute', '--issue', 'TEST-1', '--team-file', teamFile]), /Team file rejected: primary role team-owner is not in the committed roles file/);
+  const sharedFile = path.join(f.packageDir, 'roles.json');
+  fs.writeFileSync(sharedFile, JSON.stringify({ agent: { 'team-coordinator': { mode: 'primary', prompt: 'x', permission: { bash: { '*': 'allow' } } }, 'team-owner': { mode: 'primary', prompt: 'x', permission: { edit: 'deny' } }, 'team-developer': { mode: 'subagent', prompt: 'x' } } }));
+  assert.equal(await f.run(['--execute', '--issue', 'TEST-1', '--team-file', teamFile, '--environment-file', environmentFile]), 0);
+  const config = JSON.parse(fs.readFileSync(f.env.CONFIG_CAPTURE, 'utf8'));
+  assert.deepEqual(Object.keys(config.agent).sort(), ['team-analyst', 'team-coordinator', 'team-owner'], 'only the run roles plus primaries; the committed developer is not in the stored team');
+  assert.equal(config.agent['team-coordinator'].prompt, 'Stored coordinator prompt');
+  assert.deepEqual(config.agent['team-coordinator'].permission.bash['*'], 'allow', 'permissions come from the committed file');
+  assert.deepEqual(config.agent['team-analyst'].permission, { task: 'deny', question: 'deny', 'tracker_*': 'deny', bash: 'deny' });
+  assert.equal(config.team, undefined, 'store keys never reach the engine configuration');
+  assert.equal(config.mcp.browser.type, 'local'); assert.equal(config.mcp.browser.command[0], 'npx');
+  const [journal] = f.journals();
+  assert.deepEqual(journal.team, { id: 'ops', version: 4, roles: ['team-analyst'] });
+  assert.deepEqual(journal.environment, { id: 'browser', version: 2, capabilities: ['browser'] });
+  assert.match(journal.options.teamFile, /team\.json$/);
+  const prompt = f.calls().find(call => call.includes('run')).at(-1);
+  assert.match(prompt, /Worker environment "Browser"/);
+  assert.match(prompt, /Delegate to developer\. Allow/, 'the pipeline follows the resolved roles');
+  assert.doesNotMatch(prompt, /UX if needed/);
+  fs.writeFileSync(environmentFile, JSON.stringify({ id: 'x', name: 'X', capabilities: ['gpu'] }));
+  await assert.rejects(f.run(['--execute', '--issue', 'TEST-1', '--environment-file', environmentFile]), /capabilities must list/);
+});

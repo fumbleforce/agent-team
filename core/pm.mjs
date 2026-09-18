@@ -26,10 +26,10 @@ export const AUTONOMY = {
   act: { comment: true, memory: ['observation', 'gotcha', 'run', 'convention'], enqueue: true },
 };
 
-export function pmSystemPrompt({ manifest, packageDir = PACKAGE_DIR, memory = '', autonomy = 'suggest', scm, tracker }) {
-  const member = ROSTER[ROLE];
+export function pmSystemPrompt({ manifest, packageDir = PACKAGE_DIR, memory = '', autonomy = 'suggest', scm, tracker, team = null }) {
+  const member = team?.roster?.[ROLE] ?? ROSTER[ROLE];
   const preferences = fs.readFileSync(path.join(packageDir, 'OWNER_PREFERENCES.md'), 'utf8');
-  const roleText = fs.readFileSync(path.join(packageDir, 'agents', `${ROLE}.md`), 'utf8');
+  const roleText = team?.agents?.[ROLE]?.prompt ?? fs.readFileSync(path.join(packageDir, 'agents', `${ROLE}.md`), 'utf8');
   const level = AUTONOMY[autonomy];
   return [preferences, roleText,
     `You are the resident product manager for ${manifest.name}: you persist between runs, the coordinator and its roles do not. You talk with the owner in the dashboard, keep the ${tracker?.NAME ?? 'issue tracker'} board honest, decide what is worth building next, and curate project memory so the next run starts smarter. Stay in character as ${member.name} but be factual: cite issues, runs, files and memory item ids; say plainly when you do not know. Source control is ${scm?.NAME ?? 'the configured provider'}; a ${scm?.CHANGE_NOUN ?? 'change request'} is the unit of delivery.`,
@@ -68,7 +68,7 @@ export function parseReply(text) {
 }
 
 // Applies actions within the autonomy level; the rest become owner decisions. Returns a log.
-export async function applyActions({ actions, manifest, projectId, request, tracker, autonomy = 'suggest', threadId, jobId = null, spentToday = 0 }) {
+export async function applyActions({ actions, manifest, projectId, request, tracker, autonomy = 'suggest', threadId, jobId = null, spentToday = 0, member = ROSTER[ROLE] }) {
   const level = AUTONOMY[autonomy] ?? AUTONOMY.suggest;
   const flat = flatTracker(manifest);
   const log = [];
@@ -83,7 +83,7 @@ export async function applyActions({ actions, manifest, projectId, request, trac
       if (action.type === 'comment') {
         if (!issuePattern.test(String(action.issue ?? ''))) throw new Error('invalid issue');
         if (!level.comment || overCap) { await ask('other', `Post comment on ${action.issue}?`, String(action.body ?? ''), ['Post it', 'Skip'], { action }); continue; }
-        await tracker.postComment(flat, action.issue, `${ROSTER[ROLE].name} (${ROSTER[ROLE].title}): ${String(action.body ?? '').slice(0, 5000)}`);
+        await tracker.postComment(flat, action.issue, `${member.name} (${member.title}): ${String(action.body ?? '').slice(0, 5000)}`);
         log.push({ type: 'comment', issue: action.issue });
       } else if (action.type === 'enqueue') {
         if (!issuePattern.test(String(action.issue ?? ''))) throw new Error('invalid issue');
@@ -95,22 +95,22 @@ export async function applyActions({ actions, manifest, projectId, request, trac
         const items = validateLearnings(Array.isArray(action.items) ? action.items.map(item => ({ type: item.type, title: item.title, body: item.body, scope: item.scope ?? [] })) : []).map((item, index) => ({ ...item, confirmed: action.items[index]?.confirmed === true, source: `pm${jobId ? `:run:${jobId}` : ''}` }));
         const allowed = items.filter(item => level.memory.includes(item.type) && !overCap);
         const held = items.filter(item => !allowed.includes(item));
-        if (allowed.length) { const written = await request(`/projects/${projectId}/memory/items`, { items: allowed, author: { name: ROSTER[ROLE].name }, message: `PM notes${jobId ? ` after run ${jobId.slice(0, 8)}` : ''}` }); log.push({ type: 'memory', ids: written.ids, sha: written.sha }); }
+        if (allowed.length) { const written = await request(`/projects/${projectId}/memory/items`, { items: allowed, author: { name: member.name }, message: `PM notes${jobId ? ` after run ${jobId.slice(0, 8)}` : ''}` }); log.push({ type: 'memory', ids: written.ids, sha: written.sha }); }
         for (const item of held) await ask('memory-decision', `Record decision: ${item.title}?`, item.body, ['Record it', 'Discard'], { action: { type: 'memory', items: [item] } });
       } else if (action.type === 'proposal') {
         if (!/^[a-f0-9-]{36}$/.test(String(action.id ?? ''))) throw new Error('invalid proposal id');
         if (!['accept', 'discard'].includes(action.action)) throw new Error('invalid proposal action');
         const item = action.item && typeof action.item === 'object' ? Object.fromEntries(Object.entries(action.item).filter(([key]) => ['title', 'body', 'scope', 'type', 'confirmed'].includes(key))) : undefined;
         if (item?.type === 'decision' && !level.memory.includes('decision')) { await ask('memory-decision', `Accept decision learning ${action.id.slice(0, 8)}?`, item.body ?? '', ['Accept', 'Discard'], { action }); continue; }
-        await request(`/proposals/${action.id}/resolve`, { action: action.action, item, author: { name: ROSTER[ROLE].name } });
+        await request(`/proposals/${action.id}/resolve`, { action: action.action, item, author: { name: member.name } });
         log.push({ type: 'proposal', id: action.id, action: action.action });
       } else if (action.type === 'run_note') {
         if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/.test(String(action.ticket ?? ''))) throw new Error('invalid ticket');
-        await request(`/projects/${projectId}/memory/run`, { ticket: action.ticket, content: String(action.content ?? '').slice(0, 20000), author: { name: ROSTER[ROLE].name } });
+        await request(`/projects/${projectId}/memory/run`, { ticket: action.ticket, content: String(action.content ?? '').slice(0, 20000), author: { name: member.name } });
         log.push({ type: 'run_note', ticket: action.ticket });
       } else if (action.type === 'bump') {
         const ids = (Array.isArray(action.ids) ? action.ids : []).filter(id => /^[a-z0-9][a-z0-9-]{2,63}$/.test(String(id))).slice(0, 100);
-        if (ids.length) { await request(`/projects/${projectId}/memory/bump`, { ids, author: { name: ROSTER[ROLE].name } }); log.push({ type: 'bump', count: ids.length }); }
+        if (ids.length) { await request(`/projects/${projectId}/memory/bump`, { ids, author: { name: member.name } }); log.push({ type: 'bump', count: ids.length }); }
       }
     } catch (error) { log.push({ type: 'error', action: action.type, error: String(error.message).slice(0, 300) }); }
   }
@@ -169,11 +169,13 @@ export function createPm(config, { request = createClient(config.coordinatorUrl 
     const tracker = trackerFor(manifest);
     const costs = await request(`/projects/${projectId}/costs`).catch(() => ({ day: { usd: 0 } }));
     const context = await gatherContext({ request, projectId, manifest, tracker, event });
+    const team = await request(`/projects/${projectId}/team`).catch(() => null);
+    const member = team?.roster?.[ROLE] ?? ROSTER[ROLE];
     let memory = '';
     try { memory = (await request(`/projects/${projectId}/memory/assemble?cap=${Math.min(manifest.memory?.injectCapTokens ?? 4000, 6000)}`)).markdown; } catch { /* memory optional */ }
     const scm = scmAdapter(manifest.scm.kind);
     const systemPromptFile = path.join(dataDir, `${projectId}.system.md`);
-    fs.writeFileSync(systemPromptFile, pmSystemPrompt({ manifest, packageDir, memory, autonomy: manifest.pm?.autonomy ?? 'suggest', scm, tracker: trackerAdapter(manifest.tracker.kind) }), { mode: 0o600 });
+    fs.writeFileSync(systemPromptFile, pmSystemPrompt({ manifest, packageDir, memory, autonomy: manifest.pm?.autonomy ?? 'suggest', scm, tracker: trackerAdapter(manifest.tracker.kind), team }), { mode: 0o600 });
     const cwd = ensureClone({ dataDir, projectId, repositoryUrl: config.repositories?.[projectId], baseBranch: manifest.scm.baseBranch }) ?? dataDir;
     const messageId = `pm-${projectId}-${now()}`;
     await request(`/projects/${projectId}/messages`, { id: messageId, threadId: context.thread.id, author: ROLE, body: '…', state: 'streaming', meta: { event } });
@@ -184,7 +186,7 @@ export function createPm(config, { request = createClient(config.coordinatorUrl 
         onDelta: text => { streamed += text; if (!flushTimer) flushTimer = setTimeout(flush, 700); }, onUsage: report => { usage = report; } });
       if (flushTimer) clearTimeout(flushTimer);
       const { reply, actions } = parseReply(raw);
-      const log = await applyActions({ actions, manifest, projectId, request, tracker, autonomy: manifest.pm?.autonomy ?? 'suggest', threadId: context.thread.id, jobId: event.jobId ?? null, spentToday: costs.day?.usd ?? 0 });
+      const log = await applyActions({ actions, manifest, projectId, request, tracker, autonomy: manifest.pm?.autonomy ?? 'suggest', threadId: context.thread.id, jobId: event.jobId ?? null, spentToday: costs.day?.usd ?? 0, member });
       await request(`/messages/${messageId}`, { body: reply || 'No reply.', state: 'final', meta: { event, actions: log, usage } });
       if (usage?.costUsd) await request(`/projects/${projectId}/costs`, { kind: 'pm', usd: usage.costUsd, jobId: event.jobId ?? undefined }).catch(() => {});
       const status = log.find(entry => entry.type === 'status');

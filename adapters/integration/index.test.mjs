@@ -27,7 +27,8 @@ test('the manifest carries integrations and checks their roles against the team'
   assert.deepEqual(normalizeManifest(v1).integrations, []);
   const manifest = normalizeManifest({ ...v1, integrations: [{ kind: 'slack', roles: ['team-coordinator', 'team-dev'] }] });
   assert.equal(manifest.integrations[0].name, 'slack');
-  assert.throws(() => normalizeManifest({ ...v1, integrations: [{ kind: 'slack', roles: ['team-nobody'] }] }), /unknown role team-nobody/);
+  assert.equal(normalizeManifest({ ...v1, integrations: [{ kind: 'slack', roles: ['team-nobody'] }] }).integrations[0].roles[0], 'team-nobody', 'roles are checked against the stored team when a run resolves it');
+  assert.throws(() => normalizeManifest({ ...v1, integrations: [{ kind: 'slack', roles: ['nobody'] }] }), /unknown role/);
 });
 
 test('servers carry a bearer header only when the worker holds the credential, and every credential name is known', () => {

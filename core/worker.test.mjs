@@ -334,3 +334,28 @@ test('owner settings from the coordinator reach the runner as a settings file an
     assert.ok(!seen.includes('--settings-file'));
   } finally { q.close(); }
 });
+
+test('the coordinator-resolved team and environment reach the runner as files', async t => {
+  const root = mkdtempSync(path.join(os.tmpdir(), 'team-resolve-')); t.after(() => rmSync(root, { recursive: true, force: true }));
+  const checkout = path.join(root, 'checkout'); mkdirSync(checkout);
+  writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ ...manifest, queueProjectId: 'a' }));
+  const q = createQueue(':memory:', { projects: { a: {}, b: {} } });
+  try {
+    q.saveSettings('a', { overrides: { worker: { environment: 'browser' } }, author: 'owner' });
+    q.enqueue({ projectId: 'a', issue: 'FUM-1' });
+    let seen;
+    const request = requestFor(q);
+    const routed = async (route, body) => {
+      const resolve = /^\/projects\/([^/]+)\/(team|environment)$/.exec(route);
+      if (resolve && body === undefined) return resolve[2] === 'team' ? q.projectTeam(resolve[1]) : q.projectEnvironment(resolve[1]);
+      if (route === '/projects/a/settings' && body === undefined) return q.settings('a');
+      return request(route, body);
+    };
+    await runWorker({ ...config, stateDir: path.join(root, 'state'), projects: { a: checkout, b: '/tmp/synthetic-b' } }, { once: true, request: routed, run: async ({ args }) => { seen = args; return { code: 0, journal: { outcome: 'idle' } }; } });
+    const team = JSON.parse(readFileSync(seen[seen.indexOf('--team-file') + 1], 'utf8'));
+    assert.equal(team.id, 'default'); assert.equal(team.roles, null, 'a version 1 manifest delegates to every subagent'); assert.ok(team.agents['team-coordinator'].prompt);
+    const environment = JSON.parse(readFileSync(seen[seen.indexOf('--environment-file') + 1], 'utf8'));
+    assert.equal(environment.id, 'browser'); assert.deepEqual(environment.capabilities, ['browser']);
+    assert.equal(statSync(seen[seen.indexOf('--team-file') + 1]).mode & 0o777, 0o600);
+  } finally { q.close(); }
+});

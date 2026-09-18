@@ -246,7 +246,9 @@ export async function controlPlane(deployment, { aws = defaultAws, log = () => {
 
 export function bakeScript(deployment, { template = readFileSync(path.join(HERE, 'worker-bake.sh'), 'utf8'), toolkitRepo = deployment.toolkit?.repo ?? TOOLKIT_REPO, toolkitRef = deployment.toolkit?.ref ?? 'main' } = {}) {
   const tokenVariable = deployment.secrets.find(secret => secret.adapter === deployment.scm.kind)?.name;
-  const values = { REGION: deployment.aws.region, SSM_PREFIX: deployment.ssmPrefix, TOOLKIT_REPO: toolkitRepo, TOOLKIT_REF: toolkitRef, PROJECT_HOST: deployment.scm.host, PROJECT_REPO: deployment.scm.repository, TOKEN_VARIABLE: tokenVariable, PROJECT_SETUP: deployment.worker.setup };
+  const provisioning = deployment.worker.provisioning ?? { packages: [], setup: [] };
+  const values = { REGION: deployment.aws.region, SSM_PREFIX: deployment.ssmPrefix, TOOLKIT_REPO: toolkitRepo, TOOLKIT_REF: toolkitRef, PROJECT_HOST: deployment.scm.host, PROJECT_REPO: deployment.scm.repository, TOKEN_VARIABLE: tokenVariable, PROJECT_SETUP: deployment.worker.setup,
+    ENVIRONMENT_PACKAGES: provisioning.packages.join(' '), ENVIRONMENT_SETUP: provisioning.setup.length ? provisioning.setup.join(' && ') : 'true' };
   return template.replace(/__([A-Z_]+)__/g, (match, key) => { if (!(key in values)) throw new Error(`Bake template has no value for ${key}`); return values[key]; });
 }
 

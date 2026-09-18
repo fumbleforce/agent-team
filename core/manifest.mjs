@@ -4,6 +4,8 @@ import { validateEngine, validateBilling, DEFAULT_ENGINE } from '../adapters/eng
 import { LAUNCHER_KINDS, DEFAULT_LAUNCHER } from '../adapters/launcher/index.mjs';
 import { validateIntegrations } from '../adapters/integration/index.mjs';
 import { loadRolesFile } from './blueprint.mjs';
+import { TEAM_ID } from './teams.mjs';
+import { ENVIRONMENT_ID } from './environments.mjs';
 
 // Roles the coordinator delegates to by default; the full persona pipeline stays available.
 // A team blueprint declares its own subagents in roles.json and may name team.defaultRoles.
@@ -39,6 +41,7 @@ export const OVERRIDABLE_SECTIONS = ['tracker', 'engine', 'worker', 'memory', 'p
 const PROTECTED_KEYS = { tracker: ['kind'], engine: [], worker: [], memory: [], pm: [], team: [], ideation: [] };
 // Keys where null is itself a meaningful value rather than "remove the repository's key".
 const NULLABLE_KEYS = { team: ['roles'] };
+export { TEAM_ID, ENVIRONMENT_ID };
 
 // Checks the shape of a dashboard override document: allowlisted sections only, each a plain
 // object, nested values limited to strings, numbers, booleans, null and string arrays.
@@ -107,6 +110,8 @@ export function normalizeManifest(raw, overrides = null) {
   for (const key of ['image', 'ami', 'instanceType', 'sizeHint', 'subnetId', 'securityGroupId', 'instanceProfile', 'region', 'setup']) {
     if (worker[key] !== undefined && (typeof worker[key] !== 'string' || !worker[key].trim())) throw new Error(`Invalid .agent-team.json: worker.${key}`);
   }
+  worker.environment ??= 'standard';
+  if (typeof worker.environment !== 'string' || !ENVIRONMENT_ID.test(worker.environment)) throw new Error('Invalid .agent-team.json: worker.environment must be an environment id');
 
   const memory = { injectCapTokens: 4000, ...(plain(config.memory) ? config.memory : {}) };
   if (!Number.isInteger(memory.injectCapTokens) || memory.injectCapTokens < 0 || memory.injectCapTokens > 60000) throw new Error('Invalid .agent-team.json: memory.injectCapTokens');
@@ -115,8 +120,13 @@ export function normalizeManifest(raw, overrides = null) {
   if (!AUTONOMY_LEVELS.includes(pm.autonomy)) throw new Error(`Invalid .agent-team.json: pm.autonomy must be one of ${AUTONOMY_LEVELS.join(', ')}`);
   if (!Number.isFinite(pm.dailyCapUsd) || pm.dailyCapUsd < 0) throw new Error('Invalid .agent-team.json: pm.dailyCapUsd');
 
-  const team = { roles: DEFAULT_ROLES, ...(plain(config.team) ? config.team : {}) };
-  if (team.roles !== null && (!Array.isArray(team.roles) || !team.roles.length || team.roles.some(role => !ALL_ROLES.includes(role)) || new Set(team.roles).size !== team.roles.length)) throw new Error(`Invalid .agent-team.json: team.roles must list distinct roles from ${ALL_ROLES.join(', ')}`);
+  // Roles are checked for shape here and against the selected team when a run resolves it; the
+  // stored team (team.blueprint) decides which subagents exist.
+  const team = { blueprint: 'default', ...(plain(config.team) ? config.team : {}) };
+  if (typeof team.blueprint !== 'string' || !TEAM_ID.test(team.blueprint)) throw new Error('Invalid .agent-team.json: team.blueprint must be a team id');
+  if (team.roles === undefined && team.blueprint === 'default') team.roles = DEFAULT_ROLES;
+  if (team.roles !== null && team.roles !== undefined && (!Array.isArray(team.roles) || !team.roles.length || team.roles.some(role => typeof role !== 'string' || !/^team-[a-z]+$/.test(role)) || new Set(team.roles).size !== team.roles.length)) throw new Error('Invalid .agent-team.json: team.roles must list distinct roles named team-<word>');
+  if (team.roles && team.blueprint === 'default' && team.roles.some(role => !ALL_ROLES.includes(role))) throw new Error(`Invalid .agent-team.json: team.roles must list distinct roles from ${ALL_ROLES.join(', ')}`);
 
   // The delivery section keeps repository and baseBranch as the gate reads them; they mirror scm.
   // A version 1 delivery section without baseBranch keeps building on the worker's HEAD.
@@ -127,7 +137,7 @@ export function normalizeManifest(raw, overrides = null) {
     if (delivery.repository !== scm.repository || (delivery.baseBranch !== undefined && delivery.baseBranch !== scm.baseBranch)) throw new Error('Invalid .agent-team.json: delivery.repository/baseBranch must match scm');
   }
   const integrations = validateIntegrations(config.integrations);
-  for (const integration of integrations) if (integration.roles) for (const role of integration.roles) if (!ALL_ROLES.includes(role) && role !== 'team-coordinator') throw new Error(`Invalid .agent-team.json: integration ${integration.name} names unknown role ${role}`);
+  for (const integration of integrations) if (integration.roles) for (const role of integration.roles) if (!/^team-[a-z]+$/.test(role)) throw new Error(`Invalid .agent-team.json: integration ${integration.name} names unknown role ${role}`);
 
   return { ...config, version: 2, scm, tracker, engine, worker, memory, pm, team, integrations, ...(delivery ? { delivery } : {}) };
 }
@@ -135,7 +145,7 @@ export function normalizeManifest(raw, overrides = null) {
 // Approval roles delivery must see, in the order the gate checks them.
 export function approvalRoles(manifest) {
   if (manifest.team.roles === null) return ['tester', 'reviewer', 'pm'];
-  return manifest.team.roles.map(role => APPROVALS[role]).filter(Boolean);
+  return (manifest.team.roles ?? []).map(role => APPROVALS[role]).filter(Boolean);
 }
 
 // Tracker fields under their neutral names for prompts and clients that predate the sections.
