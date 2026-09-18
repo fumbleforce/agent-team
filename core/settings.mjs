@@ -12,6 +12,7 @@ export const SETTINGS_FIELDS = [
   { section: 'tracker', key: 'projectId', label: 'Tracker project', type: 'text', lookup: 'projects', hint: 'Project the intake and ideation are scoped to.' },
   { section: 'tracker', key: 'readyLabel', label: 'Ready label', type: 'text', lookup: 'labels', hint: 'Issues carrying this label are picked up.' },
   { section: 'tracker', key: 'ownerInboxIssue', label: 'Owner inbox issue', type: 'text', hint: 'Issue where the PM posts questions for you. Empty disables the inbox.' },
+  { section: 'tracker', key: 'stallAlertAfter', label: 'Stall alert after N held jobs', type: 'number', min: 0, max: 50, hint: 'The coordinator comments on the owner inbox issue once when this many jobs sit blocked or failed, and once more when work resumes. 0 turns the alert off.' },
   { section: 'engine', key: 'default', label: 'Default engine', type: 'select', options: ENGINES },
   { section: 'engine', key: 'billing', label: 'Billing mode', type: 'text', hint: 'Adapter-specific; leave empty for the engine default.' },
   { section: 'engine', key: 'model', label: 'Model', type: 'text', hint: 'Adapter-specific model alias. Empty uses the engine default.' },

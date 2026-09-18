@@ -12,7 +12,7 @@ import { shippedTeams, validateTeam, materialize, TeamError, TEAM_ID } from './t
 import { builtinEnvironments, validateEnvironment, EnvironmentError, ENVIRONMENT_ID } from './environments.mjs';
 import { loadRolesFile } from './blueprint.mjs';
 import { createMemory, MemoryError, ITEM_TYPES } from './memory.mjs';
-import { normalizeManifest, validateOverrides, OVERRIDABLE_SECTIONS } from './manifest.mjs';
+import { normalizeManifest, validateOverrides, flatTracker, OVERRIDABLE_SECTIONS, DEFAULT_STALL_ALERT_AFTER } from './manifest.mjs';
 import { trackerAdapter, trackerClient, DEFAULT_TRACKER, trackerCredentialPresent } from '../adapters/tracker/index.mjs';
 
 const KINDS = ['development', 'ideation', 'chat', 'graduate'];
@@ -54,9 +54,10 @@ function jobScopeAllows(scope, method, pathname) {
   return pathname === '/claim' || pathname === `/projects/${scope.projectId}/costs` || JOB_ROUTES.some(route => pathname === `/jobs/${scope.jobId}/${route}`);
 }
 
-export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 90_000, launcher = null, jobTokenFor = null, memory = null, claimTimeoutMs = 15 * 60_000, environments: configuredEnvironments = [], seedTeams = shippedTeams, onLaunchError = error => console.error(error.message) } = {}) {
+export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 90_000, launcher = null, jobTokenFor = null, memory = null, claimTimeoutMs = 15 * 60_000, environments: configuredEnvironments = [], seedTeams = shippedTeams, onLaunchError = error => console.error(error.message), tracker = null, dashboardUrl = null, onAlertError = error => console.error(error.message) } = {}) {
   if (!Number.isInteger(leaseMs) || leaseMs < 1) throw new Error('Invalid leaseMs');
   if (!Number.isInteger(claimTimeoutMs) || claimTimeoutMs < 1) throw new Error('Invalid claimTimeoutMs');
+  if (dashboardUrl !== null && !/^https?:\/\/[^\s]+$/.test(String(dashboardUrl))) throw new Error('Invalid dashboardUrl');
   const registered = id => {
     text(id, 'projectId', 80);
     if (!Object.hasOwn(projects, id)) reject('Unknown projectId');
@@ -94,7 +95,8 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     CREATE TABLE IF NOT EXISTS teams (id TEXT PRIMARY KEY, doc TEXT NOT NULL, version INTEGER NOT NULL, author TEXT NOT NULL, updatedAt INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS teams_history (id INTEGER PRIMARY KEY AUTOINCREMENT, teamId TEXT NOT NULL, version INTEGER NOT NULL, doc TEXT NOT NULL, author TEXT NOT NULL, note TEXT, createdAt INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS environments (id TEXT PRIMARY KEY, doc TEXT NOT NULL, version INTEGER NOT NULL, author TEXT NOT NULL, updatedAt INTEGER NOT NULL);
-    CREATE TABLE IF NOT EXISTS environments_history (id INTEGER PRIMARY KEY AUTOINCREMENT, environmentId TEXT NOT NULL, version INTEGER NOT NULL, doc TEXT NOT NULL, author TEXT NOT NULL, note TEXT, createdAt INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS environments_history (id INTEGER PRIMARY KEY AUTOINCREMENT, environmentId TEXT NOT NULL, version INTEGER NOT NULL, doc TEXT NOT NULL, author TEXT NOT NULL, note TEXT, createdAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS stalls (projectId TEXT PRIMARY KEY, jobIds TEXT NOT NULL, openedAt INTEGER NOT NULL);`);
   // Stored documents with a version history: teams and worker environments. The toolkit's own
   // blueprints and built-in environments seed the tables once; afterwards the store is the truth.
   const store = (table, history, column, validate, ErrorClass) => {
@@ -246,6 +248,67 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
       .then(handle => db.prepare(`UPDATE launches SET handle=?, state=CASE WHEN state='claimed' THEN 'claimed' ELSE 'started' END WHERE jobId=?`).run(JSON.stringify(handle), job.id))
       .catch(error => { db.prepare(`UPDATE launches SET state='failed', error=? WHERE jobId=?`).run(String(error.message).slice(0, 400), job.id); onLaunchError(error); });
   };
+  // The owner's stall alert. Quarantine is the predicate the claim query uses: one non-chat job
+  // left `blocked` or `failed` holds every build for its project. The watchdog posts one comment
+  // to the manifest's owner inbox issue when a project reaches `tracker.stallAlertAfter` such jobs
+  // and remembers the stall, so later failures stay silent; the first non-chat job that completes
+  // afterwards posts the resolved note and clears it. This notifies and nothing else: no requeue,
+  // no lease reassignment, no retry. It runs in the coordinator and needs no model session, through
+  // the injected `tracker` client or, by default, the adapter the project's manifest names.
+  const heldJobs = projectId => db.prepare(`SELECT id, issue, result FROM jobs WHERE projectId=? AND kind<>'chat' AND state IN ('blocked','failed') ORDER BY updatedAt, rowid`).all(projectId);
+  const alertTarget = projectId => {
+    const manifest = manifestOf(projectId);
+    // A manifest that fails normalization is stored raw, where version 1 keeps tracker fields flat.
+    const section = manifest?.tracker ?? manifest;
+    const after = section?.stallAlertAfter ?? DEFAULT_STALL_ALERT_AFTER;
+    if (!manifest || !section?.ownerInboxIssue || !Number.isInteger(after) || after < 1) return null;
+    const kind = section.kind ?? DEFAULT_TRACKER;
+    const client = tracker ?? (trackerCredentialPresent(kind) ? trackerClient(kind) : null);
+    if (typeof client?.postComment !== 'function') return null;
+    return { client, after, issue: section.ownerInboxIssue, name: manifest.name ?? projectId, flat: manifest.tracker ? flatTracker(manifest) : manifest };
+  };
+  // A classified `reason` on the result is read first, so richer failure classification can be added
+  // later without reshaping the comment; until then the job's own outcome and summary stand in.
+  const failureReason = result => {
+    const parsed = result ? JSON.parse(result) : null;
+    const reason = parsed?.reason ?? [parsed?.outcome, parsed?.summary].filter(Boolean).join(': ');
+    return String(reason || 'no reason recorded').slice(0, 200);
+  };
+  const projectAddress = projectId => (dashboardUrl ? `${String(dashboardUrl).replace(/\/+$/, '')}/projects/${projectId}` : null);
+  const stallComment = (projectId, target, jobs) => {
+    const address = projectAddress(projectId);
+    return [`**${target.name} (${projectId}) is on hold.** ${jobs.length} job${jobs.length === 1 ? '' : 's'} ended blocked or failed, so the coordinator claims no further work for this project until someone inspects and requeues it.`,
+      jobs.slice(0, 12).map(job => `- \`${job.id}\`${job.issue ? ` (${job.issue})` : ''} — ${failureReason(job.result)}`).join('\n') + (jobs.length > 12 ? `\n- …and ${jobs.length - 12} more` : ''),
+      address ? `Dashboard: ${address}` : 'Dashboard: no address is configured on this coordinator (set `dashboardUrl` in its configuration).',
+      'Posted by the coordinator watchdog. Nothing has been requeued, reassigned or retried.'].join('\n\n').slice(0, 5900);
+  };
+  const resolvedComment = (projectId, target, open, job) => {
+    const ids = JSON.parse(open.jobIds);
+    return `**${target.name} (${projectId}) is running again.** Job \`${job.id}\`${job.issue ? ` (${job.issue})` : ''} completed, so the hold reported at ${new Date(open.openedAt).toISOString()} on ${ids.length} job${ids.length === 1 ? '' : 's'} (${ids.map(id => `\`${id}\``).join(', ').slice(0, 1200)}) is cleared.`;
+  };
+  // One pass over the registered projects; a tracker failure is reported and retried on the next tick.
+  const stallAlerts = async () => {
+    for (const projectId of Object.keys(projects)) {
+      const open = db.prepare('SELECT * FROM stalls WHERE projectId=?').get(projectId);
+      const jobs = heldJobs(projectId);
+      try {
+        if (!open) {
+          if (!jobs.length) continue;
+          const target = alertTarget(projectId);
+          if (!target || jobs.length < target.after) continue;
+          await target.client.postComment(target.flat, target.issue, stallComment(projectId, target, jobs));
+          db.prepare('INSERT INTO stalls(projectId,jobIds,openedAt) VALUES(?,?,?) ON CONFLICT(projectId) DO NOTHING').run(projectId, JSON.stringify(jobs.map(job => job.id)), now());
+          continue;
+        }
+        if (jobs.length) continue;
+        const recovered = db.prepare(`SELECT id, issue FROM jobs WHERE projectId=? AND kind<>'chat' AND state='completed' AND updatedAt>=? ORDER BY updatedAt, rowid LIMIT 1`).get(projectId, open.openedAt);
+        if (!recovered) continue;
+        const target = alertTarget(projectId);
+        if (target) await target.client.postComment(target.flat, target.issue, resolvedComment(projectId, target, open, recovered));
+        db.prepare('DELETE FROM stalls WHERE projectId=?').run(projectId);
+      } catch (error) { onAlertError(error); }
+    }
+  };
   // Jobs whose launched worker never claimed them are failed and their machines stopped.
   const watchdog = async () => {
     const stale = db.prepare(`SELECT l.*, j.state AS jobState FROM launches l JOIN jobs j ON j.id=l.jobId WHERE l.state IN ('starting','started','failed') AND j.state='queued' AND l.startedAt<=?`).all(now() - claimTimeoutMs);
@@ -258,6 +321,10 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
       db.prepare(`UPDATE launches SET state='abandoned' WHERE jobId=?`).run(row.jobId);
       results.push({ jobId: row.jobId, reason, stopped });
     }
+    // Commit expiry first so a project held only by a lost lease is seen as quarantined, then post
+    // outside every transaction: the queue never holds the database open across a network call.
+    tx(() => {});
+    try { await stallAlerts(); } catch (error) { onAlertError(error); }
     return results;
   };
   const memoryCall = fn => { try { return fn(); } catch (error) { if (error instanceof MemoryError) reject(error.message, error.status); throw error; } };
@@ -843,7 +910,7 @@ export async function main(args = process.argv.slice(2)) {
   const dbPath = config.db ?? '.agent-team-coordinator/queue.sqlite';
   const dataDir = config.dataDir ?? path.dirname(path.resolve(dbPath));
   const memory = config.memory === false ? null : createMemory({ dataDir });
-  const queue = createQueue(dbPath, { projects: config.projects, memory, launcher: config.launcher ?? null, environments: Array.isArray(config.environments) ? config.environments : [], jobTokenFor: id => jobToken(process.env.AGENT_TEAM_TOKEN, id), claimTimeoutMs: (config.claimTimeoutMinutes ?? 15) * 60_000 });
+  const queue = createQueue(dbPath, { projects: config.projects, memory, launcher: config.launcher ?? null, environments: Array.isArray(config.environments) ? config.environments : [], jobTokenFor: id => jobToken(process.env.AGENT_TEAM_TOKEN, id), claimTimeoutMs: (config.claimTimeoutMinutes ?? 15) * 60_000, dashboardUrl: config.dashboardUrl ?? null });
   const server = createQueueServer(queue);
   server.on('error', error => { console.error(error.message); queue.close(); process.exitCode = 1; });
   server.listen(port, host, () => console.log(`Agent team coordinator listening on ${host}:${port}`));

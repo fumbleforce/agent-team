@@ -13,7 +13,8 @@
     "projectId": "YOUR_LINEAR_PROJECT_UUID",
     "projectUrl": "https://linear.app/your-workspace/project/your-project",
     "readyLabel": "agent:ready",
-    "ownerInboxIssue": "TEAM-1"
+    "ownerInboxIssue": "TEAM-1",
+    "stallAlertAfter": 1
   },
   "engine": { "default": "claude", "billing": "bedrock", "model": "sonnet" },
   "worker": { "launcher": "ec2", "ami": "ssm:/agent-team/example-project/worker-ami", "instanceType": "c6i.2xlarge", "setup": "npm ci" },

@@ -16,6 +16,10 @@ export const DEFAULT_ROLES = Array.isArray(BLUEPRINT.team?.defaultRoles) && BLUE
 // Approvals the delivery gate demands, derived from the delegated roles.
 const APPROVALS = { 'team-tester': 'tester', 'team-reviewer': 'reviewer', 'team-pm': 'pm' };
 export const AUTONOMY_LEVELS = ['observe', 'suggest', 'act'];
+// How many of a project's non-chat jobs must sit blocked or failed before the coordinator tells the
+// owner its team has stalled. One is the point at which quarantine already holds every build, so
+// the default alerts as soon as work stops; 0 turns the alert off for a project.
+export const DEFAULT_STALL_ALERT_AFTER = 1;
 
 const ID = /^[A-Za-z0-9][A-Za-z0-9_-]{0,79}$/;
 
@@ -97,7 +101,8 @@ export function normalizeManifest(raw, overrides = null) {
   if (typeof scm.branchPrefix !== 'string' || !/^[A-Za-z0-9][A-Za-z0-9_./-]*\/$/.test(scm.branchPrefix)) throw new Error('Invalid .agent-team.json: scm.branchPrefix must end with /');
   if (scm.repository !== undefined && !scmAdapter(scm.kind).validateRepository(scm.repository)) throw new Error('Invalid .agent-team.json: scm.repository');
 
-  const tracker = { kind: DEFAULT_TRACKER, ...(plain(config.tracker) ? config.tracker : {}) };
+  const tracker = { kind: DEFAULT_TRACKER, stallAlertAfter: DEFAULT_STALL_ALERT_AFTER, ...(plain(config.tracker) ? config.tracker : {}) };
+  if (!Number.isInteger(tracker.stallAlertAfter) || tracker.stallAlertAfter < 0 || tracker.stallAlertAfter > 50) throw new Error('Invalid .agent-team.json: tracker.stallAlertAfter must be a whole number from 0 to 50');
   trackerAdapter(tracker.kind).validateManifest(tracker);
 
   const engine = { default: DEFAULT_ENGINE, ...(plain(config.engine) ? config.engine : {}) };
