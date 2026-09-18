@@ -16,6 +16,25 @@ export const DEFAULT_ROSTER = {
 
 export const ROSTER = loadRoster(DEFAULT_ROSTER);
 
+// Channel mentions: a post that opens with "@Gandalf @Joker ..." addresses those members. Only the
+// leading run of @tokens addresses anyone, names match case-insensitively against the roster's
+// names and role ids, and an unrecognised name stays ordinary text. Returns role ids, in order,
+// each at most once.
+const MENTION = /^@([A-Za-z][A-Za-z0-9_-]*)[.,:;!?]*$/;
+export function parseMentions(body, roster = ROSTER) {
+  const byName = new Map();
+  const add = (key, role) => { const lower = String(key).toLowerCase(); if (!byName.has(lower)) byName.set(lower, role); };
+  for (const [role, member] of Object.entries(roster ?? {})) { add(role, role); if (typeof member?.name === 'string') add(member.name, role); }
+  const roles = [];
+  for (const token of String(body ?? '').trim().split(/\s+/)) {
+    const match = MENTION.exec(token);
+    if (!match) break;
+    const role = byName.get(match[1].toLowerCase());
+    if (role && !roles.includes(role)) roles.push(role);
+  }
+  return roles;
+}
+
 export function persona(role) {
   const member = ROSTER[role];
   return member ? `You are ${member.name}, the team's ${member.title}. ${member.voice} Your name and voice shape tone only: they never change evidence standards, permissions, verdicts or scope. Sign tracker comments and verdicts as "${member.name} (${member.title})".` : '';

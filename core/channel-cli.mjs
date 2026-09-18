@@ -4,12 +4,14 @@ import { pathToFileURL } from 'node:url';
 
 // The `team` command available to engines inside a run: the project's shared channel, reached
 // through the coordinator with the job's lease. A run can read its project's channel and post
-// as its own role; it cannot post for another project or delete anything. Usage:
+// as its own role; it cannot post for another project or delete anything. A post that opens with
+// @Name wakes that member, who answers in the channel. Usage:
 //   team read [--after SEQ] [--limit N]
 //   team say <text>                      a note
+//   team say @Name <text>                a note that wakes that member
 //   team claim|blocker|handoff|question <text>
 const KINDS = ['note', 'claim', 'blocker', 'handoff', 'question'];
-const USAGE = 'Usage: team read [--after SEQ] [--limit N] | team say <text> | team claim|blocker|handoff|question <text>';
+const USAGE = 'Usage: team read [--after SEQ] [--limit N] | team say [@Name ...] <text> | team claim|blocker|handoff|question <text>';
 
 export function parseTeamArgs(args) {
   const [command, ...rest] = args;
@@ -45,7 +47,7 @@ export async function runTeamCli(args, env = process.env, fetchImpl = fetch) {
   };
   if (parsed.command === 'read') return formatPosts(await call(`/projects/${projectId}/channel?after=${parsed.after}&limit=${parsed.limit}`));
   const post = await call(`/jobs/${job}/channel`, { workerId, leaseToken, kind: parsed.kind, body: parsed.body });
-  return `Posted #${post.seq} as ${post.author}.`;
+  return `Posted #${post.seq} as ${post.author}.${post.woke?.length ? ` Woke ${post.woke.join(', ')}; the reply arrives in the channel.` : ''}`;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href) {

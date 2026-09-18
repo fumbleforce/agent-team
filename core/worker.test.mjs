@@ -129,6 +129,7 @@ function requestFor(q, observer = () => {}) {
     if (route === '/claim') return q.claim(body);
     const project = /^\/projects\/([^/]+)\/manifest$/.exec(route); if (project) return q.registerProject(project[1], body);
     if (route.endsWith('/evidence')) return q.evidence(route.split('/')[2], body);
+    const channel = /^\/jobs\/([a-f0-9-]+)\/channel$/.exec(route); if (channel) return q.channelPostForJob(channel[1], body.workerId, body.leaseToken, { body: body.body, kind: body.kind });
     const [, , id, method] = route.split('/'); return q[method](id, body);
   };
 }
@@ -311,6 +312,17 @@ test('workers register manifests, stream run evidence from the run directory, an
     q.enqueue({ projectId: 'a', kind: 'chat', role: 'team-dev', issue: 'FUM-10', message: 'x' });
     await runWorker(cfg, { once: true, request: requestFor(q), tracker: () => ({}), chatAnswer: async () => { throw new Error('Claude usage limit reached'); } });
     assert.match(q.list().at(-1).result.summary, /No reply: Claude usage limit/); assert.equal(q.list().at(-1).state, 'blocked');
+    // A member named in a channel post answers in the channel, with no run of its own active.
+    const mention = q.channelPost('a', { author: 'owner', body: '@Gandalf does the invoice fix still hold?' });
+    assert.deepEqual(mention.woke, ['team-dev']);
+    let woken;
+    await runWorker(cfg, { once: true, request: requestFor(q), tracker: () => ({}), chatAnswer: async args => { woken = args; return { reply: 'It holds;\r\nthe migration is applied.' }; } });
+    assert.deepEqual([woken.role, woken.issue], ['team-dev', 'FUM-10']);
+    assert.match(woken.message, new RegExp(`^owner addressed you in team channel post #${mention.seq}: @Gandalf does the invoice fix still hold\\?`));
+    const reply = q.channelRead('a').at(-1);
+    assert.deepEqual([reply.author, reply.body], ['team-dev', `re #${mention.seq}: It holds;\nthe migration is applied.`]);
+    const chatJob = q.list().find(entry => entry.channelSeq === mention.seq);
+    assert.deepEqual([chatJob.state, chatJob.result.summary], ['completed', 'It holds; the migration is applied.'], 'a reply over several lines still completes the job');
   } finally { q.close(); }
 });
 
