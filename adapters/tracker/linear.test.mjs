@@ -174,3 +174,30 @@ test('lookup returns workspace, teams and one team\'s projects, labels and state
   assert.equal((await client.lookup()).teamId, 't1', 'the first team is the default');
   assert.ok(!JSON.stringify(result).includes('secret-test-key'));
 });
+
+test('guided setup lists the workspace, teams and projects with the key and falls back to typed identifiers', async () => {
+  const { setup, createClient } = await import('./linear.mjs');
+  const scopes = { workspaceId: 'ws', workspaceUrl: 'https://linear.app/acme', teams: [{ id: 't-empty', name: 'Empty', key: 'EMP', projects: [] }, { id: 't1', name: 'Platform', key: 'PLT', projects: [{ id: 'p1', name: 'Shop', url: 'https://linear.app/acme/project/shop-1' }, { id: 'p2', name: 'Billing', url: 'https://linear.app/acme/project/billing-2' }] }] };
+  const asked = [];
+  const ask = answers => async (question, options = {}) => { asked.push([question, options.secret === true]); return answers.shift(); };
+  const choose = async (question, options, { fallback }) => { asked.push([question, options.map(option => option.label)]); return options.find(option => option.label === 'Billing')?.value ?? fallback; };
+  const client = ({ apiKey }) => { assert.equal(apiKey, 'lin_key'); return { scopes: async () => scopes }; };
+  const found = await setup({ ask: ask(['lin_key', 'ready']), choose, env: {}, client });
+  assert.deepEqual(found.tracker, { workspaceId: 'ws', workspaceUrl: 'https://linear.app/acme', teamId: 't1', projectId: 'p2', projectUrl: 'https://linear.app/acme/project/billing-2', readyLabel: 'ready' });
+  assert.deepEqual(found.secrets, { LINEAR_API_KEY: 'lin_key' }); assert.equal(found.ideation.enabled, false);
+  assert.deepEqual(asked[0], ['Linear API key, to list your teams and projects (empty to type the identifiers instead)', true]);
+  assert.deepEqual(asked[1], ['Which Linear team?', ['Platform']], 'teams without projects are not offered');
+  // A key already in the environment is used without asking and not returned as a secret.
+  asked.length = 0;
+  const fromEnv = await setup({ ask: ask(['agent:ready']), choose, env: { LINEAR_API_KEY: 'lin_key' }, client });
+  assert.deepEqual(fromEnv.secrets, {}); assert.equal(asked[0][0], 'Which Linear team?');
+  // Without a key, or when listing fails, every identifier is typed.
+  const log = [];
+  const typed = await setup({ ask: ask(['', 'w', 'https://linear.app/w', 't', 'p', 'https://linear.app/w/project/p', 'agent:ready']), choose, env: {}, log: line => log.push(line), client });
+  assert.deepEqual(typed.tracker, { workspaceId: 'w', workspaceUrl: 'https://linear.app/w', teamId: 't', projectId: 'p', projectUrl: 'https://linear.app/w/project/p', readyLabel: 'agent:ready' });
+  const failing = await setup({ ask: ask(['bad_key_but_long_enough', 'w', 'https://linear.app/w', 't', 'p', 'https://linear.app/w/project/p', 'agent:ready']), choose, env: {}, log: line => log.push(line), client: () => ({ scopes: async () => { throw new Error('Linear HTTP request failed'); } }) });
+  assert.deepEqual(failing.secrets, { LINEAR_API_KEY: 'bad_key_but_long_enough' }); assert.match(log.at(-1), /Could not list Linear scopes \(Linear HTTP request failed\)/);
+  // The real client's scope query shapes the answer the same way.
+  const real = createClient({ apiKey: 'k', fetchImpl: async (url, init) => { assert.match(JSON.parse(init.body).query, /organization \{ id urlKey \} teams/); return { ok: true, json: async () => ({ data: { organization: { id: 'ws', urlKey: 'acme' }, teams: { nodes: [{ id: 't1', name: 'Platform', key: 'PLT', projects: { nodes: [{ id: 'p1', name: 'Shop', url: 'https://linear.app/acme/project/shop-1' }] } }] } } }) }; } });
+  assert.deepEqual(await real.scopes(), { workspaceId: 'ws', workspaceUrl: 'https://linear.app/acme', teams: [{ id: 't1', name: 'Platform', key: 'PLT', projects: [{ id: 'p1', name: 'Shop', url: 'https://linear.app/acme/project/shop-1' }] }] });
+});

@@ -12,6 +12,9 @@ export const BILLING_MODES = ['api'];
 export const DEFAULT_BILLING = 'api';
 export const DEFAULT_MODEL = undefined;
 export const NEEDS_SYSTEM_PROMPT_FILE = false;
+export const API_KEY_VARIABLE = 'CURSOR_API_KEY';
+export const KEYED_BILLING = ['api'];
+export const BILLING_DESCRIPTIONS = { api: 'a Cursor API key' };
 
 export function rateLimitPolicy() { return 'job'; }
 

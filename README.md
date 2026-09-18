@@ -362,13 +362,19 @@ With `worker.launcher: ec2` the coordinator starts an instance per job from `wor
 ## One command: `agent-team up`
 
 ```sh
-export GH_TOKEN=...            # push branches, open pull requests, and the repository's issues
-export ANTHROPIC_API_KEY=...   # or log the engine in on the worker host for subscription billing
-npx @fumbleforce/agent-team up /path/to/checkout              # this machine, foreground
-npx @fumbleforce/agent-team up /path/to/checkout --target aws # dedicated network, spot workers
+npx @fumbleforce/agent-team up /path/to/checkout
 ```
 
-`up` runs a preflight that lists every missing requirement at once (Node, Git, the manifest, ignores, the engine and its billing, the SCM and tracker tokens, AWS access for that target), creates the tracker labels and an owner inbox issue when the tracker adapter can (GitHub Issues does), registers the manifest, seeds memory from the instruction files and opens the dashboard. On the local target everything binds to loopback under a generated token and stops with Ctrl-C; on AWS it is `init`, `deploy`, `image` and `seed` in one go, and every step is idempotent so rerunning it is safe.
+Nothing to export and no flags to remember: `up` asks what it cannot derive and remembers the answers.
+
+1. **Where the team runs**: this machine (foreground, loopback, Ctrl-C stops it) or AWS.
+2. **What the project is**, only when the checkout has no `.agent-team.json` yet: the name, where the code lives (detected from the origin remote), the base branch, where the backlog lives (the repository's own issues, or a Linear project chosen from a list after one API key), which engine runs the team (the ones installed here are marked), how it is billed, and what the worker machine offers (a headless browser, say). The answers are written to `.agent-team.json` and the runner's paths to `.gitignore`; commit both.
+3. **Which engine**, when the manifest's default is not installed on this machine: pick one that is, and it is stored as the project's engine setting.
+4. **Credentials**, each asked once with echo off: the SCM token, a tracker key when the tracker does not share it, the engine's API key for metered billing, and optional integration tokens. On the local target they are stored in `~/.config/agent-team/secrets/<project>.env`, readable by your user only and outside every repository; on AWS they go to Parameter Store. Later runs ask nothing; `agent-team secrets /path/to/checkout` enters them again. A variable already exported in the shell is used as is.
+
+Flags still work for scripts and CI: `--target`, `--engine`, `--yes` (no questions at all; missing pieces fail the preflight with the fix printed).
+
+`up` then runs a preflight that lists every missing requirement at once (Node, Git, the manifest, ignores, the engine and its billing, the SCM and tracker tokens, AWS access for that target), creates the tracker labels and an owner inbox issue when the tracker adapter can (GitHub Issues does), registers the manifest, seeds memory from the instruction files and opens the dashboard. On the local target everything binds to loopback under a generated token and stops with Ctrl-C; on AWS it is `init`, `deploy`, `image` and `seed` in one go, and every step is idempotent so rerunning it is safe.
 
 The engine is whatever the manifest names by default, but the machine decides what is installed: when the default engine is missing, the preflight names the engines it did find, and `up --engine NAME [--billing MODE] [--model ID]` runs the team on one of those. The checkout's manifest is registered unchanged; the choice is stored as the project's `engine` setting (visible and editable on the dashboard's Settings page), so the coordinator, the worker and the resident PM all use it. An engine without bounded sessions runs without the resident PM, as `--no-pm` does.
 

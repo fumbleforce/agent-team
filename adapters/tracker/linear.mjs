@@ -54,6 +54,12 @@ export function createClient({ apiKey = process.env.LINEAR_API_KEY, fetchImpl = 
     if (payload.errors?.length || !payload.data) throw new Error('Linear GraphQL request failed');
     return payload.data;
   }
+  // The workspace, its teams and their projects: what guided setup offers to choose from.
+  async function scopes() {
+    const data = await request('query Scopes { organization { id urlKey } teams(first: 50) { nodes { id name key projects(first: 100) { nodes { id name url } } } } }');
+    return { workspaceId: data.organization.id, workspaceUrl: `https://linear.app/${data.organization.urlKey}`,
+      teams: data.teams.nodes.map(team => ({ id: team.id, name: team.name, key: team.key, projects: team.projects.nodes.map(project => ({ id: project.id, name: project.name, url: project.url })) })) };
+  }
   async function collect(first, more) {
     const nodes = []; const cursors = new Set(); let connection = first;
     while (true) {
@@ -177,7 +183,32 @@ export function createClient({ apiKey = process.env.LINEAR_API_KEY, fetchImpl = 
     const nodes = key => detail.team?.[key]?.nodes ?? [];
     return { ...result, teamId: team, projects: nodes('projects').map(node => ({ id: node.id, name: node.name, url: node.url })), labels: nodes('labels').map(node => ({ id: node.id, name: node.name })), states: nodes('states').map(node => ({ id: node.id, name: node.name, type: node.type })) };
   }
-  return { context, snapshot, publishProposals, prepareApproved, checkApproved, inboxComments, issueComments, postComment, approvalStatus, lookup };
+  return { scopes, context, snapshot, publishProposals, prepareApproved, checkApproved, inboxComments, issueComments, postComment, approvalStatus, lookup };
 }
 
 export const createLinearClient = createClient;
+
+const IDEATION = { enabled: false, backlogCap: 10, batchSize: 3, minimumIntervalHours: 24, ideaLabel: 'Idea', proposedState: 'Backlog', approvedState: 'Todo', rejectedState: 'Canceled' };
+// Guided setup: with an API key the workspace, team and project are chosen from a list; without
+// one each identifier is typed. The key typed here is the tracker credential, so it is returned.
+export async function setup({ ask, choose, log = () => {}, env = process.env, client = createClient }) {
+  const typed = env[API_KEY_VARIABLE] ? '' : String(await ask('Linear API key, to list your teams and projects (empty to type the identifiers instead)', { secret: true })).trim();
+  const key = env[API_KEY_VARIABLE] || typed;
+  const secrets = typed ? { [API_KEY_VARIABLE]: typed } : {};
+  if (key) {
+    try {
+      const found = await client({ apiKey: key }).scopes();
+      const teams = found.teams.filter(team => team.projects.length);
+      if (!teams.length) throw new Error('no team has a project yet; create one in Linear first');
+      const teamId = await choose('Which Linear team?', teams.map(team => ({ value: team.id, label: team.name, hint: team.key })), { fallback: teams[0].id });
+      const team = teams.find(item => item.id === teamId);
+      const projectId = await choose('Which Linear project is the backlog?', team.projects.map(project => ({ value: project.id, label: project.name })), { fallback: team.projects[0].id });
+      const project = team.projects.find(item => item.id === projectId);
+      const readyLabel = await ask('Label that marks an issue ready for the team', { fallback: 'agent:ready' });
+      return { tracker: { workspaceId: found.workspaceId, workspaceUrl: found.workspaceUrl, teamId, projectId, projectUrl: project.url, readyLabel }, ideation: IDEATION, secrets };
+    } catch (error) { log(`Could not list Linear scopes (${error.message}); enter the identifiers instead`); }
+  }
+  const tracker = {};
+  for (const field of MANIFEST_KEYS) tracker[field] = String(await ask(`Linear ${field}`, field === 'readyLabel' ? { fallback: 'agent:ready' } : {})).trim();
+  return { tracker, ideation: IDEATION, secrets };
+}

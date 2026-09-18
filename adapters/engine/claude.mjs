@@ -12,6 +12,9 @@ export const BILLING_MODES = ['subscription', 'api', 'bedrock'];
 export const DEFAULT_BILLING = 'subscription';
 export const DEFAULT_MODEL = undefined;
 export const NEEDS_SYSTEM_PROMPT_FILE = true;
+export const API_KEY_VARIABLE = 'ANTHROPIC_API_KEY';
+export const KEYED_BILLING = ['api'];
+export const BILLING_DESCRIPTIONS = { subscription: 'the claude.ai account logged in on the worker', api: 'an Anthropic API key, metered', bedrock: 'Amazon Bedrock through AWS credentials' };
 
 const ROLE_WRITERS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
 // Prefix rules approximating the shared bash deny globs; deterministic delivery owns merges.

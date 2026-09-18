@@ -11,6 +11,9 @@ export const BILLING_MODES = ['api', 'subscription'];
 export const DEFAULT_BILLING = 'api';
 export const DEFAULT_MODEL = undefined;
 export const NEEDS_SYSTEM_PROMPT_FILE = false;
+export const API_KEY_VARIABLE = 'OPENAI_API_KEY';
+export const KEYED_BILLING = ['api'];
+export const BILLING_DESCRIPTIONS = { api: 'an OpenAI API key, metered', subscription: 'the ChatGPT account logged in on the worker' };
 
 export function rateLimitPolicy(billing = DEFAULT_BILLING) { return billing === 'subscription' ? 'quarantine' : 'job'; }
 

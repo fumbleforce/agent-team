@@ -97,3 +97,12 @@ test('the client snapshots, publishes ideas under the cap, readies approved ones
   await assert.rejects(createClient({ apiKey: 'ghp_test', fetchImpl: missing.fetchImpl }).snapshot(manifest), /label "idea" is missing/);
   await assert.rejects(createClient({ apiKey: 'wrong', fetchImpl: github.fetchImpl }).snapshot(manifest), /HTTP request failed \(401\)/);
 });
+
+test('guided setup takes the board from the code repository and asks only when they differ', async () => {
+  const { setup } = await import('./github.mjs');
+  const same = await setup({ ask: async () => { throw new Error('must not ask'); }, scm: { kind: 'github', repository: 'o/r' } });
+  assert.deepEqual(same.tracker, { repository: 'o/r', readyLabel: 'agent:ready' }); assert.equal(same.ideation.proposedState, 'idea:proposed');
+  const answers = ['nope', 'other/board'];
+  const other = await setup({ ask: async () => answers.shift(), scm: { kind: 'gitlab', repository: 'g/p' } });
+  assert.deepEqual(other.tracker, { repository: 'other/board', readyLabel: 'agent:ready' });
+});
