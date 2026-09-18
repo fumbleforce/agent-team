@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { main, prompter } from './agent-team.mjs';
@@ -101,4 +101,34 @@ test('the owner\'s checkout is the source of the manifest the coordinator holds'
   writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify(manifest));
   assert.equal(await registerManifest({ checkout, projectId: 'example' }, async (...args) => sent.push(args)), true);
   assert.equal(sent.length, 1); assert.equal(sent[0][0], '/projects/example/manifest'); assert.equal(sent[0][1].workerId, 'owner'); assert.equal(sent[0][1].manifest.worker.launcher, 'ec2');
+});
+
+test('up stops at preflight with the full list, then brings a local team up and registers it', async t => {
+  const configDir = mkdtempSync(path.join(os.tmpdir(), 'up-')); t.after(() => rmSync(configDir, { recursive: true, force: true }));
+  const checkout = path.join(configDir, 'repo'); mkdirSync(checkout);
+  writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ version: 2, name: 'Repo', queueProjectId: 'repo', instructions: [], scm: { kind: 'github', repository: 'o/r' }, tracker: { kind: 'github', repository: 'o/r', readyLabel: 'agent:ready' }, engine: { default: 'claude', billing: 'api' } }));
+  writeFileSync(path.join(checkout, '.gitignore'), '.agent-team/\n.agent-team-result.json\n');
+  const log = [];
+  const run = (bin) => ({ ok: ['git', 'claude', 'gh'].includes(bin), stdout: 'v1', stderr: '' });
+  await assert.rejects(main(['up', checkout, '--config-dir', configDir], { log: line => log.push(line), env: {}, run }), /requirements missing; nothing was created/);
+  assert.match(log.join('\n'), /MISSING  github token/);
+  // With everything present: a fake coordinator answers the registration requests and a fake
+  // tracker client stands in for the label and inbox bootstrap.
+  const requests = [];
+  const { createServer } = await import('node:http');
+  const server = createServer((req, res) => { let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => { requests.push([req.method, req.url, body ? JSON.parse(body) : null]); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(req.url === '/health' ? { ok: true } : { ok: true, overrides: {} })); }); });
+  await new Promise(resolve => server.listen(4310, '127.0.0.1', resolve)); t.after(() => server.close());
+  let started = null;
+  const startLocalImpl = ({ files, token, withPm }) => { started = { files, token, withPm }; return { stop() {}, started: Promise.resolve(), finished: Promise.resolve(), children: new Map() }; };
+  const seeded = [];
+  const trackerClientImpl = { bootstrap: async () => ({ labels: [], created: ['agent:ready'], ownerInboxIssue: 'GH-9' }) };
+  const code = await main(['up', checkout, '--config-dir', configDir, '--no-intake'], { log: line => log.push(line), env: { GH_TOKEN: 'ghp_x', ANTHROPIC_API_KEY: 'k' }, run, startLocalImpl, seed: async options => { seeded.push(options.id); }, open: false, trackerClientImpl });
+  assert.equal(code, 0);
+  assert.ok(started.token.length >= 24); assert.equal(started.withPm, true);
+  assert.ok(requests.some(([method, url]) => method === 'POST' && url === '/projects/repo/manifest'));
+  const settings = requests.find(([method, url]) => method === 'POST' && url === '/projects/repo/settings');
+  assert.deepEqual(settings[2].overrides, { tracker: { ownerInboxIssue: 'GH-9' }, worker: { launcher: 'local' } });
+  assert.deepEqual(seeded, ['repo']);
+  assert.match(log.join('\n'), /Dashboard: http:\/\/127.0.0.1:4311\//);
+  assert.equal(readDeployment('repo', configDir), null, 'the local target writes no AWS deployment');
 });

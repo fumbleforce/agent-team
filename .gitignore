@@ -3,3 +3,6 @@
 *.local.json
 *.env
 node_modules/
+.agent-team/
+.agent-team-result.json
+.agent-team-pm/

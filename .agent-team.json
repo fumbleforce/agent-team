@@ -1,0 +1,16 @@
+{
+  "version": 2,
+  "name": "Agent Team",
+  "queueProjectId": "agent-team",
+  "charter": "docs/PLATFORM.md",
+  "instructions": ["AGENTS.md"],
+  "scm": { "kind": "github", "repository": "fumbleforce/agent-team", "baseBranch": "main", "branchPrefix": "agents/" },
+  "tracker": { "kind": "github", "repository": "fumbleforce/agent-team", "readyLabel": "agent:ready" },
+  "engine": { "default": "claude", "billing": "api" },
+  "worker": { "launcher": "ec2", "environment": "browser", "instanceType": "c6i.large", "setup": "npm ci" },
+  "memory": { "injectCapTokens": 4000 },
+  "pm": { "autonomy": "suggest", "dailyCapUsd": 10 },
+  "team": { "blueprint": "default", "roles": ["team-dev", "team-tester", "team-reviewer"] },
+  "delivery": { "repository": "fumbleforce/agent-team", "baseBranch": "main", "requiredChecks": ["verify"], "autoMergeAuthorized": false },
+  "ideation": { "enabled": true, "backlogCap": 8, "batchSize": 3, "minimumIntervalHours": 24, "ideaLabel": "idea", "proposedState": "idea:proposed", "approvedState": "agent:approved", "rejectedState": "closed" }
+}

@@ -13,7 +13,7 @@ import { builtinEnvironments, validateEnvironment, EnvironmentError, ENVIRONMENT
 import { loadRolesFile } from './blueprint.mjs';
 import { createMemory, MemoryError, ITEM_TYPES } from './memory.mjs';
 import { normalizeManifest, validateOverrides, OVERRIDABLE_SECTIONS } from './manifest.mjs';
-import { trackerAdapter, trackerClient, DEFAULT_TRACKER } from '../adapters/tracker/index.mjs';
+import { trackerAdapter, trackerClient, DEFAULT_TRACKER, trackerCredentialPresent } from '../adapters/tracker/index.mjs';
 
 const KINDS = ['development', 'ideation', 'chat', 'graduate'];
 // Channel posts: a plain note, a claim on work, a blocker, a hand-off to another role, or a question for the owner.
@@ -480,10 +480,10 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
       const manifest = manifestOf(projectId);
       const kind = manifest?.tracker?.kind ?? DEFAULT_TRACKER;
       const adapter = trackerAdapter(kind);
-      if (!process.env[adapter.API_KEY_VARIABLE]) reject(`${adapter.API_KEY_VARIABLE} is not available to the coordinator`, 501);
+      if (!trackerCredentialPresent(kind)) reject(`${adapter.API_KEY_VARIABLE} is not available to the coordinator`, 501);
       const client = trackerClient(kind);
       if (typeof client.lookup !== 'function') reject('Tracker adapter has no lookup', 501);
-      return client.lookup({ teamId: params.teamId ?? manifest?.tracker?.teamId ?? null });
+      return client.lookup({ teamId: params.teamId ?? manifest?.tracker?.teamId ?? null, repository: manifest?.tracker?.repository ?? null });
     },
     // Memory injected into a run, recorded by the worker before the runner starts.
     injection(id, input) {

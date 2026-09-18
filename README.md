@@ -295,11 +295,11 @@ Everything under `core/` and `agents/` is provider-neutral; `npm run lint` fails
 | --- | --- | --- |
 | engine | `opencode`, `claude` (billing `subscription`, `api`, `bedrock`), `cursor`, `codex` | worker/job `engine`, manifest `engine.default` |
 | scm | `github` (gh), `gitlab` (glab + REST) | manifest `scm.kind` |
-| tracker | `linear` | manifest `tracker.kind` |
+| tracker | `linear`, `github` (issues) | manifest `tracker.kind` |
 | launcher | `local`, `ec2`, stubs `fargate`, `fly-machine` | manifest `worker.launcher` |
 | artifacts | `local`, `s3` | worker `artifacts.kind` |
 | integration | `slack`, `google-drive`, `hubspot`, generic `mcp` | manifest `integrations[].kind` |
-| hosting | `systemd`, `fly`, `aws` | deployment only |
+| hosting | `local` (`up`), `systemd`, `fly`, `aws` | deployment only |
 
 Interfaces are documented in [core/adapters.md](core/adapters.md). A version 2 manifest (`project.v2.example.json`) selects providers per project; version 1 manifests keep working with the original defaults.
 
@@ -358,6 +358,27 @@ Overrides live in the coordinator database as a small JSON document per project,
 ## Ephemeral workers
 
 With `worker.launcher: ec2` the coordinator starts an instance per job from `worker.ami` (or `ssm:/parameter` holding the current image) whose user-data runs `core/worker.mjs --once --job ID` and shuts down. The launched worker receives a job token derived from the shared token instead of the shared token itself: it can claim and report that one job, record its cost and read its project's settings and memory; every other route, manifest registration included, answers 403, and the token stops working when the job ends. The owner's CLI registers the manifest for such projects. Jobs unclaimed after `claimTimeoutMinutes` fail and their instance is terminated. `artifacts.kind: s3` uploads journal, events, stderr and diff at the end of each run and the dashboard links to them. See [adapters/hosting/aws/README.md](adapters/hosting/aws/README.md) for the control plane on AWS and the nightly AMI build.
+
+## One command: `agent-team up`
+
+```sh
+export GH_TOKEN=...            # push branches, open pull requests, and the repository's issues
+export ANTHROPIC_API_KEY=...   # or log the engine in on the worker host for subscription billing
+npx @fumbleforce/agent-team up /path/to/checkout              # this machine, foreground
+npx @fumbleforce/agent-team up /path/to/checkout --target aws # dedicated network, spot workers
+```
+
+`up` runs a preflight that lists every missing requirement at once (Node, Git, the manifest, ignores, the engine and its billing, the SCM and tracker tokens, AWS access for that target), creates the tracker labels and an owner inbox issue when the tracker adapter can (GitHub Issues does), registers the manifest, seeds memory from the instruction files and opens the dashboard. On the local target everything binds to loopback under a generated token and stops with Ctrl-C; on AWS it is `init`, `deploy`, `image` and `seed` in one go, and every step is idempotent so rerunning it is safe.
+
+The defaults it applies are meant to be safe, cheap and complete: a dedicated VPC for the control plane and workers, one-shot spot workers that terminate with the job, the dashboard reachable only through a Session Manager tunnel, secrets in Parameter Store with the control-plane secrets out of the workers' reach, the PM in `suggest` autonomy with a daily spend cap, auto-merge off, and the `browser` environment so the team can look at what it builds.
+
+### GitHub Issues as the tracker
+
+A project on GitHub needs no second account: `tracker: { "kind": "github", "repository": "owner/repo", "readyLabel": "agent:ready" }` makes the repository's issues the board, addressed as `GH-12`. Workflow states are labels (`idea:proposed`, `agent:approved`, `agent:in-progress`, `agent:in-review`; a closed issue is done or rejected), which `up` creates. The same `GH_TOKEN` serves the SCM and the tracker unless `GITHUB_ISSUES_TOKEN` is set. Engines reach issues through GitHub's hosted MCP server.
+
+### Dogfooding
+
+This repository carries its own `.agent-team.json`: GitHub for code and issues, the delivery team with developer, tester and reviewer, the `browser` environment, `docs/PLATFORM.md` as the charter and `verify` as the required check. `agent-team up` on a checkout of this repository starts a team that proposes issues from the roadmap and, once an idea is approved, opens pull requests here.
 
 ## Pilot runbook for a new project
 

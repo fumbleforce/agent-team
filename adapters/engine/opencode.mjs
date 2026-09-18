@@ -6,6 +6,8 @@ export const BILLING_MODES = ['provider'];
 export const DEFAULT_BILLING = 'provider';
 export const DEFAULT_MODEL = undefined;
 export const NEEDS_SYSTEM_PROMPT_FILE = false;
+// No bounded question sessions: the resident PM and owner chat need another engine.
+export const SUPPORTS_ASK = false;
 
 export function rateLimitPolicy() { return 'job'; }
 

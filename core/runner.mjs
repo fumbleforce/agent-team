@@ -669,7 +669,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
     const role = options.ideate ? 'team-ideation' : 'team-coordinator';
     // Integrations join the tracker as MCP servers; `access` limits a server to the roles the
     // manifest names (null: every role the shared permissions allow).
-    const mcp = options.ideate ? {} : { ...tracker.mcpServers(manifest.tracker), ...integrationServers(manifest.integrations, env), ...capabilityServers(environment, runDir) };
+    const mcp = options.ideate ? {} : { ...tracker.mcpServers(manifest.tracker, env), ...integrationServers(manifest.integrations, env), ...capabilityServers(environment, runDir) };
     const access = Object.fromEntries(manifest.integrations.map(integration => [integration.name, integration.roles ?? null]));
     const childEnv = modelEnvironment(env, { ...shared,
       instructions: [...shared.instructions, ...project.instructions.map(file => path.join(worktree, file))] }, options.engine,

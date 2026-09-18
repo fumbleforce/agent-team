@@ -53,7 +53,7 @@ merge(exec, context, headSha) -> { mergeCommit }   // fails unless head still ma
 
 ## tracker
 
-Reads and writes the issue tracker. Implemented by `linear`.
+Reads and writes the issue tracker. Implemented by `linear` and `github` (a repository's issues; labels stand in for workflow states). An adapter may add `hasCredential(env)`, `CREDENTIAL_HINT` and a client `bootstrap(manifest)` that creates the labels and inbox `agent-team up` relies on.
 
 ```
 NAME, ISSUE_PATTERN, API_KEY_VARIABLE, MANIFEST_KEYS

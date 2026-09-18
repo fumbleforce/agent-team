@@ -32,7 +32,8 @@ export function secretPlan(manifest) {
   const plan = [
     { name: 'AGENT_TEAM_TOKEN', generated: true, scope: 'control', purpose: 'coordinator bearer token' },
     { name: 'AGENT_TEAM_DASHBOARD_PASSWORD', generated: true, scope: 'control', purpose: 'dashboard password' },
-    { name: tracker.API_KEY_VARIABLE, generated: false, purpose: `${tracker.NAME} API key`, adapter: tracker.NAME },
+    // A tracker that shares the SCM's token (the adapter names that SCM) needs no key of its own.
+    { name: tracker.API_KEY_VARIABLE, generated: false, purpose: `${tracker.NAME} API key`, adapter: tracker.NAME, ...(tracker.SHARES_TOKEN_WITH === scm.NAME ? { optional: true } : {}) },
     { name: scm.TOKEN_VARIABLE, generated: false, purpose: `${scm.NAME} token able to push branches and open ${scm.CHANGE_NOUN}s`, adapter: scm.NAME }
   ];
   // An engine adapter may declare API_KEY_VARIABLE and the billing modes that need it.
