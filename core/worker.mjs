@@ -15,6 +15,7 @@ import { answer } from './chat.mjs';
 
 const runner = fileURLToPath(new URL('./runner.mjs', import.meta.url));
 const memoryShim = fileURLToPath(new URL('./memory-cli.mjs', import.meta.url));
+const teamShim = path.join(path.dirname(fileURLToPath(import.meta.url)), 'channel-cli.mjs');
 export function runnerArgs(job, checkout, ideaContext, memory = null) {
   const args = [runner, '--project', checkout, '--execute', '--cycles', '1'];
   for (const [key, flag] of [['issue', '--issue'], ['base', '--base'], ['engine', '--engine'], ['billing', '--billing'], ['model', '--model'], ['timeoutMinutes', '--timeout-minutes']]) {
@@ -22,6 +23,8 @@ export function runnerArgs(job, checkout, ideaContext, memory = null) {
   }
   if (memory?.file) args.push('--memory-file', memory.file, '--memory-sha', memory.sha);
   if (memory?.settingsFile) args.push('--settings-file', memory.settingsFile);
+  if (memory?.teamFile) args.push('--team-file', memory.teamFile);
+  if (memory?.environmentFile) args.push('--environment-file', memory.environmentFile);
   if (job.fetch === true) args.push('--fetch');
   if (job.publish === true) args.push('--publish');
   if (job.autoMerge === true) args.push('--auto-merge');
@@ -42,6 +45,8 @@ export function installMemoryShim(binDir) {
   mkdirSync(binDir, { recursive: true, mode: 0o700 });
   const shim = path.join(binDir, 'memory');
   writeFileSyncAtomic(shim, `#!/bin/sh\nexec "${process.execPath}" "${memoryShim}" "$@"\n`, 0o700);
+  // The team channel command shares the memory lease variables.
+  writeFileSyncAtomic(path.join(binDir, 'team'), `#!/bin/sh\nexec "${process.execPath}" "${teamShim}" "$@"\n`, 0o700);
   return shim;
 }
 function writeFileSyncAtomic(file, content, mode) {
@@ -283,8 +288,9 @@ export async function runWorker(config, { once = false, jobId = null, signal = n
         const flush = async () => { if (!pending.length || flushing) return; const batch = pending; pending = []; flushing = request(`/jobs/${job.id}/events`, { ...credentials, events: batch }).catch(() => {}); await flushing; flushing = null; };
         const deltaTimer = setInterval(flush, 1000);
         let replied;
+        const team = await request(`/projects/${job.projectId}/team`).catch(() => null);
         try {
-          replied = await chatAnswer({ tracker: client, manifest, engine: boundedJob.engine ?? full.engine.default, billing: full.engine.billing, role: job.role, issue: job.issue, message: job.message, cwd: latestWorktree(checkout) ?? checkout, work, runDir: path.join(stateDir, 'chat'), signal: control.signal,
+          replied = await chatAnswer({ tracker: client, manifest, team, engine: boundedJob.engine ?? full.engine.default, billing: full.engine.billing, role: job.role, issue: job.issue, message: job.message, cwd: latestWorktree(checkout) ?? checkout, work, runDir: path.join(stateDir, 'chat'), signal: control.signal,
             onDelta: text => { pending.push(JSON.stringify({ type: 'chat_delta', text })); } });
         } finally { clearInterval(deltaTimer); await flush(); }
         execution = { code: 0, journal: { outcome: 'ready' } }; apiSummary = replied.reply.slice(0, 1900);
@@ -300,6 +306,18 @@ export async function runWorker(config, { once = false, jobId = null, signal = n
           const settingsFile = path.join(stateDir, `${job.id}.settings.json`);
           writeFileSyncAtomic(settingsFile, JSON.stringify(overrides), 0o600);
           memory = { settingsFile };
+        }
+        // The stored team and environment the coordinator resolved for this project; the runner
+        // materializes the team under its own committed ceiling. A coordinator without the routes
+        // leaves the runner on the blueprint directory.
+        for (const [what, key] of [['team', 'teamFile'], ['environment', 'environmentFile']]) {
+          try {
+            const doc = await request(`/projects/${job.projectId}/${what}`);
+            mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+            const file = path.join(stateDir, `${job.id}.${what}.json`);
+            writeFileSyncAtomic(file, JSON.stringify(doc), 0o600);
+            memory = { ...memory, [key]: file };
+          } catch (error) { onError(new Error(`${what} resolution skipped: ${error.message}`)); }
         }
         if (full && job.kind !== 'ideation' && full.memory.injectCapTokens > 0) {
           try {

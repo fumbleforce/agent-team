@@ -8,11 +8,16 @@ import { ENGINES, validateBilling } from '../adapters/engine/index.mjs';
 import { createLauncher } from '../adapters/launcher/index.mjs';
 import { remoteBase } from './git-base.mjs';
 import { ROSTER } from './roster.mjs';
+import { shippedTeams, validateTeam, materialize, TeamError, TEAM_ID } from './teams.mjs';
+import { builtinEnvironments, validateEnvironment, EnvironmentError, ENVIRONMENT_ID } from './environments.mjs';
+import { loadRolesFile } from './blueprint.mjs';
 import { createMemory, MemoryError, ITEM_TYPES } from './memory.mjs';
 import { normalizeManifest, validateOverrides, OVERRIDABLE_SECTIONS } from './manifest.mjs';
-import { trackerAdapter, trackerClient, DEFAULT_TRACKER } from '../adapters/tracker/index.mjs';
+import { trackerAdapter, trackerClient, DEFAULT_TRACKER, trackerCredentialPresent } from '../adapters/tracker/index.mjs';
 
 const KINDS = ['development', 'ideation', 'chat', 'graduate'];
+// Channel posts: a plain note, a claim on work, a blocker, a hand-off to another role, or a question for the owner.
+export const CHANNEL_KINDS = ['note', 'claim', 'blocker', 'handoff', 'question'];
 const ISSUE = /^[A-Za-z][A-Za-z0-9_]*-[1-9][0-9]*$/;
 const DECISION_KINDS = ['approve-issue', 'memory-decision', 'spend', 'enqueue', 'other'];
 const DAY = 86_400_000;
@@ -49,7 +54,7 @@ function jobScopeAllows(scope, method, pathname) {
   return pathname === '/claim' || pathname === `/projects/${scope.projectId}/costs` || JOB_ROUTES.some(route => pathname === `/jobs/${scope.jobId}/${route}`);
 }
 
-export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 90_000, launcher = null, jobTokenFor = null, memory = null, claimTimeoutMs = 15 * 60_000, onLaunchError = error => console.error(error.message) } = {}) {
+export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 90_000, launcher = null, jobTokenFor = null, memory = null, claimTimeoutMs = 15 * 60_000, environments: configuredEnvironments = [], seedTeams = shippedTeams, onLaunchError = error => console.error(error.message) } = {}) {
   if (!Number.isInteger(leaseMs) || leaseMs < 1) throw new Error('Invalid leaseMs');
   if (!Number.isInteger(claimTimeoutMs) || claimTimeoutMs < 1) throw new Error('Invalid claimTimeoutMs');
   const registered = id => {
@@ -83,7 +88,47 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, title TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, threadId TEXT NOT NULL, projectId TEXT NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL, createdAt INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'final', meta TEXT);
     CREATE TABLE IF NOT EXISTS decisions (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, options TEXT NOT NULL, createdAt INTEGER NOT NULL, state TEXT NOT NULL, choice TEXT, note TEXT, resolvedAt INTEGER, threadId TEXT, payload TEXT);
-    CREATE TABLE IF NOT EXISTS costs (id INTEGER PRIMARY KEY AUTOINCREMENT, projectId TEXT NOT NULL, jobId TEXT, kind TEXT NOT NULL, usd REAL NOT NULL, tokens INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS costs (id INTEGER PRIMARY KEY AUTOINCREMENT, projectId TEXT NOT NULL, jobId TEXT, kind TEXT NOT NULL, usd REAL NOT NULL, tokens INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS channel (seq INTEGER PRIMARY KEY AUTOINCREMENT, projectId TEXT NOT NULL, jobId TEXT, author TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, createdAt INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS channel_project ON channel(projectId, seq);
+    CREATE TABLE IF NOT EXISTS teams (id TEXT PRIMARY KEY, doc TEXT NOT NULL, version INTEGER NOT NULL, author TEXT NOT NULL, updatedAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS teams_history (id INTEGER PRIMARY KEY AUTOINCREMENT, teamId TEXT NOT NULL, version INTEGER NOT NULL, doc TEXT NOT NULL, author TEXT NOT NULL, note TEXT, createdAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS environments (id TEXT PRIMARY KEY, doc TEXT NOT NULL, version INTEGER NOT NULL, author TEXT NOT NULL, updatedAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS environments_history (id INTEGER PRIMARY KEY AUTOINCREMENT, environmentId TEXT NOT NULL, version INTEGER NOT NULL, doc TEXT NOT NULL, author TEXT NOT NULL, note TEXT, createdAt INTEGER NOT NULL);`);
+  // Stored documents with a version history: teams and worker environments. The toolkit's own
+  // blueprints and built-in environments seed the tables once; afterwards the store is the truth.
+  const store = (table, history, column, validate, ErrorClass) => {
+    const wrap = fn => { try { return fn(); } catch (error) { if (error instanceof ErrorClass) reject(error.message); throw error; } };
+    const row = id => { const found = db.prepare(`SELECT * FROM ${table} WHERE id=?`).get(id); return found ? { ...JSON.parse(found.doc), version: found.version, author: found.author, updatedAt: found.updatedAt } : null; };
+    const api = {
+      list: () => db.prepare(`SELECT * FROM ${table} ORDER BY CASE WHEN id IN ('default','standard') THEN 0 ELSE 1 END, id`).all().map(found => ({ ...JSON.parse(found.doc), version: found.version, author: found.author, updatedAt: found.updatedAt })),
+      get: id => { const found = row(id); if (!found) reject('Not found', 404); return found; },
+      seed: docs => tx(() => { for (const doc of docs) { const clean = wrap(() => validate(doc)); if (row(clean.id)) continue; db.prepare(`INSERT INTO ${table}(id,doc,version,author,updatedAt) VALUES(?,?,1,'toolkit',?)`).run(clean.id, JSON.stringify(clean), now()); db.prepare(`INSERT INTO ${history}(${column},version,doc,author,note,createdAt) VALUES(?,1,?,'toolkit','seeded',?)`).run(clean.id, JSON.stringify(clean), now()); } }),
+      save: (id, input) => tx(() => {
+        object(input, ['doc', 'author', 'note']);
+        const clean = wrap(() => validate({ ...(input.doc ?? {}), id }));
+        const author = text(input.author ?? 'owner', 'author', 80);
+        const note = input.note === undefined ? null : text(input.note, 'note', 400);
+        const version = (row(id)?.version ?? 0) + 1;
+        db.prepare(`INSERT INTO ${table}(id,doc,version,author,updatedAt) VALUES(?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET doc=excluded.doc, version=excluded.version, author=excluded.author, updatedAt=excluded.updatedAt`).run(id, JSON.stringify(clean), version, author, now());
+        db.prepare(`INSERT INTO ${history}(${column},version,doc,author,note,createdAt) VALUES(?,?,?,?,?,?)`).run(id, version, JSON.stringify(clean), author, note, now());
+        return { ...clean, version, author };
+      }),
+      history: (id, { limit = 30 } = {}) => db.prepare(`SELECT version, doc, author, note, createdAt FROM ${history} WHERE ${column}=? ORDER BY version DESC LIMIT ?`).all(id, limit).map(entry => ({ ...entry, doc: JSON.parse(entry.doc) })),
+      revert: (id, input) => {
+        object(input, ['version', 'author']);
+        if (!Number.isInteger(input.version) || input.version < 1) reject('Invalid version');
+        const entry = db.prepare(`SELECT doc FROM ${history} WHERE ${column}=? AND version=?`).get(id, input.version);
+        if (!entry) reject('Not found', 404);
+        return api.save(id, { doc: JSON.parse(entry.doc), author: input.author, note: `Reverted to version ${input.version}` });
+      },
+    };
+    return api;
+  };
+  const teamStore = store('teams', 'teams_history', 'teamId', validateTeam, TeamError);
+  const environmentStore = store('environments', 'environments_history', 'environmentId', validateEnvironment, EnvironmentError);
+  // Names of every role any stored team defines, the delivery team's first.
+  const rosterUnion = () => Object.assign({}, ...teamStore.list().map(team => team.roster).reverse());
   const expire = () => db.prepare(`UPDATE jobs SET state='blocked', leaseToken=NULL, leaseUntil=NULL,
     updatedAt=?, result=? WHERE state='running' AND leaseUntil<=?`).run(now(), JSON.stringify({ outcome: 'blocked', summary: 'Lease expired; inspect execution before manual requeue' }), now());
   const tx = fn => {
@@ -91,6 +136,8 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     try { expire(); const result = fn(); db.exec('COMMIT'); return result; }
     catch (error) { db.exec('ROLLBACK'); throw error; }
   };
+  teamStore.seed(seedTeams());
+  environmentStore.seed([...builtinEnvironments(), ...configuredEnvironments]);
   const view = row => {
     if (!row) return null;
     const { leaseToken, request, result, ...rest } = row;
@@ -104,7 +151,7 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     if (kind !== 'chat' && (input.role !== undefined || input.message !== undefined)) reject('role and message require chat');
     if (kind === 'chat') {
       if (['publish', 'autoMerge', 'approvalRequired', 'proposalLimit', 'base', 'fetch', 'model'].some(key => input[key] !== undefined)) reject('Chat accepts only role, issue and message');
-      if (!Object.hasOwn(ROSTER, input.role)) reject('Invalid role');
+      if (!Object.hasOwn(rosterUnion(), input.role)) reject('Invalid role');
       if (!ISSUE.test(input.issue ?? '')) reject('Chat requires a tracker issue');
       text(input.message, 'message', 4000);
       registered(input.projectId);
@@ -178,8 +225,20 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     if (kind === 'local') return null;
     return createLauncher(kind, { ...(launcher?.options ?? {}), ...(launcher?.byKind?.[kind] ?? {}) });
   };
+  // The team and environment a project runs with: chosen by manifest/settings ids, resolved to
+  // the stored documents so a run records exactly which version it used.
+  const projectTeam = projectId => {
+    const manifest = manifestOf(projectId);
+    const id = manifest?.team?.blueprint ?? 'default';
+    const team = teamStore.get(id);
+    const roles = manifest?.team?.roles === undefined ? team.defaultRoles : manifest.team.roles;
+    return { ...team, roles };
+  };
+  const projectEnvironment = projectId => environmentStore.get(manifestOf(projectId)?.worker?.environment ?? 'standard');
   const launch = job => {
-    const worker = { ...(launcher?.options ?? {}), ...(manifestOf(job.projectId)?.worker ?? {}) };
+    const manifestWorker = manifestOf(job.projectId)?.worker ?? {};
+    const environment = projectEnvironment(job.projectId);
+    const worker = { ...(launcher?.options ?? {}), ...environment.launcher, ...manifestWorker, environment: environment.id };
     const instance = launcherFor(job.projectId);
     db.prepare(`INSERT INTO launches(jobId,projectId,kind,handle,startedAt,state) VALUES(?,?,?,?,?,'starting') ON CONFLICT(jobId) DO UPDATE SET kind=excluded.kind, startedAt=excluded.startedAt, state='starting', handle=NULL, error=NULL`).run(job.id, job.projectId, instance.kind, null, now());
     // Fire and forget: the queue never blocks on a cloud API. Failures are recorded and the watchdog fails the job.
@@ -212,6 +271,49 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
   return {
     close: () => { db.close(); memory?.close(); },
     watchdog,
+    // The team channel: a per-project append-only board every active run, the resident PM and
+    // the owner can read and post to. Runs post through their lease; the author is the job's
+    // role. Posts are visible immediately, never edited, and pruned only by the owner's tooling.
+    channelPost(projectId, input) {
+      registered(projectId);
+      object(input, ['author', 'body', 'kind', 'jobId']);
+      const author = text(input.author ?? 'owner', 'author', 80);
+      const kind = input.kind ?? 'note';
+      if (!CHANNEL_KINDS.includes(kind)) reject('Invalid kind');
+      const body = String(input.body ?? '');
+      if (!body.trim() || body.length > 4000 || /[\x00-\x08\x0b-\x1f\x7f]/.test(body)) reject('Invalid body');
+      if (input.jobId !== undefined && !/^[a-f0-9-]{36}$/.test(String(input.jobId))) reject('Invalid jobId');
+      const createdAt = now();
+      const result = db.prepare('INSERT INTO channel (projectId, jobId, author, kind, body, createdAt) VALUES (?,?,?,?,?,?)').run(projectId, input.jobId ?? null, author, kind, body, createdAt);
+      return { seq: Number(result.lastInsertRowid), projectId, jobId: input.jobId ?? null, author, kind, body, createdAt };
+    },
+    channelRead(projectId, { after = 0, limit = 50 } = {}) {
+      registered(projectId);
+      if (!Number.isInteger(after) || after < 0) reject('Invalid after');
+      if (!Number.isInteger(limit) || limit < 1 || limit > 500) reject('Invalid limit');
+      const rows = after > 0
+        ? db.prepare('SELECT * FROM channel WHERE projectId=? AND seq>? ORDER BY seq ASC LIMIT ?').all(projectId, after, limit)
+        : db.prepare('SELECT * FROM channel WHERE projectId=? ORDER BY seq DESC LIMIT ?').all(projectId, limit).reverse();
+      return rows.map(row => ({ ...row, seq: Number(row.seq) }));
+    },
+    // A run posts as the role that owns the job; chat jobs post as their member.
+    channelPostForJob(jobId, workerId, leaseToken, input) {
+      const scope = this.leaseScope(jobId, workerId, leaseToken);
+      if (!scope) reject('Unauthorized', 401);
+      const job = view(get(jobId));
+      const author = job.kind === 'chat' ? job.role : job.kind === 'ideation' ? 'team-ideation' : 'team-coordinator';
+      object(input, ['body', 'kind']);
+      return this.channelPost(scope.projectId, { ...input, author, jobId });
+    },
+    teams: () => teamStore.list(), team: id => teamStore.get(id), saveTeam: (id, input) => { if (!TEAM_ID.test(String(id))) reject('Invalid team id'); return teamStore.save(id, input); },
+    teamHistory: (id, options) => teamStore.history(id, options), revertTeam: (id, input) => teamStore.revert(id, input),
+    environments: () => environmentStore.list(), environment: id => environmentStore.get(id), saveEnvironment: (id, input) => { if (!ENVIRONMENT_ID.test(String(id))) reject('Invalid environment id'); return environmentStore.save(id, input); },
+    environmentHistory: (id, options) => environmentStore.history(id, options), revertEnvironment: (id, input) => environmentStore.revert(id, input),
+    roster: () => rosterUnion(),
+    projectTeam(projectId) { registered(projectId); return projectTeam(projectId); },
+    projectEnvironment(projectId) { registered(projectId); return projectEnvironment(projectId); },
+    // The shared configuration a run receives: the stored team under the committed ceiling.
+    projectShared(projectId, ceiling = loadRolesFile()) { registered(projectId); const team = projectTeam(projectId); try { return { ...materialize(team, ceiling, { roles: team.roles }), team: { id: team.id, version: team.version, roles: team.roles } }; } catch (error) { if (error instanceof TeamError) reject(error.message); throw error; } },
     leaseScope(jobId, workerId, leaseToken) {
       if (!/^[a-f0-9-]{36}$/.test(String(jobId))) return null;
       const row = db.prepare('SELECT projectId FROM jobs WHERE id=? AND state=? AND workerId=? AND leaseToken=?').get(jobId, 'running', String(workerId), String(leaseToken));
@@ -378,10 +480,10 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
       const manifest = manifestOf(projectId);
       const kind = manifest?.tracker?.kind ?? DEFAULT_TRACKER;
       const adapter = trackerAdapter(kind);
-      if (!process.env[adapter.API_KEY_VARIABLE]) reject(`${adapter.API_KEY_VARIABLE} is not available to the coordinator`, 501);
+      if (!trackerCredentialPresent(kind)) reject(`${adapter.API_KEY_VARIABLE} is not available to the coordinator`, 501);
       const client = trackerClient(kind);
       if (typeof client.lookup !== 'function') reject('Tracker adapter has no lookup', 501);
-      return client.lookup({ teamId: params.teamId ?? manifest?.tracker?.teamId ?? null });
+      return client.lookup({ teamId: params.teamId ?? manifest?.tracker?.teamId ?? null, repository: manifest?.tracker?.repository ?? null });
     },
     // Memory injected into a run, recorded by the worker before the runner starts.
     injection(id, input) {
@@ -587,8 +689,8 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (header.startsWith('Lease ')) {
         const [jobId, workerId, leaseToken] = header.slice(6).split(':');
         const scope = queue.leaseScope?.(jobId, workerId, leaseToken);
-        const searchMatch = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/memory\/search$/.exec(url.pathname);
-        const allowed = scope && ((req.method === 'GET' && searchMatch && searchMatch[1] === scope.projectId) || (req.method === 'POST' && url.pathname === `/jobs/${scope.jobId}/proposals`));
+        const searchMatch = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(memory\/search|channel)$/.exec(url.pathname);
+        const allowed = scope && ((req.method === 'GET' && searchMatch && searchMatch[1] === scope.projectId) || (req.method === 'POST' && [`/jobs/${scope.jobId}/proposals`, `/jobs/${scope.jobId}/channel`].includes(url.pathname)));
         if (!allowed) { req.resume(); return reply(401, { error: 'Unauthorized' }); }
       } else if (header.startsWith('Bearer job.')) {
         const [, jobId] = header.slice(7).split('.');
@@ -615,17 +717,31 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (req.method === 'GET' && evidenceMatch) { const found = queue.evidenceFor(evidenceMatch[1]); return found ? reply(200, found) : reject('No evidence yet', 404); }
       const eventsMatch = /^\/jobs\/([a-f0-9-]+)\/events$/.exec(url.pathname);
       if (req.method === 'GET' && eventsMatch) return reply(200, queue.eventsAfter(eventsMatch[1], { after: Number(url.searchParams.get('after') ?? 0), limit: Number(url.searchParams.get('limit') ?? 500) }));
+      const channelPost = /^\/jobs\/([a-f0-9-]{36})\/channel$/.exec(url.pathname);
       const jobSub = /^\/jobs\/([a-f0-9-]{36})\/(injection|proposals|artifacts)$/.exec(url.pathname);
       if (req.method === 'GET' && jobSub) {
         const found = jobSub[2] === 'injection' ? queue.injectionFor(jobSub[1]) : jobSub[2] === 'artifacts' ? queue.artifactsFor(jobSub[1]) : queue.proposals({ jobId: jobSub[1], state: url.searchParams.get('state') ?? undefined });
         return found ? reply(200, found) : reject('Not recorded', 404);
       }
       if (req.method === 'GET' && url.pathname === '/launches') return reply(200, queue.launches());
+      if (req.method === 'GET' && url.pathname === '/roster') return reply(200, queue.roster());
+      const storeGet = /^\/(teams|environments)(?:\/([a-z][a-z0-9-]{0,63})(?:\/(history))?)?$/.exec(url.pathname);
+      if (req.method === 'GET' && storeGet) {
+        const [, kind, id, what] = storeGet;
+        const single = kind === 'teams' ? 'team' : 'environment';
+        if (!id) return reply(200, queue[kind]());
+        if (what === 'history') return reply(200, queue[`${single}History`](id, { limit: Number(url.searchParams.get('limit') ?? 30) }));
+        return reply(200, queue[single](id));
+      }
       if (req.method === 'GET' && url.pathname === '/proposals') return reply(200, queue.proposals({ projectId: url.searchParams.get('project') ?? undefined, state: url.searchParams.get('state') ?? 'pending' }));
       if (req.method === 'GET' && url.pathname === '/decisions') return reply(200, queue.decisions({ projectId: url.searchParams.get('project') ?? undefined, state: url.searchParams.get('state') ?? 'open' }));
-      const projectGet = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(thread|threads|costs|memory(?:\/.*)?)$/.exec(url.pathname);
+      const projectGet = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(thread|threads|costs|channel|team|shared|environment|memory(?:\/.*)?)$/.exec(url.pathname);
       if (req.method === 'GET' && projectGet) {
         const [, projectId, what] = projectGet;
+        if (what === 'channel') return reply(200, queue.channelRead(projectId, { after: Number(url.searchParams.get('after') ?? 0), limit: Number(url.searchParams.get('limit') ?? 50) }));
+        if (what === 'team') return reply(200, queue.projectTeam(projectId));
+        if (what === 'shared') return reply(200, queue.projectShared(projectId));
+        if (what === 'environment') return reply(200, queue.projectEnvironment(projectId));
         if (what === 'thread') return reply(200, queue.thread(projectId, { threadId: url.searchParams.get('thread') ?? undefined }));
         if (what === 'threads') return reply(200, queue.threads(projectId));
         if (what === 'costs') return reply(200, queue.costs(projectId));
@@ -643,16 +759,23 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
         reject('Not found', 404);
       }
       if (req.method !== 'POST') reject('Not found', 404);
-      const limit = evidenceMatch ? 700_000 : eventsMatch ? 4_200_000 : url.pathname.includes('/memory/') ? 400_000 : 65536;
+      const storePost = /^\/(teams|environments)\/([a-z][a-z0-9-]{0,63})(?:\/(revert))?$/.exec(url.pathname);
+      const limit = evidenceMatch ? 700_000 : eventsMatch ? 4_200_000 : url.pathname.includes('/memory/') || storePost ? 400_000 : 65536;
       let size = 0; const chunks = [];
       for await (const chunk of req) { size += chunk.length; if (size > limit) { reply(413, { error: `JSON body exceeds ${limit} bytes` }); req.resume(); return; } chunks.push(chunk); }
       let body; try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { reject('Invalid JSON'); }
       if (jobScope && url.pathname === '/claim' && !(body?.job === jobScope.jobId && Array.isArray(body.projectIds) && body.projectIds.length === 1 && body.projectIds[0] === jobScope.projectId)) reject('This token is limited to its own job', 403);
       if (jobScope && url.pathname.endsWith('/costs') && body?.jobId !== jobScope.jobId) reject('This token is limited to its own job', 403);
+      if (storePost) {
+        const [, kind, id, what] = storePost;
+        const single = kind === 'teams' ? 'Team' : 'Environment';
+        return reply(200, what === 'revert' ? queue[`revert${single}`](id, body) : queue[`save${single}`](id, body));
+      }
       if (url.pathname === '/jobs') return reply(201, queue.enqueue(body));
       if (url.pathname === '/claim') return reply(200, queue.claim(body));
       if (evidenceMatch) return reply(200, queue.evidence(evidenceMatch[1], body));
       if (eventsMatch) return reply(200, queue.appendEvents(eventsMatch[1], body));
+      if (channelPost) return reply(201, queue.channelPostForJob(channelPost[1], body?.workerId, body?.leaseToken, { body: body?.body, kind: body?.kind }));
       if (jobSub) return reply(200, jobSub[2] === 'injection' ? queue.injection(jobSub[1], body) : jobSub[2] === 'artifacts' ? queue.artifacts(jobSub[1], body) : queue.propose(jobSub[1], body));
       if (url.pathname === '/proposals/resolve') return reply(200, queue.resolveProposals(body));
       const proposal = /^\/proposals\/([a-f0-9-]{36})\/resolve$/.exec(url.pathname);
@@ -661,9 +784,10 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (decision) return reply(200, queue.resolveDecision(decision[1], body));
       const message = /^\/messages\/([A-Za-z0-9-]{1,64})$/.exec(url.pathname);
       if (message) return reply(200, queue.updateMessage(message[1], body));
-      const projectPost = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(manifest|settings|messages|decisions|costs|memory\/[a-z]+)$/.exec(url.pathname);
+      const projectPost = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(manifest|settings|messages|decisions|costs|channel|memory\/[a-z]+)$/.exec(url.pathname);
       if (projectPost) {
         const [, projectId, what] = projectPost;
+        if (what === 'channel') return reply(201, queue.channelPost(projectId, body));
         if (what === 'manifest') return reply(200, queue.registerProject(projectId, body));
         if (what === 'settings') return reply(200, queue.saveSettings(projectId, body));
         if (what === 'messages') return reply(201, queue.postMessage(projectId, body));
@@ -719,7 +843,7 @@ export async function main(args = process.argv.slice(2)) {
   const dbPath = config.db ?? '.agent-team-coordinator/queue.sqlite';
   const dataDir = config.dataDir ?? path.dirname(path.resolve(dbPath));
   const memory = config.memory === false ? null : createMemory({ dataDir });
-  const queue = createQueue(dbPath, { projects: config.projects, memory, launcher: config.launcher ?? null, jobTokenFor: id => jobToken(process.env.AGENT_TEAM_TOKEN, id), claimTimeoutMs: (config.claimTimeoutMinutes ?? 15) * 60_000 });
+  const queue = createQueue(dbPath, { projects: config.projects, memory, launcher: config.launcher ?? null, environments: Array.isArray(config.environments) ? config.environments : [], jobTokenFor: id => jobToken(process.env.AGENT_TEAM_TOKEN, id), claimTimeoutMs: (config.claimTimeoutMinutes ?? 15) * 60_000 });
   const server = createQueueServer(queue);
   server.on('error', error => { console.error(error.message); queue.close(); process.exitCode = 1; });
   server.listen(port, host, () => console.log(`Agent team coordinator listening on ${host}:${port}`));

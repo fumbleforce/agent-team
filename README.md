@@ -295,12 +295,44 @@ Everything under `core/` and `agents/` is provider-neutral; `npm run lint` fails
 | --- | --- | --- |
 | engine | `opencode`, `claude` (billing `subscription`, `api`, `bedrock`), `cursor`, `codex` | worker/job `engine`, manifest `engine.default` |
 | scm | `github` (gh), `gitlab` (glab + REST) | manifest `scm.kind` |
-| tracker | `linear` | manifest `tracker.kind` |
+| tracker | `linear`, `github` (issues) | manifest `tracker.kind` |
 | launcher | `local`, `ec2`, stubs `fargate`, `fly-machine` | manifest `worker.launcher` |
 | artifacts | `local`, `s3` | worker `artifacts.kind` |
-| hosting | `systemd`, `fly`, `aws` | deployment only |
+| integration | `slack`, `google-drive`, `hubspot`, generic `mcp` | manifest `integrations[].kind` |
+| hosting | `local` (`up`), `systemd`, `fly`, `aws` | deployment only |
 
 Interfaces are documented in [core/adapters.md](core/adapters.md). A version 2 manifest (`project.v2.example.json`) selects providers per project; version 1 manifests keep working with the original defaults.
+
+## Integrations: external tools for any kind of task
+
+A project lists the external systems its team may use; each one is a remote MCP server the engine gets alongside the tracker:
+
+```json
+"integrations": [
+  { "kind": "slack", "channels": ["#ops"] },
+  { "kind": "hubspot", "objects": ["contacts", "deals"], "roles": ["team-coordinator", "team-dev"] },
+  { "kind": "google-drive", "url": "https://drive-mcp.example/mcp", "folders": ["1AbC..."] },
+  { "kind": "mcp", "name": "billing", "url": "https://billing.example/mcp", "purpose": "invoice records" }
+]
+```
+
+`agent-team init` asks for each integration's token once (`SLACK_BOT_TOKEN`, `HUBSPOT_ACCESS_TOKEN`, `GOOGLE_DRIVE_MCP_TOKEN`, `<NAME>_MCP_TOKEN`) and stores it with the other worker secrets. Inside a run the token travels only as a bearer header on that one server: the model process never sees any integration credential as a variable, granted or not. `roles` limits a server to the named roles; the engines translate that to their own tool permissions. The coordinator prompt names each tool, what it is for and the limits the manifest sets, and every external call appears in the run's live event stream on the dashboard. Slack and HubSpot default to the providers' hosted MCP endpoints; Google Drive and the generic kind name their server explicitly (a hosted connector or one you run).
+
+## Team channel
+
+Every project has a shared channel in the coordinator that active runs, the resident PM and the owner all read and post to. Inside a run the `team` command on PATH offers `team read [--after SEQ]`, `team say <text>` and `team claim|blocker|handoff|question <text>`; a run posts as its own role through its job lease and can only read its own project. The coordinator prompt has each cycle read the channel at its start and before publishing, so an owner note on the dashboard ("pause after this one", "the staging key changed") reaches every agent at its next checkpoint without a tracker round trip. The project page shows the channel live beside the PM conversation; the API is `GET/POST /projects/<id>/channel` and `POST /jobs/<id>/channel`.
+
+## Teams: any set of personas, edited at runtime
+
+Personas are data the coordinator stores. Open **Teams** in the dashboard to rename a member, change a voice, rewrite a prompt, add a subagent or remove one; every save is a new version with a note, revertible from the history, and each run records the team id and version it used. A project picks its team in **Settings** (`team.blueprint`) and which of its subagents the coordinator delegates to (`team.roles`); a repository needs nothing more than that one id.
+
+What stays in the repository is the safety envelope. Every role's permissions come from the committed `roles.json` (a subagent the file does not know gets a fixed floor: no delegation, no questions, no tracker writes) and a stored team can only tighten them (no edit, no bash, no tracker). Delivery gates, SCM identity, charter and instructions are repository-owned as before. `team-coordinator`, `team-pm` and `team-owner` exist in every team because the runner, the resident PM and owner chat address them by name; their names and voices are free.
+
+The toolkit ships two teams as seeds: the delivery team at the repository root (`roles.json`, `agents/`, `roster.mjs`) and `teams/research-desk`, a research-and-writing desk that works in a repository of notes and drafts and reaches documents, chat and CRM through integrations. Directory blueprints seed the store once; `AGENT_TEAM_BLUEPRINT` still selects which directory is the committed ceiling for a control plane. See [teams/README.md](teams/README.md).
+
+## Worker environments: browsers and other tools for agents
+
+An environment names what a worker machine offers a run beyond the repository. The toolkit ships `standard`, `browser` (a headless browser the engine drives through MCP tools: navigate, click, type, screenshot, read page text; screenshots land in the run evidence) and `full` (browser, container runtime, virtual display). **Environments** in the dashboard edits the catalog: capabilities from a fixed list, launcher defaults (image, AMI, instance type, setup) and packages for the worker image. A project selects its environment in **Settings** (`worker.environment`). The coordinator folds the environment's launcher defaults into cloud launches, `agent-team image` installs its packages, and the coordinator prompt tells the team which tools it has. A coordinator configuration may add environments under `environments` (see `coordinator.example.json`).
 
 ## Project memory
 
@@ -327,6 +359,27 @@ Overrides live in the coordinator database as a small JSON document per project,
 
 With `worker.launcher: ec2` the coordinator starts an instance per job from `worker.ami` (or `ssm:/parameter` holding the current image) whose user-data runs `core/worker.mjs --once --job ID` and shuts down. The launched worker receives a job token derived from the shared token instead of the shared token itself: it can claim and report that one job, record its cost and read its project's settings and memory; every other route, manifest registration included, answers 403, and the token stops working when the job ends. The owner's CLI registers the manifest for such projects. Jobs unclaimed after `claimTimeoutMinutes` fail and their instance is terminated. `artifacts.kind: s3` uploads journal, events, stderr and diff at the end of each run and the dashboard links to them. See [adapters/hosting/aws/README.md](adapters/hosting/aws/README.md) for the control plane on AWS and the nightly AMI build.
 
+## One command: `agent-team up`
+
+```sh
+export GH_TOKEN=...            # push branches, open pull requests, and the repository's issues
+export ANTHROPIC_API_KEY=...   # or log the engine in on the worker host for subscription billing
+npx @fumbleforce/agent-team up /path/to/checkout              # this machine, foreground
+npx @fumbleforce/agent-team up /path/to/checkout --target aws # dedicated network, spot workers
+```
+
+`up` runs a preflight that lists every missing requirement at once (Node, Git, the manifest, ignores, the engine and its billing, the SCM and tracker tokens, AWS access for that target), creates the tracker labels and an owner inbox issue when the tracker adapter can (GitHub Issues does), registers the manifest, seeds memory from the instruction files and opens the dashboard. On the local target everything binds to loopback under a generated token and stops with Ctrl-C; on AWS it is `init`, `deploy`, `image` and `seed` in one go, and every step is idempotent so rerunning it is safe.
+
+The defaults it applies are meant to be safe, cheap and complete: a dedicated VPC for the control plane and workers, one-shot spot workers that terminate with the job, the dashboard reachable only through a Session Manager tunnel, secrets in Parameter Store with the control-plane secrets out of the workers' reach, the PM in `suggest` autonomy with a daily spend cap, auto-merge off, and the `browser` environment so the team can look at what it builds.
+
+### GitHub Issues as the tracker
+
+A project on GitHub needs no second account: `tracker: { "kind": "github", "repository": "owner/repo", "readyLabel": "agent:ready" }` makes the repository's issues the board, addressed as `GH-12`. Workflow states are labels (`idea:proposed`, `agent:approved`, `agent:in-progress`, `agent:in-review`; a closed issue is done or rejected), which `up` creates. The same `GH_TOKEN` serves the SCM and the tracker unless `GITHUB_ISSUES_TOKEN` is set. Engines reach issues through GitHub's hosted MCP server.
+
+### Dogfooding
+
+This repository carries its own `.agent-team.json`: GitHub for code and issues, the delivery team with developer, tester and reviewer, the `browser` environment, `docs/PLATFORM.md` as the charter and `verify` as the required check. `agent-team up` on a checkout of this repository starts a team that proposes issues from the roadmap and, once an idea is approved, opens pull requests here.
+
 ## Pilot runbook for a new project
 
 1. Add `.agent-team.json` (version 2) to the repository with `scm`, `tracker`, `engine`, `worker` (including `setup`, the command that installs the project's dependencies) and `delivery.requiredChecks`; leave `autoMergeAuthorized: false`.
@@ -335,6 +388,10 @@ With `worker.launcher: ec2` the coordinator starts an instance per job from `wor
 4. When the pilot run is clean, raise `pm.autonomy` and let intake pick up approved tickets on its own; both are settings in the dashboard.
 
 See [adapters/hosting/aws/README.md](adapters/hosting/aws/README.md) for what the commands create and how to do it by hand.
+
+## Platform roadmap
+
+[docs/PLATFORM.md](docs/PLATFORM.md) maps the platform goals (self-provisioning, shared memory and communication, configurable teams, transparent dashboard, any task with external tools, owner interfaces, own ideas with task management, autonomous operation) to what runs today and what comes next.
 
 ## Next stages
 

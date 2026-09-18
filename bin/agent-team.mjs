@@ -8,8 +8,12 @@ import { Writable } from 'node:stream';
 import { CONFIG_DIR, deriveFromManifest, generateSecret, listDeployments, newDeployment, readDeployment, writeDeployment } from '../core/deployment.mjs';
 import { TOOLKIT_REPO, deploy as awsDeploy, destroy as awsDestroy, image as awsImage, readSecret, secrets as awsSecrets, discover, parameterName, BOUNDARY_ARN, DeployError } from '../adapters/hosting/aws/deploy.mjs';
 import { aws } from '../adapters/launcher/ec2.mjs';
+import { engineAdapter } from '../adapters/engine/index.mjs';
 import { createClient } from '../core/worker.mjs';
-import { normalizeManifest } from '../core/manifest.mjs';
+import { normalizeManifest, flatTracker } from '../core/manifest.mjs';
+import { preflight, renderChecks, blocking } from '../core/preflight.mjs';
+import { trackerAdapter, trackerClient } from '../adapters/tracker/index.mjs';
+import { readToken as readLocalToken, start as startLocal, writeConfigs as writeLocalConfigs } from '../adapters/hosting/local/up.mjs';
 import { parseEnqueueArgs } from '../core/cli.mjs';
 import { seedMemory } from '../core/seed-memory.mjs';
 
@@ -17,6 +21,9 @@ import { seedMemory } from '../core/seed-memory.mjs';
 // else reads the deployment file it wrote and the project's own manifest.
 const USAGE = `Usage: agent-team <command> [project]
 
+  up [checkout]       One command from a checkout to a running team: preflight, tracker labels and
+                      inbox, then --target local (this machine, foreground) or --target aws (init,
+                      deploy, image, seed). Rerun it any time; every step is idempotent.
   init [checkout]     Register a project: reads its .agent-team.json, asks for credentials once
   deploy [project]    Create or update everything on AWS and print the dashboard address
   image [project]     Rebuild the worker image only (run nightly, or after changing setup)
@@ -29,6 +36,7 @@ const USAGE = `Usage: agent-team <command> [project]
   destroy [project]   Remove the AWS resources (asks about roles and the data volume)
 
 Options: --yes (no prompts; fails where one is unavoidable), --config-dir DIR
+up only: --target local|aws (default local), --no-pm (skip the resident PM), --no-intake (skip tracker polling)
 init only: --permissions-boundary ARN (attached to both IAM roles), --toolkit-ref COMMIT (the toolkit
 revision the hosts run; defaults to this checkout's commit when it is published), --default-vpc (share the account's
 default VPC instead of a dedicated one), --public-dashboard (open port 4311 to your address)`;
@@ -56,6 +64,7 @@ function parse(argv) {
     else if (arg === '--config-dir' && argv[i + 1]) options.configDir = argv[++i];
     else if (arg === '--permissions-boundary' && argv[i + 1]) options.permissionsBoundary = argv[++i];
     else if (arg === '--toolkit-ref' && argv[i + 1]) options.toolkitRef = argv[++i];
+    else if (arg === '--target' && argv[i + 1]) options.target = argv[++i];
     else if (arg.startsWith('--') && options.positional.length >= 2) options.flags.push(arg);
     else if (arg.startsWith('--')) options.flags.push(arg);
     else options.positional.push(arg);
@@ -108,8 +117,8 @@ export async function init(options, { ask, log, awsRun = aws, region = configure
     let present = false;
     try { await awsRun(['ssm', 'get-parameter', '--region', deployment.aws.region, '--name', name]); present = true; } catch {}
     if (present && (options.yes || (await ask(`${secret.purpose} is already stored; replace it? (y/N)`)).toLowerCase() !== 'y')) continue;
-    values[secret.name] = await ask(`Paste the ${secret.purpose}`, { secret: true });
-    if (!values[secret.name]) throw new DeployError(`${secret.purpose} is required`);
+    values[secret.name] = await ask(`Paste the ${secret.purpose}${secret.optional ? ' (empty to skip; the engine may log in itself)' : ''}`, { secret: true });
+    if (!values[secret.name]) { if (secret.optional) { delete values[secret.name]; continue; } throw new DeployError(`${secret.purpose} is required`); }
   }
   await awsSecrets(deployment, { aws: awsRun, values, generate: generateSecret, replace: Object.keys(values), log });
   const file = writeDeployment(deployment, options.configDir);
@@ -126,6 +135,72 @@ function report(deployment, log) {
   log(`  worker image   ${a.amiId ?? (deployment.worker.amiParameter ? 'not built' : 'not needed')}`);
   log(`  data volume    ${a.dataVolumeId ?? '-'}`);
 }
+
+// Tracker bootstrap: labels and the owner inbox the roles rely on, created once when the adapter
+// can. The inbox issue is stored as a dashboard override so the repository file stays untouched.
+export async function bootstrapTracker(manifest, { env = process.env, log, client = null }) {
+  const adapter = trackerAdapter(manifest.tracker.kind);
+  const tracker = client ?? (adapter.hasCredential ? adapter.hasCredential(env) : env[adapter.API_KEY_VARIABLE]) ? (client ?? trackerClient(manifest.tracker.kind)) : null;
+  if (!tracker?.bootstrap) { log(`${adapter.NAME}: create the ready label and an owner inbox issue by hand if they do not exist`); return null; }
+  const result = await tracker.bootstrap(flatTracker(manifest), { log });
+  log(`${adapter.NAME}: labels in place; owner inbox ${result.ownerInboxIssue}`);
+  return result;
+}
+
+// up: from a checkout to a running team, on this machine or on AWS, in one idempotent command.
+export async function up(options, { ask, log, awsRun = aws, region = configuredRegion, revision = publishedRevision, env = process.env, run, startLocalImpl = startLocal, seed = seedMemory, open = true, trackerClientImpl = null }) {
+  const target = options.target ?? 'local';
+  if (!['local', 'aws'].includes(target)) throw new DeployError(`Unknown target ${target}`, 'Use --target local or --target aws');
+  const checkout = path.resolve(options.positional[1] ?? process.cwd());
+  const file = path.join(checkout, '.agent-team.json');
+  let manifest = null;
+  if (existsSync(file)) manifest = normalizeManifest(JSON.parse(readFileSync(file, 'utf8')));
+  const checks = preflight({ checkout, manifest, target, env, ...(run ? { run } : {}) });
+  log(renderChecks(checks));
+  const missing = blocking(checks);
+  if (missing.length) throw new DeployError(`${missing.length} requirement${missing.length === 1 ? '' : 's'} missing; nothing was created`, 'Fix the items marked MISSING above and rerun agent-team up.');
+  const projectId = manifest.queueProjectId ?? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  let inbox = null;
+  try { inbox = await bootstrapTracker(manifest, { env, log, client: trackerClientImpl }); } catch (error) { log(`tracker bootstrap skipped: ${error.message}; create the labels and an owner inbox issue by hand`); }
+  const overrides = { ...(inbox?.ownerInboxIssue && !manifest.tracker.ownerInboxIssue ? { tracker: { ownerInboxIssue: inbox.ownerInboxIssue } } : {}) };
+  if (target === 'aws') {
+    const deployment = await init({ ...options, positional: ['init', checkout] }, { ask, log, awsRun, region, revision });
+    const save = current => writeDeployment(current, options.configDir);
+    const probe = current => withCoordinator(current, ({ request }) => request('/health'), { attempts: 10 }).catch(error => { throw error instanceof DeployError && !/plugin/i.test(error.hint ?? '') ? new Error(error.message) : error; });
+    await awsDeploy(deployment, { aws: awsRun, only: null, save, log, prompt: options.yes ? null : ask, myIp: deployment.aws.dashboard === 'public' ? await myIp() : null, generate: generateSecret, probe });
+    await withCoordinator(deployment, async ({ request, url, token }) => {
+      await registerManifest(deployment, request, log);
+      if (Object.keys(overrides).length) await request(`/projects/${projectId}/settings`, { overrides, author: 'agent-team up', note: 'tracker bootstrap' });
+      await seed({ project: checkout, id: projectId, coordinator: url, token, log });
+    });
+    report(deployment, log);
+    log(`
+The team is up. Open the dashboard with: agent-team open ${projectId}`);
+    return 0;
+  }
+  // Local: everything on loopback, supervised in the foreground; the worker is this machine.
+  const token = readLocalToken(projectId, options.configDir) ?? generateSecret();
+  const withPm = !options.flags.includes('--no-pm') && engineAdapterSafe(manifest.engine.default)?.SUPPORTS_ASK !== false;
+  const withIntake = !options.flags.includes('--no-intake');
+  const local = writeLocalConfigs({ projectId, checkout, manifest, configDir: options.configDir, token, env });
+  log(`local control plane in ${local.dir}`);
+  const services = startLocalImpl({ files: local.files, token, env, log, withIntake, withPm });
+  const request = createClient(local.coordinatorUrl, token);
+  for (let attempt = 0; attempt < 40; attempt++) { try { await request('/health'); break; } catch { await new Promise(resolve => setTimeout(resolve, 500)); } if (attempt === 39) { services.stop(); throw new DeployError('The coordinator did not start', 'Check the output above.'); } }
+  await request(`/projects/${projectId}/manifest`, { workerId: 'owner', manifest });
+  await request(`/projects/${projectId}/settings`, { overrides: { ...overrides, worker: { launcher: 'local' } }, author: 'agent-team up', note: 'local target' });
+  try { await seed({ project: checkout, id: projectId, coordinator: local.coordinatorUrl, token, log }); } catch (error) { log(`memory seed skipped: ${error.message}`); }
+  log(`
+The team is up on this machine. Dashboard: ${local.dashboardUrl}${withPm ? '' : ' (no resident PM: the engine has no bounded sessions or --no-pm was given)'}
+Press Ctrl-C to stop everything.`);
+  if (open) { const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'; try { spawn(opener, [local.dashboardUrl], { stdio: 'ignore', detached: true }).unref(); } catch { /* headless */ } }
+  const onSignal = () => services.stop();
+  process.once('SIGINT', onSignal); process.once('SIGTERM', onSignal);
+  await services.finished;
+  process.removeListener('SIGINT', onSignal); process.removeListener('SIGTERM', onSignal);
+  return 0;
+}
+function engineAdapterSafe(name) { try { return engineAdapter(name); } catch { return null; } }
 
 // A port-forward to the coordinator through Session Manager, for commands run from a laptop.
 async function withCoordinator(deployment, fn, { attempts = 30 } = {}) {
@@ -154,11 +229,12 @@ export async function registerManifest(deployment, request, log = () => {}) {
   return true;
 }
 
-export async function main(argv = process.argv.slice(2), { ask = prompter(), log = console.log, awsRun = aws, region = configuredRegion, revision = publishedRevision } = {}) {
+export async function main(argv = process.argv.slice(2), { ask = prompter(), log = console.log, awsRun = aws, region = configuredRegion, revision = publishedRevision, ...extra } = {}) {
   const options = parse(argv);
   const [command, name] = options.positional;
   if (!command || command === 'help' || command === '--help') { log(USAGE); return 0; }
   if (command === 'init') { await init(options, { ask, log, awsRun, region, revision }); return 0; }
+  if (command === 'up') return up(options, { ask, log, awsRun, region, revision, ...extra });
   const deployment = resolveProject(options, name);
   const save = current => writeDeployment(current, options.configDir);
   if (command === 'deploy' || command === 'image') {

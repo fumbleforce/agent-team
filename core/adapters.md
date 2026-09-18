@@ -9,6 +9,7 @@
 | tracker | manifest `tracker.kind` | `adapters/tracker/index.mjs` |
 | launcher | coordinator `launcher.kind`, manifest `worker.launcher` | `adapters/launcher/index.mjs` |
 | artifacts | worker `artifacts.kind` | `adapters/artifacts/index.mjs` |
+| integration | manifest `integrations[].kind` | `adapters/integration/index.mjs` |
 | hosting | deployment scripts only, never imported by core | `adapters/hosting/*` |
 
 Each index exports the list of kinds, a default, and a lookup that throws on unknown names. Adding a provider means adding one module and registering it in the index; core code stays untouched.
@@ -52,7 +53,7 @@ merge(exec, context, headSha) -> { mergeCommit }   // fails unless head still ma
 
 ## tracker
 
-Reads and writes the issue tracker. Implemented by `linear`.
+Reads and writes the issue tracker. Implemented by `linear` and `github` (a repository's issues; labels stand in for workflow states). An adapter may add `hasCredential(env)`, `CREDENTIAL_HINT` and a client `bootstrap(manifest)` that creates the labels and inbox `agent-team up` relies on.
 
 ```
 NAME, ISSUE_PATTERN, API_KEY_VARIABLE, MANIFEST_KEYS
@@ -87,10 +88,29 @@ NAME
 create(options) -> { kind, upload({ jobId, runDir, files }) -> { kind, location, files, links } }
 ```
 
+## integration
+
+An external tool the team may use during a run, reached through a remote MCP server. Implemented by `slack`, `google-drive`, `hubspot` and the generic `mcp` (any server the owner names).
+
+```
+NAME, TITLE, DEFAULT_URL, CREDENTIAL_VARIABLES, MANIFEST_KEYS
+validate(config) -> config                 // adapter-specific keys (channels, folders, objects, purpose)
+instructions(config) -> string             // one line for the coordinator prompt: what it is for, its limits
+credential(env, config) -> token | null    // the worker-side secret sent as a bearer header on this server only
+```
+
+The index exposes `validateIntegrations(list)` (manifest normalization), `integrationServers(list, env)` (the engine's MCP map, merged with the tracker's), `integrationInstructions(list)` and `credentialVariables(list)`: every credential name, all of which `modelEnvironment` strips from the model process. An entry's optional `roles` limits the server to those roles; engines translate that to their permission mechanism (`access` in the engine `environment`/`invocation` calls). Names `tracker`, `memory` and `team` are reserved.
+
 ## hosting
 
 Deployment glue, not imported by core: `systemd` (user units and installer), `fly` (entrypoint, `fly.toml`, Dockerfile), `aws` (control-plane deployment and worker AMI build).
 
+## Teams and environments
+
+Personas are not adapters: they are data the coordinator stores (`core/teams.mjs`, tables `teams` and `teams_history`). Directory blueprints (`core/blueprint.mjs`: the toolkit root and `teams/<name>`) seed the store once; afterwards the dashboard edits teams and every save is a version a run records. The committed `roles.json` stays the permission ceiling: `materialize(team, ceiling)` takes every role's permissions from it (or a fixed floor for subagents it does not know) and lets the stored team only add denials. A project selects a team with `team.blueprint` and reaches it through `GET /projects/<id>/team`; the worker writes it to a file the runner reads with `--team-file`.
+
+Worker environments (`core/environments.mjs`, tables `environments` and `environments_history`) name what a machine offers a run: a fixed catalog of capabilities (`browser`, `docker`, `display`), launcher defaults and image packages. A project selects one with `worker.environment`; the coordinator folds its launcher fields into the launch, the worker passes it to the runner with `--environment-file`, and capabilities become MCP servers (`type: stdio`, which engines translate: OpenCode `local`, Claude Code `command/args`) plus a prompt note. `agent-team image` installs the environment's packages into the worker image.
+
 ## Manifest
 
-`.agent-team.json` version 2 sections: `scm`, `tracker`, `engine`, `worker`, `memory`, `pm`, `team`, `delivery`. Version 1 files are upgraded in `core/manifest.mjs` with the first provider of each kind and the full persona pipeline, so existing projects run unchanged.
+`.agent-team.json` version 2 sections: `scm`, `tracker`, `engine`, `worker`, `memory`, `pm`, `team`, `integrations`, `delivery`. Version 1 files are upgraded in `core/manifest.mjs` with the first provider of each kind and the full persona pipeline, so existing projects run unchanged.

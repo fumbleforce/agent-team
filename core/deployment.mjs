@@ -6,6 +6,8 @@ import { normalizeManifest } from './manifest.mjs';
 import { scmAdapter } from '../adapters/scm/index.mjs';
 import { trackerAdapter } from '../adapters/tracker/index.mjs';
 import { engineAdapter } from '../adapters/engine/index.mjs';
+import { integrationAdapter } from '../adapters/integration/index.mjs';
+import { builtinEnvironments, provisioning } from './environments.mjs';
 
 // A deployment file describes one project's hosted control plane: where the checkout is, which
 // cloud resources exist and which secret names the hosts read. It never holds a secret value.
@@ -30,12 +32,19 @@ export function secretPlan(manifest) {
   const plan = [
     { name: 'AGENT_TEAM_TOKEN', generated: true, scope: 'control', purpose: 'coordinator bearer token' },
     { name: 'AGENT_TEAM_DASHBOARD_PASSWORD', generated: true, scope: 'control', purpose: 'dashboard password' },
-    { name: tracker.API_KEY_VARIABLE, generated: false, purpose: `${tracker.NAME} API key`, adapter: tracker.NAME },
+    // A tracker that shares the SCM's token (the adapter names that SCM) needs no key of its own.
+    { name: tracker.API_KEY_VARIABLE, generated: false, purpose: `${tracker.NAME} API key`, adapter: tracker.NAME, ...(tracker.SHARES_TOKEN_WITH === scm.NAME ? { optional: true } : {}) },
     { name: scm.TOKEN_VARIABLE, generated: false, purpose: `${scm.NAME} token able to push branches and open ${scm.CHANGE_NOUN}s`, adapter: scm.NAME }
   ];
   // An engine adapter may declare API_KEY_VARIABLE and the billing modes that need it.
   const engineKey = engine.API_KEY_VARIABLE ?? null;
   if (engineKey && (engine.KEYED_BILLING ?? []).includes(manifest.engine.billing)) plan.push({ name: engineKey, generated: false, purpose: `${manifest.engine.default} API key`, adapter: manifest.engine.default });
+  // One credential per connected integration, under the first name its adapter reads.
+  for (const integration of manifest.integrations ?? []) {
+    const adapter = integrationAdapter(integration.kind);
+    const name = adapter.CREDENTIAL_VARIABLES[0] ?? adapter.credentialVariable(integration.name);
+    if (!plan.some(entry => entry.name === name)) plan.push({ name, generated: false, optional: true, purpose: `${adapter.TITLE} token for the ${integration.name} integration`, adapter: integration.kind });
+  }
   return plan;
 }
 
@@ -55,10 +64,19 @@ export function deriveFromManifest(checkout, manifestOverride = null) {
     scm: { kind: manifest.scm.kind, repository: manifest.scm.repository, host, cloneUrl: `https://${host}/${manifest.scm.repository}.git`, baseBranch: manifest.scm.baseBranch },
     tracker: { kind: manifest.tracker.kind },
     engine: { default: manifest.engine.default, billing: manifest.engine.billing },
-    worker: { launcher: manifest.worker.launcher, instanceType: manifest.worker.instanceType ?? 'c6i.2xlarge', setup: manifest.worker.setup ?? DEFAULT_SETUP, amiParameter: ami.startsWith('ssm:') ? ami.slice(4) : null, ami: ami.startsWith('ssm:') ? null : ami },
+    worker: { launcher: manifest.worker.launcher, instanceType: manifest.worker.instanceType ?? 'c6i.2xlarge', setup: manifest.worker.setup ?? DEFAULT_SETUP, amiParameter: ami.startsWith('ssm:') ? ami.slice(4) : null, ami: ami.startsWith('ssm:') ? null : ami,
+      environment: manifest.worker.environment, provisioning: environmentProvisioning(manifest.worker.environment) },
     ssmPrefix: prefix,
     secrets: secretPlan(manifest)
   };
+}
+
+// Packages and setup the worker image needs for the project's environment. Built-in
+// environments resolve here; a stored custom one is refreshed from the coordinator by
+// `agent-team image` when it can reach it, otherwise the image carries only the standard tools.
+export function environmentProvisioning(id, stored = null) {
+  const environment = stored ?? builtinEnvironments().find(item => item.id === id) ?? null;
+  return environment ? provisioning(environment) : { packages: [], setup: [] };
 }
 
 export function generateSecret(bytes = 24) { return randomBytes(bytes).toString('base64url'); }

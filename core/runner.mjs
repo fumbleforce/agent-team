@@ -12,6 +12,10 @@ import { normalizeManifest, applyOverrides, approvalRoles, ALL_ROLES } from './m
 import { engineAdapter, validateEngine, validateBilling, ENGINES } from '../adapters/engine/index.mjs';
 import { scmAdapter } from '../adapters/scm/index.mjs';
 import { trackerAdapter, TRACKER_KINDS } from '../adapters/tracker/index.mjs';
+import { credentialVariables, integrationServers, integrationInstructions } from '../adapters/integration/index.mjs';
+import { blueprintDir, loadRolesFile } from './blueprint.mjs';
+import { materialize, validateTeam, TeamError } from './teams.mjs';
+import { validateEnvironment, capabilityServers, capabilityInstructions } from './environments.mjs';
 
 export const REPORT = '.agent-team-result.json';
 const PACKAGE_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -35,6 +39,8 @@ const HELP = `Usage: node /path/to/agent-team/core/runner.mjs [options]
   --model MODEL             Optional engine model identifier
   --memory-file FILE        Assembled project memory to append to the system prompt
   --memory-sha SHA          Memory commit the file was assembled from (journaled)
+  --team-file FILE          Shared configuration resolved by the coordinator (stored team under the committed ceiling)
+  --environment-file FILE   Worker environment document: capabilities become tools and prompt notes
   --publish                 Authorize commit/push/change request; requires --cycles 1
   --auto-merge              Deterministic merge gates; requires --publish, cycles 1
   --status                  Read-only lock and run journals; no preflight/model
@@ -74,7 +80,7 @@ export function parseArgs(args) {
   const seen = new Set();
   const values = { '--cycles': 'cycles', '--timeout-minutes': 'timeoutMinutes', '--base': 'base', '--engine': 'engine', '--billing': 'billing',
     '--model': 'model', '--project': 'project', '--issue': 'issue', '--proposal-limit': 'proposalLimit', '--idea-context': 'ideaContext',
-    '--memory-file': 'memoryFile', '--memory-sha': 'memorySha', '--settings-file': 'settingsFile', '--job': 'job' };
+    '--memory-file': 'memoryFile', '--memory-sha': 'memorySha', '--settings-file': 'settingsFile', '--job': 'job', '--team-file': 'teamFile', '--environment-file': 'environmentFile' };
   for (let i = 0; i < args.length; i++) {
     const flag = args[i];
     if (seen.has(flag)) throw new Error(`Duplicate option: ${flag}`);
@@ -257,13 +263,16 @@ export function loadProject(root, overrides = null) {
 }
 
 // Shared roles: primary roles always load; subagent roles are limited to the manifest's team.
-export function loadSharedConfig(packageDir, roles = null) {
-  const config = JSON.parse(readSafeFile(packageDir, ROLES_FILE));
+// The roles file and prompts come from the selected team blueprint; shared instruction files
+// fall back to the toolkit's own when the blueprint does not carry them.
+export function loadSharedConfig(packageDir, roles = null, env = process.env) {
+  const teamDir = blueprintDir(packageDir, env);
+  const config = JSON.parse(readSafeFile(teamDir, ROLES_FILE));
   if (!config?.agent || !config.agent['team-coordinator']) throw new Error(`Shared ${ROLES_FILE} requires agent.team-coordinator`);
   for (const [name, agent] of Object.entries(config.agent)) {
     if (!agent || typeof agent.prompt !== 'string') throw new Error(`Shared agent ${name} requires a prompt`);
     const match = /^\{file:\.\/((?:agents\/)[A-Za-z0-9_-]+\.md)\}$/.exec(agent.prompt);
-    if (match) agent.prompt = readSafeFile(packageDir, match[1]);
+    if (match) agent.prompt = readSafeFile(teamDir, match[1]);
     else if (agent.prompt.includes('{file:')) throw new Error(`Unsupported shared prompt reference: ${agent.prompt}`);
     if (roles && agent.mode === 'subagent' && !roles.includes(name)) delete config.agent[name];
   }
@@ -271,9 +280,11 @@ export function loadSharedConfig(packageDir, roles = null) {
   if (config.instructions !== undefined && !Array.isArray(config.instructions)) throw new Error('Shared instructions must be an array');
   config.instructions = (config.instructions || []).map(file => {
     relativeFile(file, true);
-    readSafeFile(packageDir, file);
-    return path.join(packageDir, file);
+    const dir = fs.existsSync(path.join(teamDir, file)) ? teamDir : packageDir;
+    readSafeFile(dir, file);
+    return path.join(dir, file);
   });
+  config.blueprint = teamDir;
   return config;
 }
 
@@ -296,13 +307,14 @@ function overlayFiles(worktree, files) {
 // the worker deliberately forwards (the memory service address and job lease for the CLI shim).
 // Every tracker adapter's credential is stripped, not only the active one, so a worker that
 // serves several projects never leaks another project's key into a model process.
-export function modelEnvironment(env, roles, engine, { billing, trackerKey, keep = {}, denied = [], mcp = {} } = {}) {
+export function modelEnvironment(env, roles, engine, { billing, trackerKey, keep = {}, denied = [], mcp = {}, access = {}, integrations = [] } = {}) {
   const adapter = engineAdapter(engine);
-  const filtered = adapter.environment(env, { roles, billing, denied, mcp });
+  const filtered = adapter.environment(env, { roles, billing, denied, mcp, access });
   delete filtered.AGENT_TEAM_TOKEN;
-  const trackerKeys = new Set([trackerKey, ...TRACKER_KINDS.map(kind => trackerAdapter(kind).API_KEY_VARIABLE)].filter(Boolean));
+  // Integration credentials reach a model only as headers on the servers the manifest grants.
+  const trackerKeys = new Set([trackerKey, ...TRACKER_KINDS.map(kind => trackerAdapter(kind).API_KEY_VARIABLE), ...credentialVariables(integrations)].filter(Boolean));
   for (const key of Object.keys(filtered)) {
-    if (trackerKeys.has(key) || key.startsWith('AGENT_TEAM_')) delete filtered[key];
+    if (trackerKeys.has(key) || key.startsWith('AGENT_TEAM_') || /_MCP_TOKEN$/.test(key)) delete filtered[key];
     if (/(?:^|_)(?:DATABASE_(?:URL|DIR)|USER_DATA_DIR|CENTRAL_API_BASE_URL)$/.test(key)) delete filtered[key];
     if (/^E2E_.*_LIVE$/.test(key)) filtered[key] = '0';
   }
@@ -402,6 +414,9 @@ Preserve existing work, setup overlays, secrets and databases. Do not access or 
 This worktree uses sparse checkout to omit tracked sensitive artifacts. Preserve sparse rules and skip-worktree bits. Never restore, read through Git, stage, delete, or materialize excluded paths; use synthetic test data instead.
 Do not stage or commit ${REPORT}, .agent-team/ or .agent-team.json (it is a setup overlay carrying the owner's effective settings). Never use blanket git add; inspect and stage only intended issue changes, excluding unrelated setup overlays.
 ${context.memoryInstructions ?? ''}
+${context.channelInstructions ?? ''}
+${context.integrationInstructions ?? ''}
+${context.environmentInstructions ?? ''}
 Before exiting, write a regular UTF-8 JSON file ${REPORT} in the worktree root with EXACTLY these keys${options.autoMerge ? ' plus approvals for a ready outcome' : ''}, optionally plus learnings:
 {"outcome":"ready"|"blocked"|"idle","issue":string|null,"summary":string,"prUrl":string|null}
 learnings, when present, is an array of at most 12 objects {type: observation|gotcha|decision|run, title, body, scope: [paths or areas]} recording durable facts about this codebase worth remembering for future runs; never restate instructions already given.
@@ -513,10 +528,34 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const engine = engineAdapter(options.engine);
   const scm = scmAdapter(manifest.scm.kind);
   const tracker = trackerAdapter(manifest.tracker.kind);
-  const roles = approvalRoles(manifest);
+  // A coordinator-resolved team replaces the blueprint directory's roles; the committed file
+  // stays the permission ceiling either way.
+  let shared;
+  if (options.teamFile) {
+    const stat = fs.lstatSync(options.teamFile);
+    if (!stat.isFile() || stat.size > 4_194_304) throw new Error('Invalid team file');
+    const resolved = JSON.parse(fs.readFileSync(options.teamFile, 'utf8'));
+    const base = loadSharedConfig(packageDir, null, env);
+    try {
+      const roles = resolved.roles === null ? undefined : resolved.roles ?? manifest.team.roles ?? undefined;
+      shared = resolved.agents ? { ...materialize(validateTeam(resolved), { agent: base.agent, instructions: base.instructions }, { roles }), team: { id: resolved.id, version: resolved.version ?? null, roles: resolved.roles ?? null } } : { ...resolved, instructions: base.instructions };
+    } catch (error) { if (error instanceof TeamError) throw new Error(`Team file rejected: ${error.message}`); throw error; }
+  } else shared = loadSharedConfig(packageDir, manifest.team.roles ?? undefined, env);
+  let environment = { id: manifest.worker.environment ?? 'standard', name: 'standard', capabilities: [] };
+  if (options.environmentFile) {
+    const stat = fs.lstatSync(options.environmentFile);
+    if (!stat.isFile() || stat.size > 65536) throw new Error('Invalid environment file');
+    const doc = JSON.parse(fs.readFileSync(options.environmentFile, 'utf8'));
+    environment = { ...validateEnvironment(doc), version: Number.isInteger(doc.version) ? doc.version : null };
+  }
+  // The subagents this run delegates to: the manifest's list, else the team's default, else
+  // every subagent the shared configuration carries. Delivery approvals derive from them.
+  const teamSubagents = Object.entries(shared.agent).filter(([, agent]) => agent.mode === 'subagent').map(([name]) => name);
+  const chosen = shared.team && shared.team.roles !== undefined ? shared.team.roles : manifest.team.roles;
+  const teamRoles = chosen ?? teamSubagents;
+  const roles = approvalRoles({ team: { roles: chosen === null ? null : teamRoles } });
   validateDelivery(manifest.delivery, options.autoMerge, manifest.scm.kind);
   if (options.autoMerge && !roles.includes('tester')) throw new Error('Auto-merge requires team-tester in team.roles');
-  const shared = loadSharedConfig(packageDir, manifest.team.roles);
   let memory = '';
   if (options.memoryFile) {
     const stat = fs.lstatSync(options.memoryFile);
@@ -541,11 +580,13 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const memoryKeep = {};
   for (const key of ['AGENT_TEAM_MEMORY_URL', 'AGENT_TEAM_MEMORY_JOB', 'AGENT_TEAM_MEMORY_PROJECT', 'AGENT_TEAM_MEMORY_LEASE']) if (env[key]) memoryKeep[key] = env[key];
   const denied = scm.MERGE_DENIALS;
-  const promptContext = { scm, roles: manifest.team.roles ?? undefined, approvalRoles: roles, trackerScope: tracker.scopeInstructions(manifest.tracker),
+  const promptContext = { scm, roles: teamRoles ?? undefined, approvalRoles: roles, trackerScope: tracker.scopeInstructions(manifest.tracker),
     publishInstructions: options.publish ? scm.publishInstructions({ repository: manifest.scm.repository ?? manifest.delivery?.repository ?? 'the configured repository', baseBranch: manifest.scm.baseBranch, branch }) : '',
-    memoryInstructions: memory ? 'Project memory (below your instructions) records what earlier runs learned; trust confirmed items, verify unconfirmed ones. The `memory` command on PATH offers `memory search <query>` and `memory propose <type> <title> -- <body>` for facts worth keeping.' : '' };
+    memoryInstructions: memory ? 'Project memory (below your instructions) records what earlier runs learned; trust confirmed items, verify unconfirmed ones. The `memory` command on PATH offers `memory search <query>` and `memory propose <type> <title> -- <body>` for facts worth keeping.' : '',
+    channelInstructions: memoryKeep.AGENT_TEAM_MEMORY_URL ? 'The team channel is shared by every active run and the owner: run `team read` at the start of the cycle and before publishing, and `team say <text>` for anything other agents or the owner should know now (claims, blockers, hand-offs, questions). Keep posts under 80 words.' : '',
+    integrationInstructions: integrationInstructions(manifest.integrations), environmentInstructions: capabilityInstructions(environment) };
   const prompt = cycle => options.ideate ? ideationPrompt(options, ideaContext) : coordinatorPrompt(options, cycle, promptContext);
-  const engineEnv = modelEnvironment(env, null, options.engine, { billing: options.billing, trackerKey: tracker.API_KEY_VARIABLE });
+  const engineEnv = modelEnvironment(env, null, options.engine, { billing: options.billing, trackerKey: tracker.API_KEY_VARIABLE, integrations: manifest.integrations });
   const preflight = () => {
     const versions = { git: git('--version'), engine: options.engine, ...engine.preflight({ command, cwd: root, env: engineEnv, billing: options.billing }) };
     if (options.publish) { scm.auth({ command, cwd: root, env }); versions.scm = scm.NAME; }
@@ -563,7 +604,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   if (!options.execute) {
     output(JSON.stringify({ mode: 'dry-run', root, ...options, ...preflight(),
       worktree, branch, overlays: Object.keys(project.files),
-      sharedPackage: packageDir, agents: Object.keys(shared.agent), instructions: project.instructions, scm: manifest.scm.kind, tracker: manifest.tracker.kind,
+      sharedPackage: packageDir, agents: Object.keys(shared.agent), team: shared.team ?? null, environment: { id: environment.id, capabilities: environment.capabilities }, instructions: project.instructions, scm: manifest.scm.kind, tracker: manifest.tracker.kind,
       memory: options.memorySha ? { sha: options.memorySha, bytes: memory.length } : null, prompt: prompt(1) }, null, 2));
     return 0;
   }
@@ -576,7 +617,8 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
   const runDir = path.join(stateDir, 'runs', id);
   const journal = { id, state: 'starting', startedAt: new Date().toISOString(), base: options.base, engine: options.engine, billing: options.billing,
     scm: manifest.scm.kind, tracker: manifest.tracker.kind, branch, worktree, project: root, name: manifest.name, sharedPackage: packageDir,
-    publish: options.publish, memory: options.memorySha ? { sha: options.memorySha, bytes: memory.length, itemIds: options.memoryItems ?? null } : null, options, cycles: [] };
+    publish: options.publish, memory: options.memorySha ? { sha: options.memorySha, bytes: memory.length, itemIds: options.memoryItems ?? null } : null,
+    team: shared.team ?? null, environment: { id: environment.id, version: environment.version ?? null, capabilities: environment.capabilities }, options, cycles: [] };
   const controller = new AbortController();
   const interrupt = sig => controller.abort(sig);
   const onInt = () => interrupt('SIGINT');
@@ -625,10 +667,13 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
       : ['diff', ...(kind === 'cached' ? ['--cached'] : []), '--binary'], worktree, env)).join('\n');
     const ideaGitBaseline = options.ideate ? ideaGit() : null;
     const role = options.ideate ? 'team-ideation' : 'team-coordinator';
-    const mcp = options.ideate ? {} : tracker.mcpServers(manifest.tracker);
+    // Integrations join the tracker as MCP servers; `access` limits a server to the roles the
+    // manifest names (null: every role the shared permissions allow).
+    const mcp = options.ideate ? {} : { ...tracker.mcpServers(manifest.tracker, env), ...integrationServers(manifest.integrations, env), ...capabilityServers(environment, runDir) };
+    const access = Object.fromEntries(manifest.integrations.map(integration => [integration.name, integration.roles ?? null]));
     const childEnv = modelEnvironment(env, { ...shared,
       instructions: [...shared.instructions, ...project.instructions.map(file => path.join(worktree, file))] }, options.engine,
-    { billing: options.billing, trackerKey: tracker.API_KEY_VARIABLE, keep: memoryKeep, denied, mcp });
+    { billing: options.billing, trackerKey: tracker.API_KEY_VARIABLE, keep: memoryKeep, denied, mcp, access, integrations: manifest.integrations });
     const systemPromptText = engine.systemPrompt({ shared, role, memory: options.ideate ? '' : memory,
       instructions: project.instructions.map(file => ({ file, content: project.files[file] })) });
     let systemPromptFile;
@@ -645,7 +690,7 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
       journal.cycles.push(cycle);
       journal.state = 'running';
       persist();
-      const invocation = engine.invocation({ ideate: options.ideate, role, prompt: prompt(number), model: options.model, systemPromptFile, systemPromptText, shared, worktree, mcp, denied });
+      const invocation = engine.invocation({ ideate: options.ideate, role, prompt: prompt(number), model: options.model, systemPromptFile, systemPromptText, shared, worktree, mcp, denied, access });
       fs.writeSync(stdoutFd, `${JSON.stringify({ type: 'runner.cycle.start', cycle: number, engine: options.engine, billing: options.billing })}\n`);
       try {
         Object.assign(cycle, await runChild({ ...invocation, cwd: worktree, env: childEnv, stdoutFd, stderrFd,

@@ -6,13 +6,19 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { validBind } from './queue.mjs';
 import { createClient } from './worker.mjs';
 import { localToken } from './cli.mjs';
-import { ROSTER } from './roster.mjs';
+import { DEFAULT_ROSTER } from './roster.mjs';
+import { blueprintFile } from './blueprint.mjs';
+import { CAPABILITIES, LAUNCHER_FIELDS } from './environments.mjs';
+import { TIGHTENINGS } from './teams.mjs';
+
+// Names and voices of every role any stored team defines; refreshed from the coordinator with
+// each state collection so renamed or added members appear without a restart.
+const ROSTER = { ...DEFAULT_ROSTER };
 import { clip, eventSteps } from './evidence.mjs';
 import { linkText } from '../adapters/scm/index.mjs';
 import { ITEM_TYPES, ITEM_STATUS } from './memory.mjs';
 import { overridesFromForm, renderSettingsForm, renderSettingsHistory } from './settings.mjs';
 
-const PORTRAITS = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'portraits');
 const PM = 'team-pm';
 const ACTIVE = ['queued', 'running', 'blocked', 'failed'];
 const DAY = 86_400_000;
@@ -21,7 +27,8 @@ const DAY = 86_400_000;
 // workers, and the project registry workers fill from their manifests. No local disk is read.
 export async function collectState({ request, now = Date.now }) {
   const time = now();
-  const [jobsRaw, evidence, registry, decisions] = await Promise.all([request('/jobs'), request('/evidence?limit=60'), request('/projects'), request('/decisions?state=open').catch(() => [])]);
+  const [jobsRaw, evidence, registry, decisions, roster] = await Promise.all([request('/jobs'), request('/evidence?limit=60'), request('/projects'), request('/decisions?state=open').catch(() => []), request('/roster').catch(() => null)]);
+  if (roster && typeof roster === 'object') { for (const key of Object.keys(ROSTER)) if (!roster[key]) delete ROSTER[key]; Object.assign(ROSTER, roster); }
   const jobs = jobsRaw.map(job => ({ id: job.id, projectId: job.projectId, kind: job.kind ?? 'development', issue: job.issue ?? null, engine: job.engine ?? null, base: job.base ?? null,
     role: job.role ?? null, message: job.message ?? null, publish: job.publish === true, autoMerge: job.autoMerge === true, state: job.state, workerId: job.workerId ?? null,
     createdAt: job.createdAt, updatedAt: job.updatedAt, outcome: job.result?.outcome ?? null, summary: clip(job.result?.summary ?? '', job.kind === 'chat' ? 4000 : 300) })).sort((a, b) => b.createdAt - a.createdAt);
@@ -57,6 +64,7 @@ export async function collectState({ request, now = Date.now }) {
     const held = own.filter(job => ['blocked', 'failed'].includes(job.state));
     return { project: project.id, name: manifest.name ?? project.id, inbox: manifest.tracker?.ownerInboxIssue ?? manifest.ownerInboxIssue ?? null, workerId: project.workerId, seenAt: project.seenAt,
       scm: manifest.scm?.kind ?? null, tracker: manifest.tracker?.kind ?? null, engine: manifest.engine?.default ?? null, launcher: manifest.worker?.launcher ?? 'local', autonomy: manifest.pm?.autonomy ?? null,
+      team: manifest.team?.blueprint ?? 'default', environment: manifest.worker?.environment ?? 'standard',
       costs: costs[project.id], decisions: decisions.filter(decision => decision.projectId === project.id).length,
       online: project.seenAt ? time - project.seenAt < 180_000 : false,
       status: held.length ? 'on hold' : running ? 'running' : own.some(job => job.state === 'queued') ? 'queued' : 'idle',
@@ -116,6 +124,7 @@ pre{background:var(--panel);border:1px solid var(--line);padding:12px;overflow:a
 .talk{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:12px}.talk select{background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:5px;font:12px var(--mono);border-radius:3px}
 .compose{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:10px}.compose textarea,.compose select,.compose input{grid-column:1/-1;background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:8px;font:13px var(--sans);border-radius:3px}.compose select,.compose input{grid-column:auto}.compose button{grid-column:1/-1;justify-self:end}
 .settings fieldset{border:1px solid var(--line);border-radius:4px;padding:10px 14px;margin:14px 0;display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:10px 18px}.settings legend{color:var(--muted);text-transform:uppercase;font-size:11px;letter-spacing:.08em;padding:0 6px}.settings legend small{text-transform:none;letter-spacing:0;margin-left:6px}
+.settings .field.wide{grid-column:1/-1}.settings textarea{width:100%;box-sizing:border-box;font:12px var(--mono,monospace)}label.inline{display:inline-flex;gap:4px;align-items:center;margin-right:8px;text-transform:none;letter-spacing:0}form.inline{display:inline}
 .field{display:flex;flex-direction:column;gap:4px}.field label{font-size:12px;color:var(--muted)}.field input[type=text],.field input[type=number],.field select{background:var(--panel-2);color:var(--text);border:1px solid var(--line);padding:7px;font:13px var(--sans);border-radius:3px}.field small{color:var(--dim);font-size:11px}.field input[type=checkbox]{width:16px;height:16px;align-self:start}
 .roles{border:0;padding:0;margin:0;display:flex;flex-wrap:wrap;gap:6px 12px}.roles label{font-size:12px;display:inline-flex;gap:4px;align-items:center}.sr{position:absolute;left:-9999px}
 .actions{display:flex;gap:10px;justify-content:flex-end;margin-top:8px}.actions .secondary{background:transparent;color:var(--muted);border:1px solid var(--line)}
@@ -148,7 +157,7 @@ export function renderIndex(state, flash = null, hostname = 'local') {
     return `<div class="card ${p.status === 'on hold' ? 'hold' : ''}"><div class="top"><b>${escape(p.name)}</b>${tag(p.status)}</div>
 <p>${p.running ? `${p.running.issue ? 'Building' : 'Running'} <a href="/runs/${escape(p.running.jobId)}">${escape(p.running.issue ?? (p.running.ideation ? 'ideation' : 'unpinned cycle'))}</a> · ${minutes(p.running.startedAt)} min` : p.status === 'on hold' ? `${p.held.length} job${p.held.length === 1 ? '' : 's'} on hold: ${escape(p.held[0].summary || p.held[0].issue || 'inspect the run')}` : p.queued.length ? `${p.queued.length} queued: ${escape(p.queued.map(job => job.issue ?? 'ideas').join(', '))}` : p.online ? 'Idle, waiting for approved work' : 'No worker online; queued work waits'}</p>
 <p class="n"><a href="/projects/${escape(p.project)}">Talk to ${escape(ROSTER[PM].name)}</a> · <a href="/projects/${escape(p.project)}/memory">memory</a>${p.decisions ? ` · <a href="/projects/${escape(p.project)}#decisions">${p.decisions} decision${p.decisions === 1 ? '' : 's'} waiting</a>` : ''} · ${p.delivered ? `shipped ${escape(p.delivered.issue ?? 'run')} ${p.delivered.prUrl ? `<a href="${escape(p.delivered.prUrl)}">${short(p.delivered.prUrl)}</a>` : ''} ${escape(when(p.delivered.finishedAt))}` : 'nothing shipped yet'} · ${p.runs} runs</p>
-<p class="n">${escape([p.scm, p.tracker, p.engine, p.launcher !== 'local' ? `${p.launcher} workers` : null].filter(Boolean).join(' · '))}${p.costs ? ` · spend ${escape(usd(p.costs.day?.usd))} today, ${escape(usd(p.costs.week?.usd))} 7d` : ''}${p.autonomy ? ` · PM ${escape(p.autonomy)}` : ''}</p>
+<p class="n">${escape([p.scm, p.tracker, p.engine, p.launcher !== 'local' ? `${p.launcher} workers` : null, p.team !== 'default' ? `team ${p.team}` : null, p.environment !== 'standard' ? `${p.environment} environment` : null].filter(Boolean).join(' · '))}${p.costs ? ` · spend ${escape(usd(p.costs.day?.usd))} today, ${escape(usd(p.costs.week?.usd))} 7d` : ''}${p.autonomy ? ` · PM ${escape(p.autonomy)}` : ''}</p>
 ${ideas || release ? `<form method="post" action="/actions"><input type="hidden" name="project" value="${escape(p.project)}">${p.held[0] ? `<input type="hidden" name="job" value="${escape(p.held[0].id)}">` : ''}${ideas}${release}</form>` : ''}</div>`;
   }).join('') || '<p class="empty">No projects registered. Start a worker with a mapped checkout and it registers its manifest here.</p>';
   const now = state.live.length ? state.live.map(run => `<div class="now"><h3><span class="pulse"></span><a href="/runs/${escape(run.jobId)}">${escape(run.issue ?? (run.ideation ? 'Proposing ideas' : 'Unpinned cycle'))}</a></h3>
@@ -168,7 +177,7 @@ ${ideas || release ? `<form method="post" action="/actions"><input type="hidden"
   const jobs = state.jobs.filter(job => job.kind !== 'chat').map(job => `<div class="row"><span class="at">${escape(clock(job.createdAt))}</span><span class="who">${escape(job.issue ?? (job.kind === 'ideation' ? 'ideas' : 'cycle'))}<small>${escape(job.projectId)} · ${escape(job.engine ?? 'worker default')}${job.autoMerge ? ' · auto-merge' : job.publish ? ' · publish' : ''}</small></span><span class="what">${escape(job.summary) || (job.state === 'queued' ? 'Waiting for a worker.' : job.state === 'running' ? 'In progress.' : '')}</span>${tag(job.state)}</div>`).join('');
   const runs = state.runs.map(run => `<div class="row"><span class="at">${escape(clock(run.startedAt))}</span><span class="who"><a href="/runs/${escape(run.jobId)}">${escape(run.issue ?? (run.ideation || run.proposals ? 'ideas' : 'cycle'))}</a><small>${escape(run.project)} · ${escape(run.engine)} · ${minutes(run.startedAt, run.finishedAt) ?? '?'} min</small></span><span class="what">${run.delivery ? `<b>${escape(run.delivery)}</b> · ` : ''}${run.prUrl ? `<a href="${escape(run.prUrl)}">${short(run.prUrl)}</a> · ` : ''}${escape(run.summary)}${run.proposals?.length ? `<ul>${run.proposals.map(title => `<li>${escape(title)}</li>`).join('')}</ul>` : ''}</span>${tag(run.state)}</div>`).join('');
   const inbox = state.decisions.length ? `<section><h2>Decisions <small>${state.decisions.length} waiting for you</small></h2><div class="up">${state.decisions.slice(0, 8).map(d => `<div class="item"><i>!</i><span><a href="/projects/${escape(d.projectId)}#decisions">${escape(d.title)}</a><small>${escape(d.projectId)} · ${escape(d.kind)} · ${escape(when(new Date(d.createdAt).toISOString()))}</small></span></div>`).join('')}</div></section>` : '';
-  const body = `<header><h1>Agent team <span>${escape(hostname)}</span></h1>${usage}<div class="meta">${escape(when(state.generatedAt))} UTC · live · <a href="/api/state">JSON</a></div></header>
+  const body = `<header><h1>Agent team <span>${escape(hostname)}</span></h1>${usage}<div class="meta">${escape(when(state.generatedAt))} UTC · live · <a href="/teams">Teams</a> · <a href="/environments">Environments</a> · <a href="/api/state">JSON</a></div></header>
 <div class="units">${units}</div>
 <main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}${inbox}
 <div class="team">${state.team.map(m => `<div class="member ${m.working ? 'busy' : ''}"><a href="/team/${escape(m.role)}">${avatar(m.role, 44)}</a><div><a class="name" href="/team/${escape(m.role)}">${escape(m.name)}</a><small>${escape(m.title)}</small><span>${m.working ? `on <a href="/runs/${escape(m.working.jobId)}">${escape(m.working.issue)}</a>${m.steps ? ` · ${m.steps} steps` : ''}` : 'idle'}</span></div></div>`).join('')}</div>
@@ -259,7 +268,7 @@ btn.onclick=function(){on=!on;btn.textContent=on?'Stop talking':'Talk to '+name;
 
 // Landing page per project: the conversation with the resident PM, the decision inbox, a board
 // mirror from the PM's last status line, spend, and links into memory.
-export function renderProject({ project, state, thread, decisions, costs, flash }) {
+export function renderProject({ project, state, thread, decisions, costs, flash, channel = [] }) {
   const pm = ROSTER[PM];
   const bubbles = thread.messages.slice(-60).map(message => {
     const owner = message.author === 'owner';
@@ -270,6 +279,7 @@ export function renderProject({ project, state, thread, decisions, costs, flash 
 <form method="post" action="/projects/${escape(project.project)}/decision" class="compose"><input type="hidden" name="id" value="${escape(d.id)}"><input type="hidden" name="title" value="${escape(d.title)}"><select name="choice">${d.options.map(option => `<option value="${escape(option)}">${escape(option)}</option>`).join('')}</select><input name="note" placeholder="optional note for the PM" maxlength="4000"><button type="submit">Decide</button></form></div>`).join('')
     : '<p class="empty">Nothing waiting on you.</p>';
   const spend = costs ? `<div class="usage">${gauge('Spend today', usd(costs.day?.usd), `${costs.day?.entries ?? 0} entries`, 'raw')}${gauge('Spend 7d', usd(costs.week?.usd), `${compact(costs.week?.tokens ?? 0)} tokens`, 'raw')}${gauge('Spend 30d', usd(costs.month?.usd), '', 'raw')}</div>` : '';
+  const feed = channel.slice(-40).map(post => `<div class="row" id="c-${post.seq}"><span class="at">${escape(clock(post.createdAt))}</span><span class="who">${post.author === 'owner' ? 'You' : `${avatar(post.author, 16)}${escape(ROSTER[post.author]?.name ?? post.author)}`}</span><span class="what">${post.kind !== 'note' ? `<b>${escape(post.kind)}</b> ` : ''}${escape(post.body)}</span></div>`).join('');
   const board = state.jobs.filter(job => job.projectId === project.project && job.kind !== 'chat').slice(0, 12).map(job => `<div class="row"><span class="at">${escape(clock(job.createdAt))}</span><span class="who">${escape(job.issue ?? job.kind)}</span><span class="what">${escape(job.summary) || (job.state === 'queued' ? 'Waiting for a worker.' : job.state === 'running' ? 'In progress.' : '')}</span>${tag(job.state)}</div>`).join('');
   const body = `<div class="crumb"><a href="/">← Agent team</a> · <a href="/projects/${escape(project.project)}/memory">Memory</a> · <a href="/projects/${escape(project.project)}/settings">Settings</a> · <a href="/team/${PM}?project=${escape(project.project)}">Tracker thread</a></div>
 <header class="mh">${avatar(PM, 96)}<div><h1>${escape(project.name)} <span>with ${escape(pm.name)}, ${escape(pm.title)}</span></h1><p class="voice">${escape(pm.voice)}</p><p class="n">${escape([project.scm, project.tracker, project.engine, `PM autonomy ${project.autonomy ?? 'suggest'}`, project.status].filter(Boolean).join(' · '))}</p></div></header>
@@ -278,8 +288,111 @@ ${spend}
 <div class="cols"><section><h2>Conversation</h2><div class="chat" data-ticker="pm">${bubbles || `<p class="empty">Say hello. ${escape(pm.name)} reads the board, the runs and project memory before answering.</p>`}</div>
 <form method="post" action="/projects/${escape(project.project)}/message" class="compose"><textarea name="message" rows="3" maxlength="12000" placeholder="Ask what is going on, give direction, or decide something." required></textarea><button type="submit">Send to ${escape(pm.name)}</button></form></section>
 <section><h2 id="decisions">Decisions <small>${decisions.length} open</small></h2>${inbox}
+<h2 id="channel">Team channel <small>what active agents tell each other</small></h2><div class="list" data-ticker="channel">${feed || '<p class="empty">Quiet so far. Running agents post claims, blockers and hand-offs here; you can too.</p>'}</div>
+<form method="post" action="/projects/${escape(project.project)}/channel" class="compose"><input name="body" maxlength="4000" placeholder="Tell every active agent something (read at each cycle start)." required><button type="submit">Post</button></form>
 <h2>Board mirror <small>latest jobs</small></h2><div class="list">${board || '<p class="empty">No jobs yet.</p>'}</div></section></div></main>`;
   return page(`${project.name} · ${pm.name}`, body, 8_000);
+}
+
+// Stored teams: the personas one project runs with. Permissions are not editable here: the
+// committed roles file is the ceiling and a team can only tighten it (the deny boxes).
+export function renderTeams({ teams, flash }) {
+  const rows = teams.map(team => `<div class="row"><span class="who"><a href="/teams/${escape(team.id)}">${escape(team.name)}</a><small>${escape(team.id)} · v${team.version}</small></span><span class="what">${escape(team.description || '')} <small>${escape(Object.keys(team.agents).join(', '))}</small></span></div>`).join('');
+  const body = `<div class="crumb"><a href="/">← Agent team</a> · Teams</div>
+<header><h1>Teams <span>stored personas</span></h1><div></div><div class="meta"><a href="/environments">Environments</a></div></header>
+<main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
+<p class="n">A team is the set of roles, names, voices and prompts a project runs with; a project chooses one in its settings. Every change is a new version a run records. Permissions stay in the repository's roles file; a team can only add restrictions.</p>
+<div class="list">${rows || '<p class="empty">No teams stored yet.</p>'}</div>
+<h2>New team</h2><form method="get" action="/teams/new" class="compose" onsubmit="location.href='/teams/'+this.id.value.trim();return false"><input name="id" pattern="[a-z][a-z0-9-]{0,63}" placeholder="team id, lowercase and dashes" required><button type="submit">Create</button></form></main>`;
+  return page('Teams', body, 0);
+}
+
+export function renderTeam({ team, id, history, flash }) {
+  const doc = team ?? { id, name: id.replace(/-/g, ' '), description: '', roster: { ...DEFAULT_ROSTER }, defaultRoles: null, agents: {} };
+  const roles = Object.keys(doc.agents).length ? Object.keys(doc.agents) : ['team-coordinator', 'team-pm', 'team-owner'];
+  const roleBlock = role => {
+    const agent = doc.agents[role] ?? { mode: ['team-coordinator', 'team-owner', 'team-ideation'].includes(role) ? 'primary' : 'subagent', description: role, prompt: '', deny: [] };
+    const member = doc.roster[role] ?? DEFAULT_ROSTER[role] ?? { name: '', title: '', voice: '' };
+    const locked = ['team-coordinator', 'team-pm', 'team-owner'].includes(role);
+    return `<fieldset><legend>${escape(role)} <small>${escape(agent.mode)}</small>${locked ? '' : ` <label class="inline"><input type="checkbox" name="remove" value="${escape(role)}"> remove</label>`}</legend>
+<input type="hidden" name="role" value="${escape(role)}"><input type="hidden" name="${escape(role)}.mode" value="${escape(agent.mode)}">
+<div class="field"><label>Name</label><input name="${escape(role)}.name" maxlength="80" value="${escape(member.name)}" required></div>
+<div class="field"><label>Title</label><input name="${escape(role)}.title" maxlength="80" value="${escape(member.title)}" required></div>
+<div class="field"><label>Voice</label><input name="${escape(role)}.voice" maxlength="600" value="${escape(member.voice)}" required></div>
+<div class="field"><label>Description</label><input name="${escape(role)}.description" maxlength="200" value="${escape(agent.description)}"></div>
+<div class="field"><label>Steps</label><input name="${escape(role)}.steps" type="number" min="1" max="500" value="${escape(agent.steps ?? '')}"></div>
+<div class="field"><label>Restrict further</label>${TIGHTENINGS.map(item => `<label class="inline"><input type="checkbox" name="${escape(role)}.deny" value="${item}"${agent.deny?.includes(item) ? ' checked' : ''}> no ${item}</label>`).join(' ')}</div>
+<div class="field wide"><label>Prompt</label><textarea name="${escape(role)}.prompt" rows="8" maxlength="40000" required>${escape(agent.prompt)}</textarea></div></fieldset>`;
+  };
+  const subagents = roles.filter(role => (doc.agents[role]?.mode ?? 'subagent') === 'subagent');
+  const defaults = doc.defaultRoles ?? subagents.filter(role => role !== 'team-pm');
+  const versions = history.map(entry => `<div class="row"><span class="at">v${entry.version}</span><span class="who">${escape(entry.author)}<small>${escape(when(new Date(entry.createdAt).toISOString()))}</small></span><span class="what">${escape(entry.note ?? '')}</span>${entry.version !== team?.version ? `<form method="post" action="/teams/${escape(id)}" class="inline"><input type="hidden" name="action" value="revert"><input type="hidden" name="version" value="${entry.version}"><button type="submit" class="secondary">Revert</button></form>` : '<span class="st act">current</span>'}</div>`).join('');
+  const body = `<div class="crumb"><a href="/">← Agent team</a> · <a href="/teams">Teams</a> · ${escape(id)}</div>
+<header><h1>${escape(doc.name)} <span>${team ? `version ${team.version}` : 'new team'}</span></h1><div></div><div class="meta">${team?.updatedAt ? `saved ${escape(when(new Date(team.updatedAt).toISOString()))} UTC by ${escape(team.author)}` : ''}</div></header>
+<main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
+<form method="post" action="/teams/${escape(id)}" class="settings">
+<fieldset><legend>team</legend><div class="field"><label>Name</label><input name="name" maxlength="80" value="${escape(doc.name)}" required></div><div class="field"><label>Description</label><input name="description" maxlength="400" value="${escape(doc.description ?? '')}"></div>
+<div class="field"><label>Default roles</label><fieldset class="roles">${subagents.map(role => `<label><input type="checkbox" name="defaultRoles" value="${escape(role)}"${defaults.includes(role) ? ' checked' : ''}> ${escape(role)}</label>`).join('')}</fieldset><small>Subagents the coordinator delegates to unless a project's settings choose otherwise.</small></div></fieldset>
+${roles.map(roleBlock).join('')}
+<fieldset><legend>add a subagent</legend><div class="field"><label>Role id</label><input name="newRole" pattern="team-[a-z]+" placeholder="team-analyst"></div><div class="field"><label>Name</label><input name="newName" maxlength="80"></div><div class="field"><label>Title</label><input name="newTitle" maxlength="80"></div><div class="field"><label>Voice</label><input name="newVoice" maxlength="600"></div><div class="field wide"><label>Prompt</label><textarea name="newPrompt" rows="5" maxlength="40000"></textarea></div></fieldset>
+<div class="field"><label for="team-note">Change note</label><input id="team-note" name="note" type="text" maxlength="400" placeholder="Why this changes (kept in history)"></div>
+<div class="actions"><button type="submit">Save team</button></div></form>
+<h2>History <small>${history.length} versions</small></h2><div class="list">${versions || '<p class="empty">Not saved yet.</p>'}</div></main>`;
+  return page(`Team · ${doc.name}`, body, 0);
+}
+
+// Builds a team document from the editor form: existing roles, minus removed ones, plus one new subagent.
+export function teamFromForm(form, id) {
+  const removed = new Set(form.getAll('remove'));
+  const roles = form.getAll('role').filter(role => !removed.has(role));
+  const roster = {}; const agents = {};
+  for (const role of roles) {
+    roster[role] = { name: form.get(`${role}.name`) ?? '', title: form.get(`${role}.title`) ?? '', voice: form.get(`${role}.voice`) ?? '' };
+    const steps = (form.get(`${role}.steps`) ?? '').trim();
+    agents[role] = { mode: form.get(`${role}.mode`) ?? 'subagent', description: form.get(`${role}.description`) || role, prompt: (form.get(`${role}.prompt`) ?? '').replace(/\r\n/g, '\n'), ...(steps ? { steps: Number(steps) } : {}), deny: form.getAll(`${role}.deny`) };
+  }
+  const added = (form.get('newRole') ?? '').trim();
+  if (added) {
+    roster[added] = { name: form.get('newName') ?? '', title: form.get('newTitle') ?? '', voice: form.get('newVoice') ?? '' };
+    agents[added] = { mode: 'subagent', description: form.get('newTitle') || added, prompt: (form.get('newPrompt') ?? '').replace(/\r\n/g, '\n'), deny: [] };
+  }
+  const defaultRoles = form.getAll('defaultRoles').filter(role => agents[role]?.mode === 'subagent');
+  return { id, name: form.get('name') ?? id, description: form.get('description') ?? '', roster, defaultRoles: defaultRoles.length ? defaultRoles : null, agents };
+}
+
+// Stored worker environments: what a machine offers a run. Capabilities are a fixed catalog.
+export function renderEnvironments({ environments, flash }) {
+  const rows = environments.map(item => `<div class="row"><span class="who"><a href="/environments/${escape(item.id)}">${escape(item.name)}</a><small>${escape(item.id)} · v${item.version}</small></span><span class="what">${escape(item.description || '')} <small>${escape(item.capabilities.map(capability => CAPABILITIES[capability]?.title ?? capability).join(', ') || 'no extra tools')}</small></span></div>`).join('');
+  const body = `<div class="crumb"><a href="/">← Agent team</a> · Environments</div>
+<header><h1>Environments <span>what workers offer a run</span></h1><div></div><div class="meta"><a href="/teams">Teams</a></div></header>
+<main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
+<p class="n">An environment names the tools a worker machine gives a run beyond the repository: a headless browser, a container runtime, a display. A project selects one in its settings; cloud launchers read its image and instance defaults and the worker image build installs its packages.</p>
+<div class="list">${rows || '<p class="empty">No environments stored yet.</p>'}</div>
+<h2>New environment</h2><form method="get" action="/environments/new" class="compose" onsubmit="location.href='/environments/'+this.id.value.trim();return false"><input name="id" pattern="[a-z][a-z0-9-]{0,63}" placeholder="environment id" required><button type="submit">Create</button></form></main>`;
+  return page('Environments', body, 0);
+}
+
+export function renderEnvironment({ environment, id, history, flash }) {
+  const doc = environment ?? { id, name: id, description: '', capabilities: [], launcher: {}, packages: [] };
+  const versions = history.map(entry => `<div class="row"><span class="at">v${entry.version}</span><span class="who">${escape(entry.author)}<small>${escape(when(new Date(entry.createdAt).toISOString()))}</small></span><span class="what">${escape(entry.note ?? '')}</span>${entry.version !== environment?.version ? `<form method="post" action="/environments/${escape(id)}" class="inline"><input type="hidden" name="action" value="revert"><input type="hidden" name="version" value="${entry.version}"><button type="submit" class="secondary">Revert</button></form>` : '<span class="st act">current</span>'}</div>`).join('');
+  const body = `<div class="crumb"><a href="/">← Agent team</a> · <a href="/environments">Environments</a> · ${escape(id)}</div>
+<header><h1>${escape(doc.name)} <span>${environment ? `version ${environment.version}` : 'new environment'}</span></h1><div></div><div class="meta"></div></header>
+<main>${flash ? `<div class="flash ${flash.error ? 'err' : ''}">${escape(flash.text)}</div>` : ''}
+<form method="post" action="/environments/${escape(id)}" class="settings">
+<fieldset><legend>environment</legend><div class="field"><label>Name</label><input name="name" maxlength="80" value="${escape(doc.name)}" required></div><div class="field"><label>Description</label><input name="description" maxlength="400" value="${escape(doc.description ?? '')}"></div></fieldset>
+<fieldset><legend>capabilities</legend>${Object.entries(CAPABILITIES).map(([key, capability]) => `<div class="field"><label class="inline"><input type="checkbox" name="capabilities" value="${key}"${doc.capabilities.includes(key) ? ' checked' : ''}> ${escape(capability.title)}</label><small>${escape(capability.note)}</small></div>`).join('')}</fieldset>
+<fieldset><legend>launcher defaults <small>cloud workers; the project manifest wins where it sets a value</small></legend>${LAUNCHER_FIELDS.map(key => `<div class="field${key === 'setup' ? ' wide' : ''}"><label>${escape(key)}</label><input name="launcher.${key}" maxlength="${key === 'setup' ? 2000 : 200}" value="${escape(doc.launcher?.[key] ?? '')}"></div>`).join('')}</fieldset>
+<fieldset><legend>packages <small>installed into the worker image</small></legend><div class="field wide"><label>Package names, space separated</label><input name="packages" maxlength="2000" value="${escape(doc.packages.join(' '))}"></div></fieldset>
+<div class="field"><label for="env-note">Change note</label><input id="env-note" name="note" type="text" maxlength="400" placeholder="Why this changes (kept in history)"></div>
+<div class="actions"><button type="submit">Save environment</button></div></form>
+<h2>History <small>${history.length} versions</small></h2><div class="list">${versions || '<p class="empty">Not saved yet.</p>'}</div></main>`;
+  return page(`Environment · ${doc.name}`, body, 0);
+}
+
+export function environmentFromForm(form, id) {
+  const launcher = {};
+  for (const key of LAUNCHER_FIELDS) { const value = (form.get(`launcher.${key}`) ?? '').trim(); if (value) launcher[key] = value; }
+  return { id, name: form.get('name') ?? id, description: form.get('description') ?? '', capabilities: form.getAll('capabilities'), launcher, packages: (form.get('packages') ?? '').split(/\s+/).filter(Boolean) };
 }
 
 export function renderSettings({ project, settings, history, lookup, lookupError, flash }) {
@@ -353,13 +466,24 @@ export function createDashboardServer(config) {
       if (config.password && !basicAuth(req, config.password)) { req.resume(); res.writeHead(401, { 'www-authenticate': 'Basic realm="agent-team"', 'content-type': 'text/plain' }); return res.end('Sign in'); }
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'POST') {
-        const projectAction = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(message|memory|decision|proposal|settings)$/.exec(url.pathname);
-        if (!['/actions', '/chat'].includes(url.pathname) && !projectAction) return reply(404, 'text/plain', 'Not found');
+        const projectAction = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(message|memory|decision|proposal|settings|channel)$/.exec(url.pathname);
+        const storeAction = /^\/(teams|environments)\/([a-z][a-z0-9-]{0,63})$/.exec(url.pathname);
+        if (!['/actions', '/chat'].includes(url.pathname) && !projectAction && !storeAction) return reply(404, 'text/plain', 'Not found');
         if (!sameOrigin(req)) { req.resume(); return reply(403, 'text/plain', 'Actions are accepted from the dashboard page only'); }
         let size = 0; const chunks = [];
         for await (const chunk of req) { size += chunk.length; if (size > 262144) return reply(413, 'text/plain', 'Too large'); chunks.push(chunk); }
         const form = new URLSearchParams(Buffer.concat(chunks).toString());
         const current = await state();
+        if (storeAction) {
+          const [, kind, id] = storeAction;
+          const back = text => { res.writeHead(303, { location: `/${kind}/${id}?${text.error ? 'error' : 'ok'}=${encodeURIComponent(text.text)}` }); res.end(); };
+          try {
+            if (form.get('action') === 'revert') { const saved = await request(`/${kind}/${id}/revert`, { version: Number(form.get('version')), author: 'owner' }); return back({ text: `Reverted to version ${form.get('version')}; now version ${saved.version}.` }); }
+            const doc = kind === 'teams' ? teamFromForm(form, id) : environmentFromForm(form, id);
+            const saved = await request(`/${kind}/${id}`, { doc, author: 'owner', ...(form.get('note') ? { note: form.get('note') } : {}) });
+            return back({ text: `Saved version ${saved.version}; it applies to the next run.` });
+          } catch (error) { return back({ error: true, text: `The coordinator refused: ${error.message}` }); }
+        }
         if (projectAction) {
           const [, projectId, what] = projectAction;
           const owner = { name: 'owner' };
@@ -382,6 +506,12 @@ export function createDashboardServer(config) {
               if (!body) return back({ error: true, text: 'Write a message first.' });
               await request(`/projects/${projectId}/messages`, { author: 'owner', body, state: 'pending' });
               return back({ text: `Sent to ${ROSTER[PM].name}; the reply appears here when the PM session finishes.` });
+            }
+            if (what === 'channel') {
+              const body = (form.get('body') ?? '').trim();
+              if (!body) return back({ error: true, text: 'Write a post first.' });
+              await request(`/projects/${projectId}/channel`, { author: 'owner', body, kind: 'note' });
+              return back({ text: 'Posted to the team channel; every run reads it at its next cycle start.' }, `${page}#channel`);
             }
             if (what === 'decision') {
               await request(`/decisions/${form.get('id')}/resolve`, { choice: form.get('choice'), ...(form.get('note') ? { note: form.get('note') } : {}) });
@@ -448,9 +578,18 @@ export function createDashboardServer(config) {
       if (url.pathname === '/health') return reply(200, 'application/json', '{"ok":true}');
       const portrait = /^\/portraits\/(team-[a-z]+)\.webp$/.exec(url.pathname);
       if (portrait) {
-        const file = path.join(config.portraits ?? PORTRAITS, `${portrait[1]}.webp`);
-        if (!Object.hasOwn(ROSTER, portrait[1]) || !fs.existsSync(file)) return reply(404, 'text/plain', 'Not found');
+        const file = config.portraits ? path.join(config.portraits, `${portrait[1]}.webp`) : blueprintFile(`portraits/${portrait[1]}.webp`);
+        if (!Object.hasOwn(ROSTER, portrait[1]) || !file || !fs.existsSync(file)) return reply(404, 'text/plain', 'Not found');
         res.writeHead(200, { 'content-type': 'image/webp', 'cache-control': 'public, max-age=3600' }); return res.end(fs.readFileSync(file));
+      }
+      const storePage = /^\/(teams|environments)(?:\/([a-z][a-z0-9-]{0,63}))?$/.exec(url.pathname);
+      if (storePage) {
+        const [, kind, id] = storePage;
+        const list = await request(`/${kind}`);
+        if (!id) return reply(200, 'text/html; charset=utf-8', kind === 'teams' ? renderTeams({ teams: list, flash }) : renderEnvironments({ environments: list, flash }));
+        const item = list.find(entry => entry.id === id) ?? null;
+        const history = item ? await request(`/${kind}/${id}/history?limit=20`).catch(() => []) : [];
+        return reply(200, 'text/html; charset=utf-8', kind === 'teams' ? renderTeam({ team: item, id, history, flash }) : renderEnvironment({ environment: item, id, history, flash }));
       }
       const memberMatch = /^\/team\/(team-[a-z]+)$/.exec(url.pathname);
       if (memberMatch) {
@@ -502,11 +641,14 @@ export function createDashboardServer(config) {
           const team = url.searchParams.get('team') ?? undefined;
           let lookup = null; let lookupError = null;
           try { lookup = await request(`/projects/${projectId}/tracker/lookup${team ? `?team=${encodeURIComponent(team)}` : ''}`); } catch (error) { lookupError = error.message; }
+          // Stored teams and environments feed the selectors; the chosen team's subagents feed the roles list.
+          const [teams, environments, chosen] = await Promise.all([request('/teams').catch(() => []), request('/environments').catch(() => []), request(`/projects/${projectId}/team`).catch(() => null)]);
+          lookup = { ...(lookup ?? {}), blueprints: teams.map(item => item.id), environments: environments.map(item => item.id), roles: chosen ? Object.entries(chosen.agents).filter(([, agent]) => agent.mode === 'subagent').map(([role]) => role) : [] };
           return reply(200, 'text/html; charset=utf-8', renderSettings({ project, settings, history, lookup, lookupError, flash }));
         }
         if (!memoryPath) {
-          const [thread, decisions, costs] = await Promise.all([request(`/projects/${projectId}/thread`), request(`/decisions?project=${projectId}&state=open`), request(`/projects/${projectId}/costs`).catch(() => null)]);
-          return reply(200, 'text/html; charset=utf-8', renderProject({ project, state: current, thread, decisions, costs, flash }));
+          const [thread, decisions, costs, channel] = await Promise.all([request(`/projects/${projectId}/thread`), request(`/decisions?project=${projectId}&state=open`), request(`/projects/${projectId}/costs`).catch(() => null), request(`/projects/${projectId}/channel?limit=40`).catch(() => [])]);
+          return reply(200, 'text/html; charset=utf-8', renderProject({ project, state: current, thread, decisions, costs, flash, channel }));
         }
         if (sub === 'file') {
           const file = url.searchParams.get('path') ?? 'charter.md'; const sha = url.searchParams.get('sha') ?? undefined;

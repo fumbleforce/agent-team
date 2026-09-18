@@ -25,6 +25,9 @@ curl -fsSL "https://gitlab.com/gitlab-org/cli/-/releases/v${GLAB_VERSION}/downlo
 curl -fsSL https://cli.github.com/packages/githubcli-archive-keyring.gpg -o /usr/share/keyrings/githubcli-archive-keyring.gpg
 echo "deb [arch=amd64 signed-by=/usr/share/keyrings/githubcli-archive-keyring.gpg] https://cli.github.com/packages stable main" > /etc/apt/sources.list.d/github-cli.list
 apt-get update && apt-get install -y gh
+# The project's worker environment: extra packages (browser, container runtime, display) and their setup.
+ENVIRONMENT_PACKAGES="__ENVIRONMENT_PACKAGES__"
+if [ -n "${ENVIRONMENT_PACKAGES}" ]; then apt-get install -y --no-install-recommends ${ENVIRONMENT_PACKAGES}; fi
 npm install -g @anthropic-ai/claude-code opencode-ai @openai/codex
 curl -fsSL https://cursor.com/install | bash || true
 install -m 755 /root/.local/bin/agent /usr/local/bin/agent 2>/dev/null || true
@@ -47,6 +50,8 @@ set -x
 mkdir -p /srv && chown agent:agent /srv
 sudo -u agent -H git clone "https://${PROJECT_HOST}/${PROJECT_REPO}.git" /srv/project
 sudo -u agent -H bash -lc 'cd /srv/project && __PROJECT_SETUP__'
+sudo -u agent -H bash -lc 'cd /srv/project && __ENVIRONMENT_SETUP__'
+if id agent >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; then usermod -aG docker agent; fi
 mkdir -p /var/lib/agent-team /etc/agent-team && chown agent:agent /var/lib/agent-team /etc/agent-team
 
 cloud-init clean --logs || true
