@@ -132,3 +132,39 @@ test('up stops at preflight with the full list, then brings a local team up and 
   assert.match(log.join('\n'), /Dashboard: http:\/\/127.0.0.1:4311\//);
   assert.equal(readDeployment('repo', configDir), null, 'the local target writes no AWS deployment');
 });
+
+test('up --engine runs the local team on an engine installed here and records it as a project setting', async t => {
+  const { engineOverride } = await import('./agent-team.mjs');
+  const base = { engine: { default: 'claude', billing: 'api', model: 'sonnet' } };
+  assert.equal(engineOverride(base, {}), null);
+  assert.deepEqual(engineOverride(base, { engine: 'opencode' }), { default: 'opencode', billing: 'provider' }, 'billing and model follow the manifest only while the engine does');
+  assert.deepEqual(engineOverride(base, { billing: 'subscription' }), { default: 'claude', billing: 'subscription', model: 'sonnet' });
+  assert.deepEqual(engineOverride(base, { engine: 'codex', billing: 'subscription', model: 'o3' }), { default: 'codex', billing: 'subscription', model: 'o3' });
+  assert.throws(() => engineOverride(base, { engine: 'unknown' }), /Unknown engine/);
+  assert.throws(() => engineOverride(base, { engine: 'opencode', billing: 'api' }), /billing mode/);
+  const configDir = mkdtempSync(path.join(os.tmpdir(), 'up-engine-')); t.after(() => rmSync(configDir, { recursive: true, force: true }));
+  const checkout = path.join(configDir, 'repo'); mkdirSync(checkout);
+  writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ version: 2, name: 'Repo', queueProjectId: 'repo', instructions: [], scm: { kind: 'github', repository: 'o/r' }, tracker: { kind: 'github', repository: 'o/r', readyLabel: 'agent:ready' }, engine: { default: 'claude', billing: 'api' } }));
+  writeFileSync(path.join(checkout, '.gitignore'), '.agent-team/\n.agent-team-result.json\n');
+  const log = [];
+  // Only the other engine is installed on this machine: the manifest's default is not.
+  const run = bin => ({ ok: ['git', 'opencode', 'gh'].includes(bin), stdout: 'v1', stderr: '' });
+  await assert.rejects(main(['up', checkout, '--config-dir', configDir], { log: line => log.push(line), env: { GH_TOKEN: 'ghp_x', ANTHROPIC_API_KEY: 'k' }, run }), /requirement missing/);
+  assert.match(log.join('\n'), /MISSING  Engine claude: claude is not on PATH\n\s+Install the claude CLI on the worker host, or rerun with --engine opencode \(installed here\)/);
+  const requests = [];
+  const { createServer } = await import('node:http');
+  const server = createServer((req, res) => { let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => { requests.push([req.method, req.url, body ? JSON.parse(body) : null]); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(req.url === '/health' ? { ok: true } : { ok: true, overrides: {} })); }); });
+  await new Promise(resolve => server.listen(4310, '127.0.0.1', resolve)); t.after(() => server.close());
+  let started = null;
+  const startLocalImpl = ({ files, withPm }) => { started = { files, withPm }; return { stop() {}, started: Promise.resolve(), finished: Promise.resolve(), children: new Map() }; };
+  const trackerClientImpl = { bootstrap: async () => ({ labels: [], created: [], ownerInboxIssue: 'GH-9' }) };
+  const code = await main(['up', checkout, '--config-dir', configDir, '--no-intake', '--engine', 'opencode'], { log: line => log.push(line), env: { GH_TOKEN: 'ghp_x' }, run, startLocalImpl, seed: async () => {}, open: false, trackerClientImpl });
+  assert.equal(code, 0);
+  assert.equal(started.withPm, false, 'the chosen engine has no bounded sessions, so no resident PM');
+  const { readFileSync } = await import('node:fs');
+  assert.equal(JSON.parse(readFileSync(started.files.worker, 'utf8')).engine, 'opencode');
+  const registered = requests.find(([method, url]) => method === 'POST' && url === '/projects/repo/manifest');
+  assert.equal(registered[2].manifest.engine.default, 'claude', 'the checkout\'s manifest is registered as committed');
+  const settings = requests.find(([method, url]) => method === 'POST' && url === '/projects/repo/settings');
+  assert.deepEqual(settings[2].overrides, { tracker: { ownerInboxIssue: 'GH-9' }, engine: { default: 'opencode', billing: 'provider' }, worker: { launcher: 'local' } });
+});

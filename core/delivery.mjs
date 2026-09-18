@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawnCommand } from './platform.mjs';
 import * as fs from 'node:fs';
 import path from 'node:path';
 import { scmAdapter, DEFAULT_SCM } from '../adapters/scm/index.mjs';
@@ -55,7 +55,7 @@ export function validateApprovals(approvals, headSha, roles = ['tester', 'review
 // Async commands allow cancellation to be observed before the mutation boundary.
 export function deliveryExec(bin, args, { cwd, env, signal } = {}) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, env, signal, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawnCommand(bin, args, { cwd, env, signal, stdio: ['ignore', 'pipe', 'pipe'] });
     let stdout = '', stderr = '';
     const timer = setTimeout(() => child.kill('SIGKILL'), 30_000);
     child.stdout.on('data', data => { stdout += data; if (stdout.length > 16 * 1024 * 1024) child.kill('SIGKILL'); });

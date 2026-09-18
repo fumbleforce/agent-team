@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createQueue } from './queue.mjs';
@@ -358,4 +358,24 @@ test('the coordinator-resolved team and environment reach the runner as files', 
     assert.equal(environment.id, 'browser'); assert.deepEqual(environment.capabilities, ['browser']);
     assert.equal(statSync(seen[seen.indexOf('--team-file') + 1]).mode & 0o777, 0o600);
   } finally { q.close(); }
+});
+
+test('the memory and team shims follow the platform: shell scripts everywhere, .cmd launchers too on Windows, PATH in its own spelling', async () => {
+  const { installMemoryShim, memoryEnvironment } = await import('./worker.mjs');
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'worker-shim-'));
+  try {
+    const posix = installMemoryShim(path.join(dir, 'posix'), { platform: 'linux' });
+    assert.equal(posix, path.join(dir, 'posix', 'memory'));
+    assert.deepEqual(readdirSync(path.join(dir, 'posix')).sort(), ['memory', 'team']);
+    assert.match(readFileSync(posix, 'utf8'), /^#!\/bin\/sh\nexec ".*" ".*memory-cli\.mjs" "\$@"\n$/);
+    installMemoryShim(path.join(dir, 'windows'), { platform: 'win32' });
+    assert.deepEqual(readdirSync(path.join(dir, 'windows')).sort(), ['memory', 'memory.cmd', 'team', 'team.cmd']);
+    assert.match(readFileSync(path.join(dir, 'windows', 'team.cmd'), 'utf8'), /^@echo off\r\n".*" ".*channel-cli\.mjs" %\*\r\n$/);
+    const job = { id: 'j', projectId: 'a', workerId: 'w', leaseToken: 'lease' };
+    const spelled = memoryEnvironment({ coordinatorUrl: 'http://127.0.0.1:4310', job, binDir: '/bin/shims', env: { Path: `C:\\tools${path.delimiter}C:\\node`, HOME: 'h' } });
+    assert.deepEqual(Object.keys(spelled), ['Path', 'AGENT_TEAM_MEMORY_URL', 'AGENT_TEAM_MEMORY_JOB', 'AGENT_TEAM_MEMORY_PROJECT', 'AGENT_TEAM_MEMORY_LEASE']);
+    assert.equal(spelled.Path, `/bin/shims${path.delimiter}C:\\tools${path.delimiter}C:\\node`);
+    assert.equal(spelled.AGENT_TEAM_MEMORY_LEASE, 'w:lease');
+    assert.equal(memoryEnvironment({ coordinatorUrl: 'http://127.0.0.1:4310', job, binDir: '/bin/shims', env: {} }).PATH, `/bin/shims${path.delimiter}`);
+  } finally { rmSync(dir, { recursive: true, force: true }); }
 });

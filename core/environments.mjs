@@ -1,3 +1,6 @@
+import path from 'node:path';
+import { packageRunnerCommand } from './platform.mjs';
+
 // Worker environments are data the coordinator stores and the dashboard edits: what a worker
 // machine offers a run beyond the repository. A project selects one by id (worker.environment);
 // the coordinator passes its launcher fields to the launcher and the worker hands its
@@ -13,7 +16,7 @@ export const CAPABILITIES = {
     title: 'Headless browser',
     note: 'A headless browser is available as MCP tools browser_* (navigate, click, type, take screenshots, read page text). Use it to inspect web pages, verify UI work in the running app and read documentation. Screenshots are saved with the run evidence.',
     // The server is started per run; screenshots land in the run directory.
-    server: runDir => ({ type: 'stdio', command: 'npx', args: ['-y', '@playwright/mcp@latest', '--headless', '--isolated', '--output-dir', `${runDir}/browser`] }),
+    server: runDir => ({ type: 'stdio', ...packageRunnerCommand(['-y', '@playwright/mcp@latest', '--headless', '--isolated', '--output-dir', path.join(runDir, 'browser')]) }),
     packages: ['chromium', 'fonts-liberation'],
     setup: 'npx -y playwright@latest install --with-deps chromium',
   },

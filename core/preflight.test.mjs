@@ -30,3 +30,19 @@ test('preflight lists every requirement once with a fix, and only required misse
     assert.deepEqual(preflight({ checkout: dir, manifest: null, run: run(['git']), nodeVersion: 'v22.21.1' }).map(check => check.name), ['Node.js', 'Git', 'Manifest']);
   } finally { rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a missing engine names the engines that are installed instead, for the local target only', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'preflight-'));
+  try {
+    writeFileSync(path.join(dir, '.gitignore'), '.agent-team/\n.agent-team-result.json\n');
+    const local = preflight({ checkout: dir, manifest, target: 'local', env: { GH_TOKEN: 't' }, run: run(['git', 'gh', 'opencode', 'codex']), nodeVersion: 'v22.21.1' });
+    const engine = local.find(check => check.name === 'Engine claude');
+    assert.equal(engine.ok, false); assert.equal(engine.required, true);
+    assert.equal(engine.fix, 'Install the claude CLI on the worker host, or rerun with --engine opencode or --engine codex (installed here)');
+    assert.ok(!local.some(check => check.name === 'Engine access'), 'access is not probed for an engine that is not there');
+    const probed = [];
+    const cloud = preflight({ checkout: dir, manifest, target: 'aws', env: { GH_TOKEN: 't' }, run: (bin, args) => { probed.push(bin); return run(['git', 'gh', 'opencode'])(bin, args); }, nodeVersion: 'v22.21.1' });
+    assert.equal(cloud.find(check => check.name === 'Engine claude').fix, 'Install the claude CLI on the worker host');
+    assert.ok(!probed.includes('opencode'), 'the cloud target does not look for alternatives on this machine');
+  } finally { rmSync(dir, { recursive: true, force: true }); }
+});

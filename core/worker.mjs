@@ -12,6 +12,7 @@ import { validateResult } from './runner.mjs';
 import { normalizeManifest, flatTracker } from './manifest.mjs';
 import { RUN_ID, memberActivity, runEvidence, readJson } from './evidence.mjs';
 import { answer } from './chat.mjs';
+import { killTree, prependPath, shimFiles, treeSpawnOptions } from './platform.mjs';
 
 const runner = fileURLToPath(new URL('./runner.mjs', import.meta.url));
 const memoryShim = fileURLToPath(new URL('./memory-cli.mjs', import.meta.url));
@@ -38,16 +39,17 @@ export function runnerArgs(job, checkout, ideaContext, memory = null) {
 
 // The `memory` command the engine can call: a PATH shim that talks to the coordinator with the
 // job's lease. Its variables are the only AGENT_TEAM_* values forwarded to the runner.
-export function memoryEnvironment({ coordinatorUrl, job, binDir }) {
-  return { PATH: `${binDir}:${process.env.PATH ?? ''}`, AGENT_TEAM_MEMORY_URL: coordinatorUrl, AGENT_TEAM_MEMORY_JOB: job.id, AGENT_TEAM_MEMORY_PROJECT: job.projectId, AGENT_TEAM_MEMORY_LEASE: `${job.workerId ?? ''}:${job.leaseToken}` };
+export function memoryEnvironment({ coordinatorUrl, job, binDir, env = process.env }) {
+  return { ...prependPath(env, binDir), AGENT_TEAM_MEMORY_URL: coordinatorUrl, AGENT_TEAM_MEMORY_JOB: job.id, AGENT_TEAM_MEMORY_PROJECT: job.projectId, AGENT_TEAM_MEMORY_LEASE: `${job.workerId ?? ''}:${job.leaseToken}` };
 }
-export function installMemoryShim(binDir) {
+// The shims are shell scripts, plus `.cmd` launchers on Windows so both its shells find them.
+export function installMemoryShim(binDir, { platform = process.platform } = {}) {
   mkdirSync(binDir, { recursive: true, mode: 0o700 });
-  const shim = path.join(binDir, 'memory');
-  writeFileSyncAtomic(shim, `#!/bin/sh\nexec "${process.execPath}" "${memoryShim}" "$@"\n`, 0o700);
   // The team channel command shares the memory lease variables.
-  writeFileSyncAtomic(path.join(binDir, 'team'), `#!/bin/sh\nexec "${process.execPath}" "${teamShim}" "$@"\n`, 0o700);
-  return shim;
+  for (const [name, script] of [['memory', memoryShim], ['team', teamShim]]) {
+    for (const file of shimFiles(name, script, { platform })) writeFileSyncAtomic(path.join(binDir, file.name), file.content, file.mode);
+  }
+  return path.join(binDir, 'memory');
 }
 function writeFileSyncAtomic(file, content, mode) {
   const temporary = `${file}.${randomUUID()}.tmp`;
@@ -95,7 +97,7 @@ export function runProcess({ args, signal, stateDir, job, stopGraceMs = RUNNER_S
       const env = { ...process.env };
       for (const key of Object.keys(env)) if (TRACKER_KEYS.includes(key) || key.startsWith('AGENT_TEAM_')) delete env[key];
       Object.assign(env, extraEnv);
-      child = spawn(process.execPath, args, { detached: true, stdio: ['ignore', 'pipe', stderr], env });
+      child = spawn(process.execPath, args, { ...treeSpawnOptions(), stdio: ['ignore', 'pipe', stderr], env });
     } catch (error) { closeSync(stdout); closeSync(stderr); reject(error); return; }
     let output = ''; let killTimer; let stopped = false;
     // Local logs contain model output; API results never include these contents.
@@ -103,7 +105,7 @@ export function runProcess({ args, signal, stateDir, job, stopGraceMs = RUNNER_S
       // Synchronous append to an already-open descriptor keeps memory bounded.
       writeSync(stdout, chunk); output = (output + chunk.toString()).slice(-262144);
     });
-    const kill = signalName => { try { process.kill(-child.pid, signalName); } catch (error) { if (error.code !== 'ESRCH') throw error; } };
+    const kill = signalName => { try { killTree(child.pid, signalName); } catch (error) { if (error.code !== 'ESRCH') throw error; } };
     const stop = () => {
       if (stopped) return; stopped = true; kill('SIGTERM');
       killTimer = setTimeout(() => kill('SIGKILL'), stopGraceMs);

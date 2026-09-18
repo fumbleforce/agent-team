@@ -8,7 +8,7 @@ import { Writable } from 'node:stream';
 import { CONFIG_DIR, deriveFromManifest, generateSecret, listDeployments, newDeployment, readDeployment, writeDeployment } from '../core/deployment.mjs';
 import { TOOLKIT_REPO, deploy as awsDeploy, destroy as awsDestroy, image as awsImage, readSecret, secrets as awsSecrets, discover, parameterName, BOUNDARY_ARN, DeployError } from '../adapters/hosting/aws/deploy.mjs';
 import { aws } from '../adapters/launcher/ec2.mjs';
-import { engineAdapter } from '../adapters/engine/index.mjs';
+import { engineAdapter, validateBilling, validateEngine } from '../adapters/engine/index.mjs';
 import { createClient } from '../core/worker.mjs';
 import { normalizeManifest, flatTracker } from '../core/manifest.mjs';
 import { preflight, renderChecks, blocking } from '../core/preflight.mjs';
@@ -16,6 +16,7 @@ import { trackerAdapter, trackerClient } from '../adapters/tracker/index.mjs';
 import { readToken as readLocalToken, start as startLocal, writeConfigs as writeLocalConfigs } from '../adapters/hosting/local/up.mjs';
 import { parseEnqueueArgs } from '../core/cli.mjs';
 import { seedMemory } from '../core/seed-memory.mjs';
+import { openInBrowser } from '../core/platform.mjs';
 
 // The owner-facing command. `init` asks for the checkout and the credentials once; everything
 // else reads the deployment file it wrote and the project's own manifest.
@@ -36,7 +37,9 @@ const USAGE = `Usage: agent-team <command> [project]
   destroy [project]   Remove the AWS resources (asks about roles and the data volume)
 
 Options: --yes (no prompts; fails where one is unavoidable), --config-dir DIR
-up only: --target local|aws (default local), --no-pm (skip the resident PM), --no-intake (skip tracker polling)
+up only: --target local|aws (default local), --no-pm (skip the resident PM), --no-intake (skip tracker polling),
+--engine NAME [--billing MODE] [--model ID] (run on an engine installed here instead of the manifest's default;
+stored as a project setting the dashboard shows and can change)
 init only: --permissions-boundary ARN (attached to both IAM roles), --toolkit-ref COMMIT (the toolkit
 revision the hosts run; defaults to this checkout's commit when it is published), --default-vpc (share the account's
 default VPC instead of a dedicated one), --public-dashboard (open port 4311 to your address)`;
@@ -56,6 +59,8 @@ export function prompter({ input = process.stdin, output = process.stdout, answe
   return ask;
 }
 
+// Flags that take a value and pass through to enqueue with it.
+const VALUED = ['--issue', '--key', '--base', '--timeout-minutes', '--proposal-limit'];
 function parse(argv) {
   const options = { yes: false, configDir: CONFIG_DIR, positional: [], flags: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -65,7 +70,8 @@ function parse(argv) {
     else if (arg === '--permissions-boundary' && argv[i + 1]) options.permissionsBoundary = argv[++i];
     else if (arg === '--toolkit-ref' && argv[i + 1]) options.toolkitRef = argv[++i];
     else if (arg === '--target' && argv[i + 1]) options.target = argv[++i];
-    else if (arg.startsWith('--') && options.positional.length >= 2) options.flags.push(arg);
+    else if (['--engine', '--billing', '--model'].includes(arg) && argv[i + 1]) { options[arg.slice(2)] = argv[i + 1]; options.flags.push(arg, argv[++i]); }
+    else if (VALUED.includes(arg) && argv[i + 1]) options.flags.push(arg, argv[++i]);
     else if (arg.startsWith('--')) options.flags.push(arg);
     else options.positional.push(arg);
   }
@@ -147,6 +153,16 @@ export async function bootstrapTracker(manifest, { env = process.env, log, clien
   return result;
 }
 
+// The engine this machine runs instead of the manifest's default: the same rule the runner applies
+// to a job's engine, so billing and model follow the manifest only while the engine does.
+export function engineOverride(manifest, { engine, billing, model } = {}) {
+  if (!engine && !billing && !model) return null;
+  const name = validateEngine(engine ?? manifest.engine.default);
+  const same = name === manifest.engine.default;
+  const chosenModel = model ?? (same ? manifest.engine.model : undefined);
+  return { default: name, billing: validateBilling(name, billing ?? (same ? manifest.engine.billing : undefined)), ...(chosenModel ? { model: chosenModel } : {}) };
+}
+
 // up: from a checkout to a running team, on this machine or on AWS, in one idempotent command.
 export async function up(options, { ask, log, awsRun = aws, region = configuredRegion, revision = publishedRevision, env = process.env, run, startLocalImpl = startLocal, seed = seedMemory, open = true, trackerClientImpl = null }) {
   const target = options.target ?? 'local';
@@ -155,6 +171,11 @@ export async function up(options, { ask, log, awsRun = aws, region = configuredR
   const file = path.join(checkout, '.agent-team.json');
   let manifest = null;
   if (existsSync(file)) manifest = normalizeManifest(JSON.parse(readFileSync(file, 'utf8')));
+  // The checkout's manifest is what the coordinator registers; the engine chosen for this machine
+  // travels as a project setting on top of it, like the local launcher does.
+  const committed = manifest;
+  const engine = manifest ? engineOverride(manifest, options) : null;
+  if (engine) manifest = { ...manifest, engine };
   const checks = preflight({ checkout, manifest, target, env, ...(run ? { run } : {}) });
   log(renderChecks(checks));
   const missing = blocking(checks);
@@ -162,7 +183,7 @@ export async function up(options, { ask, log, awsRun = aws, region = configuredR
   const projectId = manifest.queueProjectId ?? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   let inbox = null;
   try { inbox = await bootstrapTracker(manifest, { env, log, client: trackerClientImpl }); } catch (error) { log(`tracker bootstrap skipped: ${error.message}; create the labels and an owner inbox issue by hand`); }
-  const overrides = { ...(inbox?.ownerInboxIssue && !manifest.tracker.ownerInboxIssue ? { tracker: { ownerInboxIssue: inbox.ownerInboxIssue } } : {}) };
+  const overrides = { ...(inbox?.ownerInboxIssue && !manifest.tracker.ownerInboxIssue ? { tracker: { ownerInboxIssue: inbox.ownerInboxIssue } } : {}), ...(engine ? { engine } : {}) };
   if (target === 'aws') {
     const deployment = await init({ ...options, positional: ['init', checkout] }, { ask, log, awsRun, region, revision });
     const save = current => writeDeployment(current, options.configDir);
@@ -187,13 +208,13 @@ The team is up. Open the dashboard with: agent-team open ${projectId}`);
   const services = startLocalImpl({ files: local.files, token, env, log, withIntake, withPm });
   const request = createClient(local.coordinatorUrl, token);
   for (let attempt = 0; attempt < 40; attempt++) { try { await request('/health'); break; } catch { await new Promise(resolve => setTimeout(resolve, 500)); } if (attempt === 39) { services.stop(); throw new DeployError('The coordinator did not start', 'Check the output above.'); } }
-  await request(`/projects/${projectId}/manifest`, { workerId: 'owner', manifest });
+  await request(`/projects/${projectId}/manifest`, { workerId: 'owner', manifest: committed });
   await request(`/projects/${projectId}/settings`, { overrides: { ...overrides, worker: { launcher: 'local' } }, author: 'agent-team up', note: 'local target' });
   try { await seed({ project: checkout, id: projectId, coordinator: local.coordinatorUrl, token, log }); } catch (error) { log(`memory seed skipped: ${error.message}`); }
   log(`
 The team is up on this machine. Dashboard: ${local.dashboardUrl}${withPm ? '' : ' (no resident PM: the engine has no bounded sessions or --no-pm was given)'}
 Press Ctrl-C to stop everything.`);
-  if (open) { const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'; try { spawn(opener, [local.dashboardUrl], { stdio: 'ignore', detached: true }).unref(); } catch { /* headless */ } }
+  if (open) { try { openInBrowser(local.dashboardUrl); } catch { /* headless */ } }
   const onSignal = () => services.stop();
   process.once('SIGINT', onSignal); process.once('SIGTERM', onSignal);
   await services.finished;
@@ -256,8 +277,7 @@ export async function main(argv = process.argv.slice(2), { ask = prompter(), log
     const url = tunnel ? 'http://127.0.0.1:4311/' : `http://${deployment.aws.publicIp}:4311/`;
     const session = tunnel ? spawn('aws', ['ssm', 'start-session', '--region', deployment.aws.region, '--target', deployment.aws.instanceId, '--document-name', 'AWS-StartPortForwardingSession', '--parameters', JSON.stringify({ portNumber: ['4311'], localPortNumber: ['4311'] })], { stdio: ['ignore', 'ignore', 'inherit'] }) : null;
     if (session) await new Promise(resolve => setTimeout(resolve, 3000));
-    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-    spawn(opener, [url], { stdio: 'ignore', detached: true }).unref();
+    try { openInBrowser(url); } catch { /* headless */ }
     log(url);
     if (!session) return 0;
     log('Tunnel open; press Ctrl-C to close it.');

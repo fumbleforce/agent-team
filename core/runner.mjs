@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-import { spawn, spawnSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import * as fs from 'node:fs';
 import path from 'node:path';
@@ -16,6 +15,7 @@ import { credentialVariables, integrationServers, integrationInstructions } from
 import { blueprintDir, loadRolesFile } from './blueprint.mjs';
 import { materialize, validateTeam, TeamError } from './teams.mjs';
 import { validateEnvironment, capabilityServers, capabilityInstructions } from './environments.mjs';
+import { killTree, spawnCommand, spawnCommandSync, treeAlive, treeSpawnOptions } from './platform.mjs';
 
 export const REPORT = '.agent-team-result.json';
 const PACKAGE_DIR = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -46,7 +46,7 @@ const HELP = `Usage: node /path/to/agent-team/core/runner.mjs [options]
   --status                  Read-only lock and run journals; no preflight/model
   --help                    Show this help
 
-Linux, single-host only. State: .agent-team/; retained branches: <branchPrefix><id>.
+Single-host only. State: .agent-team/; retained branches: <branchPrefix><id>.
 New worktrees: <project-parent>/.agent-team-worktrees/<root-sha256-12>/<id>.
 The root hash uses the canonical (real) project path. Logs/locks stay in the
 project's .agent-team/. Existing retained worktrees keep their recorded paths.
@@ -125,7 +125,7 @@ export function parseArgs(args) {
 }
 
 function command(bin, args, cwd, env, { input, trim = true, timeout = 15_000 } = {}) {
-  const result = spawnSync(bin, args, { cwd, env, input, encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024 });
+  const result = spawnCommandSync(bin, args, { cwd, env, input, encoding: 'utf8', timeout, maxBuffer: 16 * 1024 * 1024 });
   if (result.error || result.status !== 0) {
     throw new Error(`${bin} ${args.join(' ')}: ${result.error?.message || result.stderr?.trim() || `exit ${result.status}`}`);
   }
@@ -426,10 +426,11 @@ Soft scheduling reminder: reserve the final 60 seconds of the cycle for the resu
 The per-cycle deadline is ${options.timeoutMinutes} minutes; cycle/time bounds are not a spending cap. ${abbreviation} URLs must point at the configured repository.`;
 }
 
-// Detached Linux process groups let us stop descendants even if the leader exits.
+// The engine runs as the root of its own process group (a process tree on Windows) so its
+// descendants can be stopped even if the leader exits first.
 export function runChild({ bin, args, input, cwd, env, stdoutFd, stderrFd, timeoutMs, graceMs = 5_000, signal, onSpawn }) {
   return new Promise((resolve, reject) => {
-    const child = spawn(bin, args, { cwd, env, detached: true, stdio: [input === undefined ? 'ignore' : 'pipe', stdoutFd, stderrFd] });
+    const child = spawnCommand(bin, args, { cwd, env, ...treeSpawnOptions(), stdio: [input === undefined ? 'ignore' : 'pipe', stdoutFd, stderrFd] });
     if (input !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input); }
     let reason = null;
     let timer;
@@ -441,7 +442,7 @@ export function runChild({ bin, args, input, cwd, env, stdoutFd, stderrFd, timeo
     let spawnError;
     const kill = sig => {
       if (!child.pid) return;
-      try { process.kill(-child.pid, sig); } catch (error) { if (error.code !== 'ESRCH') spawnError = error; }
+      try { killTree(child.pid, sig); } catch (error) { if (error.code !== 'ESRCH') spawnError = error; }
     };
     const finish = () => {
       if (!closed || (reason && !escalated)) return;
@@ -465,9 +466,7 @@ export function runChild({ bin, args, input, cwd, env, stdoutFd, stderrFd, timeo
       exitCode = code;
       exitSignal = sig;
       // Clean any lingering group before allowing another cycle, even on success.
-      try { process.kill(-child.pid, 0); stop('lingering-processes'); } catch (error) {
-        if (error.code !== 'ESRCH' && child.pid) spawnError = error;
-      }
+      try { if (treeAlive(child.pid)) stop('lingering-processes'); } catch (error) { if (child.pid) spawnError = error; }
       finish();
     });
     child.once('spawn', () => {
@@ -503,7 +502,6 @@ export async function main(argv = process.argv.slice(2), dependencies = {}) {
     timeoutMs, signal: externalSignal, packageDir = PACKAGE_DIR, warning = console.error } = dependencies;
   const options = parseArgs(argv);
   if (options.help) { output(HELP); return 0; }
-  if (process.platform !== 'linux') throw new Error('This runner supports Linux only');
   const projectPath = path.resolve(cwd, options.project || '.');
   const root = fs.realpathSync(command('git', ['rev-parse', '--show-toplevel'], projectPath, env));
   const git = (...args) => {

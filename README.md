@@ -55,7 +55,7 @@ We do not yet need Redis, Kubernetes, Temporal or a second agent framework. Revi
 
 ## Prerequisites
 
-- Linux workers with Node >=22.21.1, Git and the chosen engine: OpenCode with its provider login, or Claude Code (`claude auth status` must report a claude.ai login). Authenticate Linear for that engine on each worker.
+- Workers on Linux, macOS or Windows with Node >=22.21.1, Git and any one supported engine (OpenCode, Claude Code, Codex or Cursor) with its own login or key; `agent-team up` lists the engines it finds and `--engine` picks one that differs from the manifest's default. Authenticate the tracker for that engine on each worker. On Windows, commands installed by npm (`claude.cmd`, `opencode.cmd`, `npx.cmd`, ...) are found through PATHEXT and started through their own scripts, the `memory` and `team` commands exist both as shell scripts (for Git's bash, which the engines' shell tools use) and as `.cmd` files, and a run that overruns its deadline is ended with `taskkill /T` rather than a graceful signal. The systemd installer remains Linux-only; use `up` or a scheduled task elsewhere.
 - GitHub CLI (`gh auth login`) and Git push access only for jobs explicitly submitted with publishing enabled.
 - Per-project toolchains and synthetic test data. Dependency installation happens in the worktree, not the user's normal checkout.
 - A machine that stays awake. A sleeping laptop cannot execute jobs; another online worker can claim new jobs, but uncertain expired jobs remain quarantined.
@@ -369,6 +369,8 @@ npx @fumbleforce/agent-team up /path/to/checkout --target aws # dedicated networ
 ```
 
 `up` runs a preflight that lists every missing requirement at once (Node, Git, the manifest, ignores, the engine and its billing, the SCM and tracker tokens, AWS access for that target), creates the tracker labels and an owner inbox issue when the tracker adapter can (GitHub Issues does), registers the manifest, seeds memory from the instruction files and opens the dashboard. On the local target everything binds to loopback under a generated token and stops with Ctrl-C; on AWS it is `init`, `deploy`, `image` and `seed` in one go, and every step is idempotent so rerunning it is safe.
+
+The engine is whatever the manifest names by default, but the machine decides what is installed: when the default engine is missing, the preflight names the engines it did find, and `up --engine NAME [--billing MODE] [--model ID]` runs the team on one of those. The checkout's manifest is registered unchanged; the choice is stored as the project's `engine` setting (visible and editable on the dashboard's Settings page), so the coordinator, the worker and the resident PM all use it. An engine without bounded sessions runs without the resident PM, as `--no-pm` does.
 
 The defaults it applies are meant to be safe, cheap and complete: a dedicated VPC for the control plane and workers, one-shot spot workers that terminate with the job, the dashboard reachable only through a Session Manager tunnel, secrets in Parameter Store with the control-plane secrets out of the workers' reach, the PM in `suggest` autonomy with a daily spend cap, auto-merge off, and the `browser` environment so the team can look at what it builds.
 
