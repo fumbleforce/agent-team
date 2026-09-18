@@ -289,7 +289,7 @@ ${spend}
 <form method="post" action="/projects/${escape(project.project)}/message" class="compose"><textarea name="message" rows="3" maxlength="12000" placeholder="Ask what is going on, give direction, or decide something." required></textarea><button type="submit">Send to ${escape(pm.name)}</button></form></section>
 <section><h2 id="decisions">Decisions <small>${decisions.length} open</small></h2>${inbox}
 <h2 id="channel">Team channel <small>what active agents tell each other</small></h2><div class="list" data-ticker="channel">${feed || '<p class="empty">Quiet so far. Running agents post claims, blockers and hand-offs here; you can too.</p>'}</div>
-<form method="post" action="/projects/${escape(project.project)}/channel" class="compose"><input name="body" maxlength="4000" placeholder="Tell every active agent something (read at each cycle start)." required><button type="submit">Post</button></form>
+<form method="post" action="/projects/${escape(project.project)}/channel" class="compose"><input name="body" maxlength="4000" placeholder="Tell every active agent something (read at each cycle start), or start with @Name to ask one member now." required><button type="submit">Post</button></form>
 <h2>Board mirror <small>latest jobs</small></h2><div class="list">${board || '<p class="empty">No jobs yet.</p>'}</div></section></div></main>`;
   return page(`${project.name} · ${pm.name}`, body, 8_000);
 }
@@ -510,8 +510,9 @@ export function createDashboardServer(config) {
             if (what === 'channel') {
               const body = (form.get('body') ?? '').trim();
               if (!body) return back({ error: true, text: 'Write a post first.' });
-              await request(`/projects/${projectId}/channel`, { author: 'owner', body, kind: 'note' });
-              return back({ text: 'Posted to the team channel; every run reads it at its next cycle start.' }, `${page}#channel`);
+              const post = await request(`/projects/${projectId}/channel`, { author: 'owner', body, kind: 'note' });
+              const woke = (post?.woke ?? []).map(role => ROSTER[role]?.name ?? role);
+              return back({ text: woke.length ? `Posted to the team channel; ${woke.join(' and ')} ${woke.length === 1 ? 'is' : 'are'} answering there.` : 'Posted to the team channel; every run reads it at its next cycle start.' }, `${page}#channel`);
             }
             if (what === 'decision') {
               await request(`/decisions/${form.get('id')}/resolve`, { choice: form.get('choice'), ...(form.get('note') ? { note: form.get('note') } : {}) });

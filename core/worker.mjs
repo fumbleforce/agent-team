@@ -57,6 +57,11 @@ function writeFileSyncAtomic(file, content, mode) {
   try { writeSync(fd, content); } finally { closeSync(fd); }
   renameSync(temporary, file);
 }
+// A reply to a channel mention, referencing the post that asked, in what the channel accepts:
+// carriage returns and other control characters never travel.
+export function channelReply(seq, reply) {
+  return `re #${seq}: ${String(reply ?? '')}`.replace(/\r\n?/g, '\n').replace(/[\x00-\x08\x0b-\x1f\x7f]/g, ' ').slice(0, 4000);
+}
 export function createClient(url, token, fetchImpl = fetch) {
   requireToken(token);
   const base = new URL(url);
@@ -295,7 +300,13 @@ export async function runWorker(config, { once = false, jobId = null, signal = n
           replied = await chatAnswer({ tracker: client, manifest, team, engine: boundedJob.engine ?? full.engine.default, billing: full.engine.billing, role: job.role, issue: job.issue, message: job.message, cwd: latestWorktree(checkout) ?? checkout, work, runDir: path.join(stateDir, 'chat'), signal: control.signal,
             onDelta: text => { pending.push(JSON.stringify({ type: 'chat_delta', text })); } });
         } finally { clearInterval(deltaTimer); await flush(); }
-        execution = { code: 0, journal: { outcome: 'ready' } }; apiSummary = replied.reply.slice(0, 1900);
+        // A chat woken by a channel mention answers where it was asked, as its own member.
+        if (Number.isInteger(job.channelSeq)) {
+          try { await request(`/jobs/${job.id}/channel`, { ...credentials, kind: 'note', body: channelReply(job.channelSeq, replied.reply) }); }
+          catch (error) { onError(error); }
+        }
+        // The job summary is a single line of text; a reply's own line breaks belong in the channel and the tracker.
+        execution = { code: 0, journal: { outcome: 'ready' } }; apiSummary = replied.reply.replace(/\s+/g, ' ').trim().slice(0, 1900);
       } else if (skip) execution = { code: 0, journal: { outcome: 'idle' } };
       else {
         // The runner validates the manifest itself; here it only decides memory injection.
