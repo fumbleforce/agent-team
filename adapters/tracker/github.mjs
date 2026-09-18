@@ -44,6 +44,13 @@ export function scopeInstructions(tracker) {
   return `The issue tracker is GitHub Issues on ${tracker.repository} (${tracker.projectUrl}), reached through the tracker MCP tools; issue GH-12 is issue #12 of that repository and nothing else. Ready work carries the label ${tracker.readyLabel}. GitHub has no workflow states: mark progress with the labels ${PROGRESS_LABELS.inProgress} and ${PROGRESS_LABELS.inReview} (remove the previous one), never close an issue, and treat ${HOLD_LABELS.join(' or ')} as a hold.`;
 }
 
+// Guided setup: the repository's issues are the board; ideation states are labels `up` creates.
+export async function setup({ ask, scm }) {
+  let repository = scm?.kind === NAME && scm.repository ? scm.repository : null;
+  while (!repository || !REPOSITORY.test(repository)) repository = String(await ask('GitHub repository whose issues are the backlog (owner/name)')).trim();
+  return { tracker: { repository, readyLabel: 'agent:ready' },
+    ideation: { enabled: true, backlogCap: 8, batchSize: 3, minimumIntervalHours: 24, ideaLabel: 'idea', proposedState: 'idea:proposed', approvedState: 'agent:approved', rejectedState: 'closed' } };
+}
 export const identifier = number => `GH-${number}`;
 export const issueNumber = value => { const match = ISSUE_PATTERN.exec(String(value ?? '')); return match ? Number(value.slice(3)) : null; };
 const terminal = state => ['completed', 'canceled'].includes(state?.type);

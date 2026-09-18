@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { main, prompter } from './agent-team.mjs';
@@ -131,4 +131,83 @@ test('up stops at preflight with the full list, then brings a local team up and 
   assert.deepEqual(seeded, ['repo']);
   assert.match(log.join('\n'), /Dashboard: http:\/\/127.0.0.1:4311\//);
   assert.equal(readDeployment('repo', configDir), null, 'the local target writes no AWS deployment');
+});
+
+test('up --engine runs the local team on an engine installed here and records it as a project setting', async t => {
+  const { engineOverride } = await import('./agent-team.mjs');
+  const base = { engine: { default: 'claude', billing: 'api', model: 'sonnet' } };
+  assert.equal(engineOverride(base, {}), null);
+  assert.deepEqual(engineOverride(base, { engine: 'opencode' }), { default: 'opencode', billing: 'provider' }, 'billing and model follow the manifest only while the engine does');
+  assert.deepEqual(engineOverride(base, { billing: 'subscription' }), { default: 'claude', billing: 'subscription', model: 'sonnet' });
+  assert.deepEqual(engineOverride(base, { engine: 'codex', billing: 'subscription', model: 'o3' }), { default: 'codex', billing: 'subscription', model: 'o3' });
+  assert.throws(() => engineOverride(base, { engine: 'unknown' }), /Unknown engine/);
+  assert.throws(() => engineOverride(base, { engine: 'opencode', billing: 'api' }), /billing mode/);
+  const configDir = mkdtempSync(path.join(os.tmpdir(), 'up-engine-')); t.after(() => rmSync(configDir, { recursive: true, force: true }));
+  const checkout = path.join(configDir, 'repo'); mkdirSync(checkout);
+  writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ version: 2, name: 'Repo', queueProjectId: 'repo', instructions: [], scm: { kind: 'github', repository: 'o/r' }, tracker: { kind: 'github', repository: 'o/r', readyLabel: 'agent:ready' }, engine: { default: 'claude', billing: 'api' } }));
+  writeFileSync(path.join(checkout, '.gitignore'), '.agent-team/\n.agent-team-result.json\n');
+  const log = [];
+  // Only the other engine is installed on this machine: the manifest's default is not.
+  const run = bin => ({ ok: ['git', 'opencode', 'gh'].includes(bin), stdout: 'v1', stderr: '' });
+  await assert.rejects(main(['up', checkout, '--config-dir', configDir], { log: line => log.push(line), env: { GH_TOKEN: 'ghp_x', ANTHROPIC_API_KEY: 'k' }, run }), /requirement missing/);
+  assert.match(log.join('\n'), /MISSING  Engine claude: claude is not on PATH\n\s+Install the claude CLI on the worker host, or rerun with --engine opencode \(installed here\)/);
+  const requests = [];
+  const { createServer } = await import('node:http');
+  const server = createServer((req, res) => { let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => { requests.push([req.method, req.url, body ? JSON.parse(body) : null]); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(req.url === '/health' ? { ok: true } : { ok: true, overrides: {} })); }); });
+  await new Promise(resolve => server.listen(4310, '127.0.0.1', resolve)); t.after(() => server.close());
+  let started = null;
+  const startLocalImpl = ({ files, withPm }) => { started = { files, withPm }; return { stop() {}, started: Promise.resolve(), finished: Promise.resolve(), children: new Map() }; };
+  const trackerClientImpl = { bootstrap: async () => ({ labels: [], created: [], ownerInboxIssue: 'GH-9' }) };
+  const code = await main(['up', checkout, '--config-dir', configDir, '--no-intake', '--engine', 'opencode'], { log: line => log.push(line), env: { GH_TOKEN: 'ghp_x' }, run, startLocalImpl, seed: async () => {}, open: false, trackerClientImpl });
+  assert.equal(code, 0);
+  assert.equal(started.withPm, false, 'the chosen engine has no bounded sessions, so no resident PM');
+  const { readFileSync } = await import('node:fs');
+  assert.equal(JSON.parse(readFileSync(started.files.worker, 'utf8')).engine, 'opencode');
+  const registered = requests.find(([method, url]) => method === 'POST' && url === '/projects/repo/manifest');
+  assert.equal(registered[2].manifest.engine.default, 'claude', 'the checkout\'s manifest is registered as committed');
+  const settings = requests.find(([method, url]) => method === 'POST' && url === '/projects/repo/settings');
+  assert.deepEqual(settings[2].overrides, { tracker: { ownerInboxIssue: 'GH-9' }, engine: { default: 'opencode', billing: 'provider' }, worker: { launcher: 'local' } });
+});
+
+test('up with nothing prepared asks its way to a running team: manifest, engine, credentials stored privately', async t => {
+  const configDir = mkdtempSync(path.join(os.tmpdir(), 'up-guided-')); t.after(() => rmSync(configDir, { recursive: true, force: true }));
+  const checkout = path.join(configDir, 'repo'); mkdirSync(checkout);
+  const run = (bin, args) => bin === 'git' && args.includes('get-url') ? { ok: true, stdout: 'git@github.com:acme/shop.git\n', stderr: '' }
+    : bin === 'claude' && args[0] === 'auth' ? { ok: true, stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' }), stderr: '' }
+    : { ok: ['git', 'claude', 'gh'].includes(bin), stdout: 'v1', stderr: '' };
+  const requests = [];
+  const { createServer } = await import('node:http');
+  const server = createServer((req, res) => { let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => { requests.push([req.method, req.url, body ? JSON.parse(body) : null]); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(req.url === '/health' ? { ok: true } : { ok: true, overrides: {} })); }); });
+  await new Promise(resolve => server.listen(4310, '127.0.0.1', resolve)); t.after(() => server.close());
+  const started = [];
+  const startLocalImpl = ({ files, withPm }) => { started.push({ files, withPm }); return { stop() {}, started: Promise.resolve(), finished: Promise.resolve(), children: new Map() }; };
+  const trackerClientImpl = { bootstrap: async () => ({ labels: [], created: ['agent:ready'], ownerInboxIssue: 'GH-1' }) };
+  const log = [];
+  // target, then the manifest: name, code host, repository, base branch, backlog, engine, billing, worker environment; then the credentials.
+  const answers = ['1', 'Shop', '1', 'acme/shop', 'main', '2', '2', '2', '1', 'ghp_secret', 'sk-secret'];
+  const code = await main(['up', checkout, '--config-dir', configDir, '--no-intake'], { ask: prompter({ answers }), interactive: true, log: line => log.push(line), env: { HOME: '/h' }, run, startLocalImpl, seed: async () => {}, open: false, trackerClientImpl });
+  assert.equal(code, 0); assert.deepEqual(answers, [], 'every question was asked exactly once');
+  const manifest = JSON.parse(readFileSync(path.join(checkout, '.agent-team.json'), 'utf8'));
+  assert.equal(manifest.name, 'Shop'); assert.deepEqual(manifest.scm, { kind: 'github', repository: 'acme/shop', baseBranch: 'main', branchPrefix: 'agents/' });
+  assert.deepEqual(manifest.tracker, { kind: 'github', repository: 'acme/shop', readyLabel: 'agent:ready' }); assert.deepEqual(manifest.engine, { default: 'claude', billing: 'api' });
+  assert.equal(readFileSync(path.join(checkout, '.gitignore'), 'utf8'), '.agent-team/\n.agent-team-result.json\n');
+  const secrets = path.join(configDir, 'secrets', 'shop.env');
+  assert.equal(readFileSync(secrets, 'utf8'), 'GH_TOKEN=ghp_secret\nANTHROPIC_API_KEY=sk-secret\n'); assert.equal(statSync(secrets).mode & 0o777, 0o600);
+  const text = log.join('\n');
+  assert.ok(!text.includes('ghp_secret') && !text.includes('sk-secret'), 'credentials never reach the output');
+  assert.match(text, /Wrote .*\.agent-team\.json and ignored \.agent-team\/, \.agent-team-result\.json/); assert.match(text, /ok {2}.*github token/); assert.match(text, /ok {2}.*Engine access/);
+  assert.ok(requests.some(([method, url]) => method === 'POST' && url === '/projects/shop/manifest'));
+  assert.equal(started.length, 1);
+  // The next run, without a terminal, needs no questions and no exported variables: the file serves.
+  const again = await main(['up', checkout, '--config-dir', configDir, '--no-intake'], { ask: prompter({ answers: [] }), interactive: false, log: line => log.push(line), env: {}, run, startLocalImpl, seed: async () => {}, open: false, trackerClientImpl });
+  assert.equal(again, 0); assert.equal(started.length, 2);
+  // `secrets` replaces what is stored, asking for everything again.
+  const replaced = await main(['secrets', checkout, '--config-dir', configDir], { ask: prompter({ answers: ['ghp_new', 'sk-new'] }), log: () => {} });
+  assert.equal(replaced, 0); assert.equal(readFileSync(secrets, 'utf8'), 'GH_TOKEN=ghp_new\nANTHROPIC_API_KEY=sk-new\n');
+  // A manifest whose engine is missing here offers the installed ones before anything else is asked.
+  writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ ...manifest, engine: { default: 'codex', billing: 'subscription' } }));
+  const picked = await main(['up', checkout, '--config-dir', configDir, '--no-intake', '--target', 'local'], { ask: prompter({ answers: ['1'] }), interactive: true, log: line => log.push(line), env: {}, run, startLocalImpl, seed: async () => {}, open: false, trackerClientImpl });
+  assert.equal(picked, 0);
+  const settings = requests.filter(([method, url]) => method === 'POST' && url === '/projects/shop/settings').at(-1);
+  assert.deepEqual(settings[2].overrides.engine, { default: 'claude', billing: 'subscription' });
 });

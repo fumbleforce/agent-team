@@ -1,7 +1,7 @@
-import { spawnSync } from 'node:child_process';
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
-import { engineAdapter } from '../adapters/engine/index.mjs';
+import { ENGINES, engineAdapter } from '../adapters/engine/index.mjs';
+import { spawnCommandSync } from './platform.mjs';
 import { scmAdapter } from '../adapters/scm/index.mjs';
 import { trackerAdapter, trackerCredentialPresent } from '../adapters/tracker/index.mjs';
 import { integrationAdapter } from '../adapters/integration/index.mjs';
@@ -26,7 +26,10 @@ export function preflight({ checkout, manifest, target = 'local', env = process.
   add('.gitignore', ['.agent-team/', '.agent-team-result.json'].every(entry => ignore.includes(entry)), 'ignores .agent-team/ and .agent-team-result.json', 'Add .agent-team/ and .agent-team-result.json to .gitignore');
   const engine = engineAdapter(manifest.engine.default);
   const engineVersion = run(engine.BIN, ['--version']);
-  add(`Engine ${engine.NAME}`, engineVersion.ok, engineVersion.ok ? engineVersion.stdout.trim().slice(0, 60) : `${engine.BIN} is not on PATH`, `Install the ${engine.NAME} CLI on the worker host`, target === 'local');
+  // Another installed engine is a way forward on this machine: `up --engine` selects it.
+  const installed = engineVersion.ok || target !== 'local' ? [] : ENGINES.filter(name => name !== manifest.engine.default && run(engineAdapter(name).BIN, ['--version']).ok);
+  add(`Engine ${engine.NAME}`, engineVersion.ok, engineVersion.ok ? engineVersion.stdout.trim().slice(0, 60) : `${engine.BIN} is not on PATH`,
+    `Install the ${engine.NAME} CLI on the worker host${installed.length ? `, or rerun with --engine ${installed.join(' or --engine ')} (installed here)` : ''}`, target === 'local');
   // The adapter's own preflight decides what its billing mode needs (a login, a key, a region).
   if (engineVersion.ok) {
     let problem = null;
@@ -52,7 +55,7 @@ export function preflight({ checkout, manifest, target = 'local', env = process.
 }
 
 export function defaultRun(bin, args) {
-  const result = spawnSync(bin, args, { encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'pipe'] });
+  const result = spawnCommandSync(bin, args, { encoding: 'utf8', timeout: 20_000, stdio: ['ignore', 'pipe', 'pipe'] });
   return { ok: !result.error && result.status === 0, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
 }
 

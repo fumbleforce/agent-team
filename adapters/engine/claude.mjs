@@ -1,5 +1,5 @@
-import { spawn } from 'node:child_process';
 import * as fs from 'node:fs';
+import { spawnCommand } from '../../core/platform.mjs';
 
 // Engine adapter for the official Claude Code CLI. Three billing modes:
 //   subscription: the worker's logged-in claude.ai account; API variables are stripped so the run
@@ -12,6 +12,9 @@ export const BILLING_MODES = ['subscription', 'api', 'bedrock'];
 export const DEFAULT_BILLING = 'subscription';
 export const DEFAULT_MODEL = undefined;
 export const NEEDS_SYSTEM_PROMPT_FILE = true;
+export const API_KEY_VARIABLE = 'ANTHROPIC_API_KEY';
+export const KEYED_BILLING = ['api'];
+export const BILLING_DESCRIPTIONS = { subscription: 'the claude.ai account logged in on the worker', api: 'an Anthropic API key, metered', bedrock: 'Amazon Bedrock through AWS credentials' };
 
 const ROLE_WRITERS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'];
 // Prefix rules approximating the shared bash deny globs; deterministic delivery owns merges.
@@ -200,7 +203,7 @@ export function ask({ systemPromptFile, prompt, cwd, timeoutMs = 240_000, env = 
     const args = [prompt, '--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--no-session-persistence', '--setting-sources', 'user', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: mcp }),
       ...(mcpNames.length ? ['--allowedTools', ...mcpNames] : ['--restricted']), '--tools', [...tools, ...mcpNames].join(','), '--permission-mode', 'default', '--permission-prompts', 'none', '--append-system-prompt-file', systemPromptFile];
     if (model) args.push('--model', model);
-    const child = spawn(BIN, args, { cwd, env: filtered, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawnCommand(BIN, args, { cwd, env: filtered, stdio: ['ignore', 'pipe', 'pipe'] });
     let buffer = ''; let stderr = ''; let reply = ''; let streamed = '';
     const kill = () => child.kill('SIGKILL');
     const timer = setTimeout(kill, timeoutMs);

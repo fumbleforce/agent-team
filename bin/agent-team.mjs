@@ -8,7 +8,7 @@ import { Writable } from 'node:stream';
 import { CONFIG_DIR, deriveFromManifest, generateSecret, listDeployments, newDeployment, readDeployment, writeDeployment } from '../core/deployment.mjs';
 import { TOOLKIT_REPO, deploy as awsDeploy, destroy as awsDestroy, image as awsImage, readSecret, secrets as awsSecrets, discover, parameterName, BOUNDARY_ARN, DeployError } from '../adapters/hosting/aws/deploy.mjs';
 import { aws } from '../adapters/launcher/ec2.mjs';
-import { engineAdapter } from '../adapters/engine/index.mjs';
+import { engineAdapter, validateBilling, validateEngine } from '../adapters/engine/index.mjs';
 import { createClient } from '../core/worker.mjs';
 import { normalizeManifest, flatTracker } from '../core/manifest.mjs';
 import { preflight, renderChecks, blocking } from '../core/preflight.mjs';
@@ -16,14 +16,20 @@ import { trackerAdapter, trackerClient } from '../adapters/tracker/index.mjs';
 import { readToken as readLocalToken, start as startLocal, writeConfigs as writeLocalConfigs } from '../adapters/hosting/local/up.mjs';
 import { parseEnqueueArgs } from '../core/cli.mjs';
 import { seedMemory } from '../core/seed-memory.mjs';
+import { openInBrowser } from '../core/platform.mjs';
+import { chooser, collectSecrets, draftManifest, ensureIgnores, installedEngines, readSecrets, writeManifest } from '../core/setup.mjs';
+import { defaultRun } from '../core/preflight.mjs';
 
 // The owner-facing command. `init` asks for the checkout and the credentials once; everything
 // else reads the deployment file it wrote and the project's own manifest.
 const USAGE = `Usage: agent-team <command> [project]
 
-  up [checkout]       One command from a checkout to a running team: preflight, tracker labels and
-                      inbox, then --target local (this machine, foreground) or --target aws (init,
-                      deploy, image, seed). Rerun it any time; every step is idempotent.
+  up [checkout]       One command from a checkout to a running team. Asks what it cannot derive:
+                      where the code and the backlog live, which engine, where the team runs and
+                      the credentials (stored privately, asked once). Then preflight, tracker
+                      labels and inbox, and the local target (this machine, foreground) or AWS
+                      (init, deploy, image, seed). Rerun it any time; every step is idempotent.
+  secrets [checkout]  Enter the project's credentials again (replaces what is stored)
   init [checkout]     Register a project: reads its .agent-team.json, asks for credentials once
   deploy [project]    Create or update everything on AWS and print the dashboard address
   image [project]     Rebuild the worker image only (run nightly, or after changing setup)
@@ -35,8 +41,10 @@ const USAGE = `Usage: agent-team <command> [project]
   enqueue <project> --issue KEY-1 [--publish]   Queue a job through the coordinator
   destroy [project]   Remove the AWS resources (asks about roles and the data volume)
 
-Options: --yes (no prompts; fails where one is unavoidable), --config-dir DIR
-up only: --target local|aws (default local), --no-pm (skip the resident PM), --no-intake (skip tracker polling)
+Options: --yes (no prompts, no guided setup; fails where one is unavoidable), --config-dir DIR
+up only: --target local|aws (default local), --no-pm (skip the resident PM), --no-intake (skip tracker polling),
+--engine NAME [--billing MODE] [--model ID] (run on an engine installed here instead of the manifest's default;
+stored as a project setting the dashboard shows and can change)
 init only: --permissions-boundary ARN (attached to both IAM roles), --toolkit-ref COMMIT (the toolkit
 revision the hosts run; defaults to this checkout's commit when it is published), --default-vpc (share the account's
 default VPC instead of a dedicated one), --public-dashboard (open port 4311 to your address)`;
@@ -56,6 +64,8 @@ export function prompter({ input = process.stdin, output = process.stdout, answe
   return ask;
 }
 
+// Flags that take a value and pass through to enqueue with it.
+const VALUED = ['--issue', '--key', '--base', '--timeout-minutes', '--proposal-limit'];
 function parse(argv) {
   const options = { yes: false, configDir: CONFIG_DIR, positional: [], flags: [] };
   for (let i = 0; i < argv.length; i++) {
@@ -65,7 +75,8 @@ function parse(argv) {
     else if (arg === '--permissions-boundary' && argv[i + 1]) options.permissionsBoundary = argv[++i];
     else if (arg === '--toolkit-ref' && argv[i + 1]) options.toolkitRef = argv[++i];
     else if (arg === '--target' && argv[i + 1]) options.target = argv[++i];
-    else if (arg.startsWith('--') && options.positional.length >= 2) options.flags.push(arg);
+    else if (['--engine', '--billing', '--model'].includes(arg) && argv[i + 1]) { options[arg.slice(2)] = argv[i + 1]; options.flags.push(arg, argv[++i]); }
+    else if (VALUED.includes(arg) && argv[i + 1]) options.flags.push(arg, argv[++i]);
     else if (arg.startsWith('--')) options.flags.push(arg);
     else options.positional.push(arg);
   }
@@ -95,7 +106,7 @@ const myIp = () => new Promise(resolve => execFile('curl', ['-fsS', 'https://che
 const configuredRegion = () => new Promise(resolve => execFile('aws', ['configure', 'get', 'region'], { timeout: 10_000 }, (error, stdout) => resolve(error ? null : stdout.trim() || null)));
 
 // init: derive everything from the manifest, ask for what cannot be derived, store secrets.
-export async function init(options, { ask, log, awsRun = aws, region = configuredRegion, revision = publishedRevision }) {
+export async function init(options, { ask, log, awsRun = aws, region = configuredRegion, revision = publishedRevision, secretValues = {} }) {
   const checkoutInput = options.positional[1] ?? await ask('Path to the project checkout', { fallback: process.cwd() });
   const derived = deriveFromManifest(path.resolve(checkoutInput));
   const existing = readDeployment(derived.projectId, options.configDir);
@@ -114,6 +125,7 @@ export async function init(options, { ask, log, awsRun = aws, region = configure
   const values = {};
   for (const secret of deployment.secrets.filter(secret => !secret.generated)) {
     const name = parameterName(deployment, secret);
+    if (secretValues[secret.name]) { values[secret.name] = secretValues[secret.name]; continue; }
     let present = false;
     try { await awsRun(['ssm', 'get-parameter', '--region', deployment.aws.region, '--name', name]); present = true; } catch {}
     if (present && (options.yes || (await ask(`${secret.purpose} is already stored; replace it? (y/N)`)).toLowerCase() !== 'y')) continue;
@@ -147,24 +159,66 @@ export async function bootstrapTracker(manifest, { env = process.env, log, clien
   return result;
 }
 
+// The engine this machine runs instead of the manifest's default: the same rule the runner applies
+// to a job's engine, so billing and model follow the manifest only while the engine does.
+export function engineOverride(manifest, { engine, billing, model } = {}) {
+  if (!engine && !billing && !model) return null;
+  const name = validateEngine(engine ?? manifest.engine.default);
+  const same = name === manifest.engine.default;
+  const chosenModel = model ?? (same ? manifest.engine.model : undefined);
+  return { default: name, billing: validateBilling(name, billing ?? (same ? manifest.engine.billing : undefined)), ...(chosenModel ? { model: chosenModel } : {}) };
+}
+
 // up: from a checkout to a running team, on this machine or on AWS, in one idempotent command.
-export async function up(options, { ask, log, awsRun = aws, region = configuredRegion, revision = publishedRevision, env = process.env, run, startLocalImpl = startLocal, seed = seedMemory, open = true, trackerClientImpl = null }) {
-  const target = options.target ?? 'local';
+export async function up(options, { ask, log, awsRun = aws, region = configuredRegion, revision = publishedRevision, env = process.env, run, startLocalImpl = startLocal, seed = seedMemory, open = true, trackerClientImpl = null, interactive = !options.yes && Boolean(process.stdin.isTTY) }) {
+  const choose = chooser(ask);
+  const probe = run ?? defaultRun;
+  // On rails: whatever a flag or the checkout does not say is asked, once, in order.
+  const checkout = path.resolve(options.positional[1] ?? (interactive ? await ask('Path to the project checkout', { fallback: process.cwd() }) : process.cwd()));
+  const target = options.target ?? (interactive ? await choose('Where should the team run?', [
+    { value: 'local', label: 'This machine', hint: 'foreground, loopback only, stops with Ctrl-C' },
+    { value: 'aws', label: 'AWS', hint: 'a dedicated network, spot workers, secrets in Parameter Store' }], { fallback: 'local' }) : 'local');
   if (!['local', 'aws'].includes(target)) throw new DeployError(`Unknown target ${target}`, 'Use --target local or --target aws');
-  const checkout = path.resolve(options.positional[1] ?? process.cwd());
   const file = path.join(checkout, '.agent-team.json');
   let manifest = null;
+  let secretPreset = {};
   if (existsSync(file)) manifest = normalizeManifest(JSON.parse(readFileSync(file, 'utf8')));
+  else if (interactive) {
+    log(`No .agent-team.json in ${checkout} yet; a few questions will write one.`);
+    const draft = await draftManifest({ checkout, ask, choose, run: probe, target, env, log });
+    writeManifest(checkout, draft.manifest);
+    const added = ensureIgnores(checkout);
+    manifest = normalizeManifest(draft.manifest);
+    secretPreset = draft.secrets;
+    log(`Wrote ${file}${added.length ? ` and ignored ${added.join(', ')}` : ''}; commit them with the project.`);
+  }
+  if (interactive && manifest && !options.engine) {
+    // The manifest's engine may not be installed on this machine: offer the ones that are.
+    const installed = installedEngines(probe);
+    if (installed.length && !installed.includes(manifest.engine.default)) {
+      const pick = await choose(`${manifest.engine.default} is not installed here. Run the team on:`, [...installed.map(name => ({ value: name, label: name, hint: 'installed here' })), { value: manifest.engine.default, label: `keep ${manifest.engine.default}`, hint: 'install it first' }], { fallback: installed[0] });
+      if (pick !== manifest.engine.default) options.engine = pick;
+    }
+  }
+  // The checkout's manifest is what the coordinator registers; the engine chosen for this machine
+  // travels as a project setting on top of it, like the local launcher does.
+  const committed = manifest;
+  const engine = manifest ? engineOverride(manifest, options) : null;
+  if (engine) manifest = { ...manifest, engine };
+  const projectId = manifest ? manifest.queueProjectId ?? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') : null;
+  // Credentials: asked once and kept privately for the local target; handed to init for AWS.
+  let secretValues = {};
+  if (manifest && interactive) { const collected = await collectSecrets({ manifest, projectId, configDir: options.configDir, env, ask, log, store: target === 'local', preset: secretPreset }); env = collected.env; secretValues = collected.values; }
+  else if (manifest && target === 'local') env = { ...readSecrets(projectId, options.configDir), ...env };
   const checks = preflight({ checkout, manifest, target, env, ...(run ? { run } : {}) });
   log(renderChecks(checks));
   const missing = blocking(checks);
   if (missing.length) throw new DeployError(`${missing.length} requirement${missing.length === 1 ? '' : 's'} missing; nothing was created`, 'Fix the items marked MISSING above and rerun agent-team up.');
-  const projectId = manifest.queueProjectId ?? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   let inbox = null;
   try { inbox = await bootstrapTracker(manifest, { env, log, client: trackerClientImpl }); } catch (error) { log(`tracker bootstrap skipped: ${error.message}; create the labels and an owner inbox issue by hand`); }
-  const overrides = { ...(inbox?.ownerInboxIssue && !manifest.tracker.ownerInboxIssue ? { tracker: { ownerInboxIssue: inbox.ownerInboxIssue } } : {}) };
+  const overrides = { ...(inbox?.ownerInboxIssue && !manifest.tracker.ownerInboxIssue ? { tracker: { ownerInboxIssue: inbox.ownerInboxIssue } } : {}), ...(engine ? { engine } : {}) };
   if (target === 'aws') {
-    const deployment = await init({ ...options, positional: ['init', checkout] }, { ask, log, awsRun, region, revision });
+    const deployment = await init({ ...options, positional: ['init', checkout] }, { ask, log, awsRun, region, revision, secretValues });
     const save = current => writeDeployment(current, options.configDir);
     const probe = current => withCoordinator(current, ({ request }) => request('/health'), { attempts: 10 }).catch(error => { throw error instanceof DeployError && !/plugin/i.test(error.hint ?? '') ? new Error(error.message) : error; });
     await awsDeploy(deployment, { aws: awsRun, only: null, save, log, prompt: options.yes ? null : ask, myIp: deployment.aws.dashboard === 'public' ? await myIp() : null, generate: generateSecret, probe });
@@ -187,13 +241,13 @@ The team is up. Open the dashboard with: agent-team open ${projectId}`);
   const services = startLocalImpl({ files: local.files, token, env, log, withIntake, withPm });
   const request = createClient(local.coordinatorUrl, token);
   for (let attempt = 0; attempt < 40; attempt++) { try { await request('/health'); break; } catch { await new Promise(resolve => setTimeout(resolve, 500)); } if (attempt === 39) { services.stop(); throw new DeployError('The coordinator did not start', 'Check the output above.'); } }
-  await request(`/projects/${projectId}/manifest`, { workerId: 'owner', manifest });
+  await request(`/projects/${projectId}/manifest`, { workerId: 'owner', manifest: committed });
   await request(`/projects/${projectId}/settings`, { overrides: { ...overrides, worker: { launcher: 'local' } }, author: 'agent-team up', note: 'local target' });
   try { await seed({ project: checkout, id: projectId, coordinator: local.coordinatorUrl, token, log }); } catch (error) { log(`memory seed skipped: ${error.message}`); }
   log(`
 The team is up on this machine. Dashboard: ${local.dashboardUrl}${withPm ? '' : ' (no resident PM: the engine has no bounded sessions or --no-pm was given)'}
 Press Ctrl-C to stop everything.`);
-  if (open) { const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open'; try { spawn(opener, [local.dashboardUrl], { stdio: 'ignore', detached: true }).unref(); } catch { /* headless */ } }
+  if (open) { try { openInBrowser(local.dashboardUrl); } catch { /* headless */ } }
   const onSignal = () => services.stop();
   process.once('SIGINT', onSignal); process.once('SIGTERM', onSignal);
   await services.finished;
@@ -235,6 +289,15 @@ export async function main(argv = process.argv.slice(2), { ask = prompter(), log
   if (!command || command === 'help' || command === '--help') { log(USAGE); return 0; }
   if (command === 'init') { await init(options, { ask, log, awsRun, region, revision }); return 0; }
   if (command === 'up') return up(options, { ask, log, awsRun, region, revision, ...extra });
+  if (command === 'secrets') {
+    const checkout = path.resolve(options.positional[1] ?? process.cwd());
+    const file = path.join(checkout, '.agent-team.json');
+    if (!existsSync(file)) throw new DeployError(`No .agent-team.json in ${checkout}`, 'Run `agent-team up` there first; it writes one.');
+    const manifest = normalizeManifest(JSON.parse(readFileSync(file, 'utf8')));
+    const projectId = manifest.queueProjectId ?? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    await collectSecrets({ manifest, projectId, configDir: options.configDir, env: {}, ask, log, replace: true });
+    return 0;
+  }
   const deployment = resolveProject(options, name);
   const save = current => writeDeployment(current, options.configDir);
   if (command === 'deploy' || command === 'image') {
@@ -256,8 +319,7 @@ export async function main(argv = process.argv.slice(2), { ask = prompter(), log
     const url = tunnel ? 'http://127.0.0.1:4311/' : `http://${deployment.aws.publicIp}:4311/`;
     const session = tunnel ? spawn('aws', ['ssm', 'start-session', '--region', deployment.aws.region, '--target', deployment.aws.instanceId, '--document-name', 'AWS-StartPortForwardingSession', '--parameters', JSON.stringify({ portNumber: ['4311'], localPortNumber: ['4311'] })], { stdio: ['ignore', 'ignore', 'inherit'] }) : null;
     if (session) await new Promise(resolve => setTimeout(resolve, 3000));
-    const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
-    spawn(opener, [url], { stdio: 'ignore', detached: true }).unref();
+    try { openInBrowser(url); } catch { /* headless */ }
     log(url);
     if (!session) return 0;
     log('Tunnel open; press Ctrl-C to close it.');
