@@ -7,12 +7,12 @@ import { validBind } from './queue.mjs';
 import { createClient } from './worker.mjs';
 import { localToken } from './cli.mjs';
 import { ROSTER } from './roster.mjs';
+import { blueprintFile } from './blueprint.mjs';
 import { clip, eventSteps } from './evidence.mjs';
 import { linkText } from '../adapters/scm/index.mjs';
 import { ITEM_TYPES, ITEM_STATUS } from './memory.mjs';
 import { overridesFromForm, renderSettingsForm, renderSettingsHistory } from './settings.mjs';
 
-const PORTRAITS = path.join(path.dirname(path.dirname(fileURLToPath(import.meta.url))), 'portraits');
 const PM = 'team-pm';
 const ACTIVE = ['queued', 'running', 'blocked', 'failed'];
 const DAY = 86_400_000;
@@ -259,7 +259,7 @@ btn.onclick=function(){on=!on;btn.textContent=on?'Stop talking':'Talk to '+name;
 
 // Landing page per project: the conversation with the resident PM, the decision inbox, a board
 // mirror from the PM's last status line, spend, and links into memory.
-export function renderProject({ project, state, thread, decisions, costs, flash }) {
+export function renderProject({ project, state, thread, decisions, costs, flash, channel = [] }) {
   const pm = ROSTER[PM];
   const bubbles = thread.messages.slice(-60).map(message => {
     const owner = message.author === 'owner';
@@ -270,6 +270,7 @@ export function renderProject({ project, state, thread, decisions, costs, flash 
 <form method="post" action="/projects/${escape(project.project)}/decision" class="compose"><input type="hidden" name="id" value="${escape(d.id)}"><input type="hidden" name="title" value="${escape(d.title)}"><select name="choice">${d.options.map(option => `<option value="${escape(option)}">${escape(option)}</option>`).join('')}</select><input name="note" placeholder="optional note for the PM" maxlength="4000"><button type="submit">Decide</button></form></div>`).join('')
     : '<p class="empty">Nothing waiting on you.</p>';
   const spend = costs ? `<div class="usage">${gauge('Spend today', usd(costs.day?.usd), `${costs.day?.entries ?? 0} entries`, 'raw')}${gauge('Spend 7d', usd(costs.week?.usd), `${compact(costs.week?.tokens ?? 0)} tokens`, 'raw')}${gauge('Spend 30d', usd(costs.month?.usd), '', 'raw')}</div>` : '';
+  const feed = channel.slice(-40).map(post => `<div class="row" id="c-${post.seq}"><span class="at">${escape(clock(post.createdAt))}</span><span class="who">${post.author === 'owner' ? 'You' : `${avatar(post.author, 16)}${escape(ROSTER[post.author]?.name ?? post.author)}`}</span><span class="what">${post.kind !== 'note' ? `<b>${escape(post.kind)}</b> ` : ''}${escape(post.body)}</span></div>`).join('');
   const board = state.jobs.filter(job => job.projectId === project.project && job.kind !== 'chat').slice(0, 12).map(job => `<div class="row"><span class="at">${escape(clock(job.createdAt))}</span><span class="who">${escape(job.issue ?? job.kind)}</span><span class="what">${escape(job.summary) || (job.state === 'queued' ? 'Waiting for a worker.' : job.state === 'running' ? 'In progress.' : '')}</span>${tag(job.state)}</div>`).join('');
   const body = `<div class="crumb"><a href="/">← Agent team</a> · <a href="/projects/${escape(project.project)}/memory">Memory</a> · <a href="/projects/${escape(project.project)}/settings">Settings</a> · <a href="/team/${PM}?project=${escape(project.project)}">Tracker thread</a></div>
 <header class="mh">${avatar(PM, 96)}<div><h1>${escape(project.name)} <span>with ${escape(pm.name)}, ${escape(pm.title)}</span></h1><p class="voice">${escape(pm.voice)}</p><p class="n">${escape([project.scm, project.tracker, project.engine, `PM autonomy ${project.autonomy ?? 'suggest'}`, project.status].filter(Boolean).join(' · '))}</p></div></header>
@@ -278,6 +279,8 @@ ${spend}
 <div class="cols"><section><h2>Conversation</h2><div class="chat" data-ticker="pm">${bubbles || `<p class="empty">Say hello. ${escape(pm.name)} reads the board, the runs and project memory before answering.</p>`}</div>
 <form method="post" action="/projects/${escape(project.project)}/message" class="compose"><textarea name="message" rows="3" maxlength="12000" placeholder="Ask what is going on, give direction, or decide something." required></textarea><button type="submit">Send to ${escape(pm.name)}</button></form></section>
 <section><h2 id="decisions">Decisions <small>${decisions.length} open</small></h2>${inbox}
+<h2 id="channel">Team channel <small>what active agents tell each other</small></h2><div class="list" data-ticker="channel">${feed || '<p class="empty">Quiet so far. Running agents post claims, blockers and hand-offs here; you can too.</p>'}</div>
+<form method="post" action="/projects/${escape(project.project)}/channel" class="compose"><input name="body" maxlength="4000" placeholder="Tell every active agent something (read at each cycle start)." required><button type="submit">Post</button></form>
 <h2>Board mirror <small>latest jobs</small></h2><div class="list">${board || '<p class="empty">No jobs yet.</p>'}</div></section></div></main>`;
   return page(`${project.name} · ${pm.name}`, body, 8_000);
 }
@@ -353,7 +356,7 @@ export function createDashboardServer(config) {
       if (config.password && !basicAuth(req, config.password)) { req.resume(); res.writeHead(401, { 'www-authenticate': 'Basic realm="agent-team"', 'content-type': 'text/plain' }); return res.end('Sign in'); }
       const url = new URL(req.url, 'http://localhost');
       if (req.method === 'POST') {
-        const projectAction = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(message|memory|decision|proposal|settings)$/.exec(url.pathname);
+        const projectAction = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(message|memory|decision|proposal|settings|channel)$/.exec(url.pathname);
         if (!['/actions', '/chat'].includes(url.pathname) && !projectAction) return reply(404, 'text/plain', 'Not found');
         if (!sameOrigin(req)) { req.resume(); return reply(403, 'text/plain', 'Actions are accepted from the dashboard page only'); }
         let size = 0; const chunks = [];
@@ -382,6 +385,12 @@ export function createDashboardServer(config) {
               if (!body) return back({ error: true, text: 'Write a message first.' });
               await request(`/projects/${projectId}/messages`, { author: 'owner', body, state: 'pending' });
               return back({ text: `Sent to ${ROSTER[PM].name}; the reply appears here when the PM session finishes.` });
+            }
+            if (what === 'channel') {
+              const body = (form.get('body') ?? '').trim();
+              if (!body) return back({ error: true, text: 'Write a post first.' });
+              await request(`/projects/${projectId}/channel`, { author: 'owner', body, kind: 'note' });
+              return back({ text: 'Posted to the team channel; every run reads it at its next cycle start.' }, `${page}#channel`);
             }
             if (what === 'decision') {
               await request(`/decisions/${form.get('id')}/resolve`, { choice: form.get('choice'), ...(form.get('note') ? { note: form.get('note') } : {}) });
@@ -448,8 +457,8 @@ export function createDashboardServer(config) {
       if (url.pathname === '/health') return reply(200, 'application/json', '{"ok":true}');
       const portrait = /^\/portraits\/(team-[a-z]+)\.webp$/.exec(url.pathname);
       if (portrait) {
-        const file = path.join(config.portraits ?? PORTRAITS, `${portrait[1]}.webp`);
-        if (!Object.hasOwn(ROSTER, portrait[1]) || !fs.existsSync(file)) return reply(404, 'text/plain', 'Not found');
+        const file = config.portraits ? path.join(config.portraits, `${portrait[1]}.webp`) : blueprintFile(`portraits/${portrait[1]}.webp`);
+        if (!Object.hasOwn(ROSTER, portrait[1]) || !file || !fs.existsSync(file)) return reply(404, 'text/plain', 'Not found');
         res.writeHead(200, { 'content-type': 'image/webp', 'cache-control': 'public, max-age=3600' }); return res.end(fs.readFileSync(file));
       }
       const memberMatch = /^\/team\/(team-[a-z]+)$/.exec(url.pathname);
@@ -505,8 +514,8 @@ export function createDashboardServer(config) {
           return reply(200, 'text/html; charset=utf-8', renderSettings({ project, settings, history, lookup, lookupError, flash }));
         }
         if (!memoryPath) {
-          const [thread, decisions, costs] = await Promise.all([request(`/projects/${projectId}/thread`), request(`/decisions?project=${projectId}&state=open`), request(`/projects/${projectId}/costs`).catch(() => null)]);
-          return reply(200, 'text/html; charset=utf-8', renderProject({ project, state: current, thread, decisions, costs, flash }));
+          const [thread, decisions, costs, channel] = await Promise.all([request(`/projects/${projectId}/thread`), request(`/decisions?project=${projectId}&state=open`), request(`/projects/${projectId}/costs`).catch(() => null), request(`/projects/${projectId}/channel?limit=40`).catch(() => [])]);
+          return reply(200, 'text/html; charset=utf-8', renderProject({ project, state: current, thread, decisions, costs, flash, channel }));
         }
         if (sub === 'file') {
           const file = url.searchParams.get('path') ?? 'charter.md'; const sha = url.searchParams.get('sha') ?? undefined;

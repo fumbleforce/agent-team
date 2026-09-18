@@ -6,6 +6,7 @@ import { normalizeManifest } from './manifest.mjs';
 import { scmAdapter } from '../adapters/scm/index.mjs';
 import { trackerAdapter } from '../adapters/tracker/index.mjs';
 import { engineAdapter } from '../adapters/engine/index.mjs';
+import { integrationAdapter } from '../adapters/integration/index.mjs';
 
 // A deployment file describes one project's hosted control plane: where the checkout is, which
 // cloud resources exist and which secret names the hosts read. It never holds a secret value.
@@ -36,6 +37,12 @@ export function secretPlan(manifest) {
   // An engine adapter may declare API_KEY_VARIABLE and the billing modes that need it.
   const engineKey = engine.API_KEY_VARIABLE ?? null;
   if (engineKey && (engine.KEYED_BILLING ?? []).includes(manifest.engine.billing)) plan.push({ name: engineKey, generated: false, purpose: `${manifest.engine.default} API key`, adapter: manifest.engine.default });
+  // One credential per connected integration, under the first name its adapter reads.
+  for (const integration of manifest.integrations ?? []) {
+    const adapter = integrationAdapter(integration.kind);
+    const name = adapter.CREDENTIAL_VARIABLES[0] ?? adapter.credentialVariable(integration.name);
+    if (!plan.some(entry => entry.name === name)) plan.push({ name, generated: false, optional: true, purpose: `${adapter.TITLE} token for the ${integration.name} integration`, adapter: integration.kind });
+  }
   return plan;
 }
 

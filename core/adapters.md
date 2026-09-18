@@ -9,6 +9,7 @@
 | tracker | manifest `tracker.kind` | `adapters/tracker/index.mjs` |
 | launcher | coordinator `launcher.kind`, manifest `worker.launcher` | `adapters/launcher/index.mjs` |
 | artifacts | worker `artifacts.kind` | `adapters/artifacts/index.mjs` |
+| integration | manifest `integrations[].kind` | `adapters/integration/index.mjs` |
 | hosting | deployment scripts only, never imported by core | `adapters/hosting/*` |
 
 Each index exports the list of kinds, a default, and a lookup that throws on unknown names. Adding a provider means adding one module and registering it in the index; core code stays untouched.
@@ -87,10 +88,27 @@ NAME
 create(options) -> { kind, upload({ jobId, runDir, files }) -> { kind, location, files, links } }
 ```
 
+## integration
+
+An external tool the team may use during a run, reached through a remote MCP server. Implemented by `slack`, `google-drive`, `hubspot` and the generic `mcp` (any server the owner names).
+
+```
+NAME, TITLE, DEFAULT_URL, CREDENTIAL_VARIABLES, MANIFEST_KEYS
+validate(config) -> config                 // adapter-specific keys (channels, folders, objects, purpose)
+instructions(config) -> string             // one line for the coordinator prompt: what it is for, its limits
+credential(env, config) -> token | null    // the worker-side secret sent as a bearer header on this server only
+```
+
+The index exposes `validateIntegrations(list)` (manifest normalization), `integrationServers(list, env)` (the engine's MCP map, merged with the tracker's), `integrationInstructions(list)` and `credentialVariables(list)`: every credential name, all of which `modelEnvironment` strips from the model process. An entry's optional `roles` limits the server to those roles; engines translate that to their permission mechanism (`access` in the engine `environment`/`invocation` calls). Names `tracker`, `memory` and `team` are reserved.
+
 ## hosting
 
 Deployment glue, not imported by core: `systemd` (user units and installer), `fly` (entrypoint, `fly.toml`, Dockerfile), `aws` (control-plane deployment and worker AMI build).
 
+## Team blueprints
+
+Personas are not adapters: they are data. `core/blueprint.mjs` resolves `AGENT_TEAM_BLUEPRINT` to a directory holding `roles.json`, `roster.json`, `agents/*.md` and optional `portraits/`, and the roster, manifest role list, runner and dashboard read from it; unset, the toolkit root is the blueprint. See `teams/README.md`.
+
 ## Manifest
 
-`.agent-team.json` version 2 sections: `scm`, `tracker`, `engine`, `worker`, `memory`, `pm`, `team`, `delivery`. Version 1 files are upgraded in `core/manifest.mjs` with the first provider of each kind and the full persona pipeline, so existing projects run unchanged.
+`.agent-team.json` version 2 sections: `scm`, `tracker`, `engine`, `worker`, `memory`, `pm`, `team`, `integrations`, `delivery`. Version 1 files are upgraded in `core/manifest.mjs` with the first provider of each kind and the full persona pipeline, so existing projects run unchanged.

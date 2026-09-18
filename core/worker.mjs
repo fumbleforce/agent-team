@@ -15,6 +15,7 @@ import { answer } from './chat.mjs';
 
 const runner = fileURLToPath(new URL('./runner.mjs', import.meta.url));
 const memoryShim = fileURLToPath(new URL('./memory-cli.mjs', import.meta.url));
+const teamShim = path.join(path.dirname(fileURLToPath(import.meta.url)), 'channel-cli.mjs');
 export function runnerArgs(job, checkout, ideaContext, memory = null) {
   const args = [runner, '--project', checkout, '--execute', '--cycles', '1'];
   for (const [key, flag] of [['issue', '--issue'], ['base', '--base'], ['engine', '--engine'], ['billing', '--billing'], ['model', '--model'], ['timeoutMinutes', '--timeout-minutes']]) {
@@ -42,6 +43,8 @@ export function installMemoryShim(binDir) {
   mkdirSync(binDir, { recursive: true, mode: 0o700 });
   const shim = path.join(binDir, 'memory');
   writeFileSyncAtomic(shim, `#!/bin/sh\nexec "${process.execPath}" "${memoryShim}" "$@"\n`, 0o700);
+  // The team channel command shares the memory lease variables.
+  writeFileSyncAtomic(path.join(binDir, 'team'), `#!/bin/sh\nexec "${process.execPath}" "${teamShim}" "$@"\n`, 0o700);
   return shim;
 }
 function writeFileSyncAtomic(file, content, mode) {

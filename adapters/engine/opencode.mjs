@@ -11,14 +11,19 @@ export function rateLimitPolicy() { return 'job'; }
 
 // Denied shell prefixes from the SCM adapter and the tracker's MCP server are folded into the
 // roles configuration OpenCode reads; the roles file itself names no provider.
-export function environment(env, { roles, denied = [], mcp = {} } = {}) {
+export function environment(env, { roles, denied = [], mcp = {}, access = {} } = {}) {
   if (Object.hasOwn(env, 'OPENCODE_CONFIG_CONTENT')) throw new Error('Preexisting OPENCODE_CONFIG_CONTENT is not allowed; unset it explicitly');
   const filtered = { ...env };
   if (roles) {
     const config = structuredClone(roles);
     const coordinator = config.agent?.['team-coordinator'];
     if (coordinator?.permission?.bash && typeof coordinator.permission.bash === 'object') for (const rule of denied) coordinator.permission.bash[`*${rule}*`] = 'deny';
-    if (Object.keys(mcp).length) config.mcp = Object.fromEntries(Object.entries(mcp).map(([name, server]) => [name, { type: 'remote', url: server.url, enabled: true }]));
+    if (Object.keys(mcp).length) config.mcp = Object.fromEntries(Object.entries(mcp).map(([name, server]) => [name, { type: 'remote', url: server.url, enabled: true, ...(server.headers ? { headers: server.headers } : {}) }]));
+    // A server granted to named roles only is denied to every other agent as a tool pattern.
+    for (const [server, allowed] of Object.entries(access)) {
+      if (!Array.isArray(allowed)) continue;
+      for (const [name, agent] of Object.entries(config.agent ?? {})) if (!allowed.includes(name)) { agent.permission ??= {}; agent.permission[`${server}_*`] = 'deny'; }
+    }
     filtered.OPENCODE_CONFIG_CONTENT = JSON.stringify(config);
   }
   return filtered;

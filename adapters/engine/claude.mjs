@@ -70,7 +70,8 @@ export function preflight({ command, cwd, env, billing = DEFAULT_BILLING }) {
 }
 
 // Shared subagent permissions translate to Claude tool restrictions.
-export function claudeAgents(shared, mcpNames = ['tracker']) {
+// `access` maps an MCP server name to the roles allowed to use it (null: any role).
+export function claudeAgents(shared, mcpNames = ['tracker'], access = {}) {
   const agents = {};
   for (const [name, agent] of Object.entries(shared.agent)) {
     if (agent.mode !== 'subagent') continue;
@@ -80,6 +81,7 @@ export function claudeAgents(shared, mcpNames = ['tracker']) {
     if (permission.bash === 'deny') disallowedTools.push('Bash');
     if (permission.task === 'deny') disallowedTools.push('Agent');
     if (permission['tracker_*'] === 'deny') disallowedTools.push(...mcpNames.map(name => `mcp__${name}`));
+    else for (const server of mcpNames) if (Array.isArray(access[server]) && !access[server].includes(name)) disallowedTools.push(`mcp__${server}`);
     agents[name] = { description: agent.description ?? name, prompt: agent.prompt, ...(disallowedTools.length ? { disallowedTools } : {}) };
   }
   return agents;
@@ -103,20 +105,22 @@ export const systemPrompt = claudeSystemPrompt;
 
 // `mcp` is the tracker MCP server map supplied by the tracker adapter (empty for read-only runs);
 // `denied` are extra Bash prefix rules, typically the SCM adapter's merge command.
-export function claudeInvocation({ ideate, prompt, model, systemPromptFile, shared, mcp = {}, denied = [] }) {
+export function claudeInvocation({ ideate, prompt, model, systemPromptFile, shared, mcp = {}, denied = [], access = {} }) {
   const args = [prompt, '--print', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
     '--setting-sources', 'user', '--strict-mcp-config', '--mcp-config', JSON.stringify(ideate ? { mcpServers: {} } : { mcpServers: mcp }),
     '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
     '--append-system-prompt-file', systemPromptFile];
   const mcpNames = Object.keys(mcp);
+  // The coordinator itself keeps a server only when access is open or names it.
+  const coordinatorServers = mcpNames.filter(name => !Array.isArray(access[name]) || access[name].includes('team-coordinator'));
   if (ideate) args.push('--restricted', '--tools', 'Read,Grep,Glob,Write');
-  else args.push('--allowedTools', 'Bash', ...mcpNames.map(name => `mcp__${name}`), '--disallowedTools', ...DENIED, ...denied.map(rule => `Bash(${rule}:*)`), '--agents', JSON.stringify(claudeAgents(shared, mcpNames)));
+  else args.push('--allowedTools', 'Bash', ...coordinatorServers.map(name => `mcp__${name}`), '--disallowedTools', ...DENIED, ...denied.map(rule => `Bash(${rule}:*)`), ...mcpNames.filter(name => !coordinatorServers.includes(name)).map(name => `mcp__${name}`), '--agents', JSON.stringify(claudeAgents(shared, mcpNames, access)));
   if (model) args.push('--model', model);
   return { bin: BIN, args };
 }
 
-export function invocation({ ideate, prompt, model, systemPromptFile, shared, mcp, denied }) {
-  return claudeInvocation({ ideate, prompt, model, systemPromptFile, shared, mcp, denied });
+export function invocation({ ideate, prompt, model, systemPromptFile, shared, mcp, denied, access }) {
+  return claudeInvocation({ ideate, prompt, model, systemPromptFile, shared, mcp, denied, access });
 }
 
 const LIMIT = /rate.?limit|usage limit|limit reached|hit your limit|out of (?:extra )?usage|too many requests|\b429\b/i;

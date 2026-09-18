@@ -2,10 +2,15 @@ import { scmAdapter, DEFAULT_SCM } from '../adapters/scm/index.mjs';
 import { trackerAdapter, DEFAULT_TRACKER } from '../adapters/tracker/index.mjs';
 import { validateEngine, validateBilling, DEFAULT_ENGINE } from '../adapters/engine/index.mjs';
 import { LAUNCHER_KINDS, DEFAULT_LAUNCHER } from '../adapters/launcher/index.mjs';
+import { validateIntegrations } from '../adapters/integration/index.mjs';
+import { loadRolesFile } from './blueprint.mjs';
 
 // Roles the coordinator delegates to by default; the full persona pipeline stays available.
-export const DEFAULT_ROLES = ['team-dev', 'team-tester'];
-export const ALL_ROLES = ['team-pm', 'team-ux', 'team-dev', 'team-tester', 'team-reviewer'];
+// A team blueprint declares its own subagents in roles.json and may name team.defaultRoles.
+const BLUEPRINT = loadRolesFile();
+export const ALL_ROLES = Object.entries(BLUEPRINT.agent).filter(([, agent]) => agent.mode === 'subagent').map(([name]) => name);
+export const DEFAULT_ROLES = Array.isArray(BLUEPRINT.team?.defaultRoles) && BLUEPRINT.team.defaultRoles.every(role => ALL_ROLES.includes(role)) ? BLUEPRINT.team.defaultRoles
+  : ['team-dev', 'team-tester'].every(role => ALL_ROLES.includes(role)) ? ['team-dev', 'team-tester'] : ALL_ROLES;
 // Approvals the delivery gate demands, derived from the delegated roles.
 const APPROVALS = { 'team-tester': 'tester', 'team-reviewer': 'reviewer', 'team-pm': 'pm' };
 export const AUTONOMY_LEVELS = ['observe', 'suggest', 'act'];
@@ -121,7 +126,10 @@ export function normalizeManifest(raw, overrides = null) {
     if (raw.version === 2) delivery.baseBranch ??= scm.baseBranch;
     if (delivery.repository !== scm.repository || (delivery.baseBranch !== undefined && delivery.baseBranch !== scm.baseBranch)) throw new Error('Invalid .agent-team.json: delivery.repository/baseBranch must match scm');
   }
-  return { ...config, version: 2, scm, tracker, engine, worker, memory, pm, team, ...(delivery ? { delivery } : {}) };
+  const integrations = validateIntegrations(config.integrations);
+  for (const integration of integrations) if (integration.roles) for (const role of integration.roles) if (!ALL_ROLES.includes(role) && role !== 'team-coordinator') throw new Error(`Invalid .agent-team.json: integration ${integration.name} names unknown role ${role}`);
+
+  return { ...config, version: 2, scm, tracker, engine, worker, memory, pm, team, integrations, ...(delivery ? { delivery } : {}) };
 }
 
 // Approval roles delivery must see, in the order the gate checks them.

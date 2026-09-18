@@ -13,6 +13,8 @@ import { normalizeManifest, validateOverrides, OVERRIDABLE_SECTIONS } from './ma
 import { trackerAdapter, trackerClient, DEFAULT_TRACKER } from '../adapters/tracker/index.mjs';
 
 const KINDS = ['development', 'ideation', 'chat', 'graduate'];
+// Channel posts: a plain note, a claim on work, a blocker, a hand-off to another role, or a question for the owner.
+export const CHANNEL_KINDS = ['note', 'claim', 'blocker', 'handoff', 'question'];
 const ISSUE = /^[A-Za-z][A-Za-z0-9_]*-[1-9][0-9]*$/;
 const DECISION_KINDS = ['approve-issue', 'memory-decision', 'spend', 'enqueue', 'other'];
 const DAY = 86_400_000;
@@ -83,7 +85,9 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     CREATE TABLE IF NOT EXISTS threads (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, title TEXT NOT NULL, createdAt INTEGER NOT NULL, updatedAt INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, threadId TEXT NOT NULL, projectId TEXT NOT NULL, author TEXT NOT NULL, body TEXT NOT NULL, createdAt INTEGER NOT NULL, state TEXT NOT NULL DEFAULT 'final', meta TEXT);
     CREATE TABLE IF NOT EXISTS decisions (id TEXT PRIMARY KEY, projectId TEXT NOT NULL, kind TEXT NOT NULL, title TEXT NOT NULL, body TEXT NOT NULL, options TEXT NOT NULL, createdAt INTEGER NOT NULL, state TEXT NOT NULL, choice TEXT, note TEXT, resolvedAt INTEGER, threadId TEXT, payload TEXT);
-    CREATE TABLE IF NOT EXISTS costs (id INTEGER PRIMARY KEY AUTOINCREMENT, projectId TEXT NOT NULL, jobId TEXT, kind TEXT NOT NULL, usd REAL NOT NULL, tokens INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL);`);
+    CREATE TABLE IF NOT EXISTS costs (id INTEGER PRIMARY KEY AUTOINCREMENT, projectId TEXT NOT NULL, jobId TEXT, kind TEXT NOT NULL, usd REAL NOT NULL, tokens INTEGER NOT NULL DEFAULT 0, createdAt INTEGER NOT NULL);
+    CREATE TABLE IF NOT EXISTS channel (seq INTEGER PRIMARY KEY AUTOINCREMENT, projectId TEXT NOT NULL, jobId TEXT, author TEXT NOT NULL, kind TEXT NOT NULL, body TEXT NOT NULL, createdAt INTEGER NOT NULL);
+    CREATE INDEX IF NOT EXISTS channel_project ON channel(projectId, seq);`);
   const expire = () => db.prepare(`UPDATE jobs SET state='blocked', leaseToken=NULL, leaseUntil=NULL,
     updatedAt=?, result=? WHERE state='running' AND leaseUntil<=?`).run(now(), JSON.stringify({ outcome: 'blocked', summary: 'Lease expired; inspect execution before manual requeue' }), now());
   const tx = fn => {
@@ -212,6 +216,40 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
   return {
     close: () => { db.close(); memory?.close(); },
     watchdog,
+    // The team channel: a per-project append-only board every active run, the resident PM and
+    // the owner can read and post to. Runs post through their lease; the author is the job's
+    // role. Posts are visible immediately, never edited, and pruned only by the owner's tooling.
+    channelPost(projectId, input) {
+      registered(projectId);
+      object(input, ['author', 'body', 'kind', 'jobId']);
+      const author = text(input.author ?? 'owner', 'author', 80);
+      const kind = input.kind ?? 'note';
+      if (!CHANNEL_KINDS.includes(kind)) reject('Invalid kind');
+      const body = String(input.body ?? '');
+      if (!body.trim() || body.length > 4000 || /[\x00-\x08\x0b-\x1f\x7f]/.test(body)) reject('Invalid body');
+      if (input.jobId !== undefined && !/^[a-f0-9-]{36}$/.test(String(input.jobId))) reject('Invalid jobId');
+      const createdAt = now();
+      const result = db.prepare('INSERT INTO channel (projectId, jobId, author, kind, body, createdAt) VALUES (?,?,?,?,?,?)').run(projectId, input.jobId ?? null, author, kind, body, createdAt);
+      return { seq: Number(result.lastInsertRowid), projectId, jobId: input.jobId ?? null, author, kind, body, createdAt };
+    },
+    channelRead(projectId, { after = 0, limit = 50 } = {}) {
+      registered(projectId);
+      if (!Number.isInteger(after) || after < 0) reject('Invalid after');
+      if (!Number.isInteger(limit) || limit < 1 || limit > 500) reject('Invalid limit');
+      const rows = after > 0
+        ? db.prepare('SELECT * FROM channel WHERE projectId=? AND seq>? ORDER BY seq ASC LIMIT ?').all(projectId, after, limit)
+        : db.prepare('SELECT * FROM channel WHERE projectId=? ORDER BY seq DESC LIMIT ?').all(projectId, limit).reverse();
+      return rows.map(row => ({ ...row, seq: Number(row.seq) }));
+    },
+    // A run posts as the role that owns the job; chat jobs post as their member.
+    channelPostForJob(jobId, workerId, leaseToken, input) {
+      const scope = this.leaseScope(jobId, workerId, leaseToken);
+      if (!scope) reject('Unauthorized', 401);
+      const job = view(get(jobId));
+      const author = job.kind === 'chat' ? job.role : job.kind === 'ideation' ? 'team-ideation' : 'team-coordinator';
+      object(input, ['body', 'kind']);
+      return this.channelPost(scope.projectId, { ...input, author, jobId });
+    },
     leaseScope(jobId, workerId, leaseToken) {
       if (!/^[a-f0-9-]{36}$/.test(String(jobId))) return null;
       const row = db.prepare('SELECT projectId FROM jobs WHERE id=? AND state=? AND workerId=? AND leaseToken=?').get(jobId, 'running', String(workerId), String(leaseToken));
@@ -587,8 +625,8 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (header.startsWith('Lease ')) {
         const [jobId, workerId, leaseToken] = header.slice(6).split(':');
         const scope = queue.leaseScope?.(jobId, workerId, leaseToken);
-        const searchMatch = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/memory\/search$/.exec(url.pathname);
-        const allowed = scope && ((req.method === 'GET' && searchMatch && searchMatch[1] === scope.projectId) || (req.method === 'POST' && url.pathname === `/jobs/${scope.jobId}/proposals`));
+        const searchMatch = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(memory\/search|channel)$/.exec(url.pathname);
+        const allowed = scope && ((req.method === 'GET' && searchMatch && searchMatch[1] === scope.projectId) || (req.method === 'POST' && [`/jobs/${scope.jobId}/proposals`, `/jobs/${scope.jobId}/channel`].includes(url.pathname)));
         if (!allowed) { req.resume(); return reply(401, { error: 'Unauthorized' }); }
       } else if (header.startsWith('Bearer job.')) {
         const [, jobId] = header.slice(7).split('.');
@@ -615,6 +653,7 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (req.method === 'GET' && evidenceMatch) { const found = queue.evidenceFor(evidenceMatch[1]); return found ? reply(200, found) : reject('No evidence yet', 404); }
       const eventsMatch = /^\/jobs\/([a-f0-9-]+)\/events$/.exec(url.pathname);
       if (req.method === 'GET' && eventsMatch) return reply(200, queue.eventsAfter(eventsMatch[1], { after: Number(url.searchParams.get('after') ?? 0), limit: Number(url.searchParams.get('limit') ?? 500) }));
+      const channelPost = /^\/jobs\/([a-f0-9-]{36})\/channel$/.exec(url.pathname);
       const jobSub = /^\/jobs\/([a-f0-9-]{36})\/(injection|proposals|artifacts)$/.exec(url.pathname);
       if (req.method === 'GET' && jobSub) {
         const found = jobSub[2] === 'injection' ? queue.injectionFor(jobSub[1]) : jobSub[2] === 'artifacts' ? queue.artifactsFor(jobSub[1]) : queue.proposals({ jobId: jobSub[1], state: url.searchParams.get('state') ?? undefined });
@@ -623,9 +662,10 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (req.method === 'GET' && url.pathname === '/launches') return reply(200, queue.launches());
       if (req.method === 'GET' && url.pathname === '/proposals') return reply(200, queue.proposals({ projectId: url.searchParams.get('project') ?? undefined, state: url.searchParams.get('state') ?? 'pending' }));
       if (req.method === 'GET' && url.pathname === '/decisions') return reply(200, queue.decisions({ projectId: url.searchParams.get('project') ?? undefined, state: url.searchParams.get('state') ?? 'open' }));
-      const projectGet = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(thread|threads|costs|memory(?:\/.*)?)$/.exec(url.pathname);
+      const projectGet = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(thread|threads|costs|channel|memory(?:\/.*)?)$/.exec(url.pathname);
       if (req.method === 'GET' && projectGet) {
         const [, projectId, what] = projectGet;
+        if (what === 'channel') return reply(200, queue.channelRead(projectId, { after: Number(url.searchParams.get('after') ?? 0), limit: Number(url.searchParams.get('limit') ?? 50) }));
         if (what === 'thread') return reply(200, queue.thread(projectId, { threadId: url.searchParams.get('thread') ?? undefined }));
         if (what === 'threads') return reply(200, queue.threads(projectId));
         if (what === 'costs') return reply(200, queue.costs(projectId));
@@ -653,6 +693,7 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (url.pathname === '/claim') return reply(200, queue.claim(body));
       if (evidenceMatch) return reply(200, queue.evidence(evidenceMatch[1], body));
       if (eventsMatch) return reply(200, queue.appendEvents(eventsMatch[1], body));
+      if (channelPost) return reply(201, queue.channelPostForJob(channelPost[1], body?.workerId, body?.leaseToken, { body: body?.body, kind: body?.kind }));
       if (jobSub) return reply(200, jobSub[2] === 'injection' ? queue.injection(jobSub[1], body) : jobSub[2] === 'artifacts' ? queue.artifacts(jobSub[1], body) : queue.propose(jobSub[1], body));
       if (url.pathname === '/proposals/resolve') return reply(200, queue.resolveProposals(body));
       const proposal = /^\/proposals\/([a-f0-9-]{36})\/resolve$/.exec(url.pathname);
@@ -661,9 +702,10 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       if (decision) return reply(200, queue.resolveDecision(decision[1], body));
       const message = /^\/messages\/([A-Za-z0-9-]{1,64})$/.exec(url.pathname);
       if (message) return reply(200, queue.updateMessage(message[1], body));
-      const projectPost = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(manifest|settings|messages|decisions|costs|memory\/[a-z]+)$/.exec(url.pathname);
+      const projectPost = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/(manifest|settings|messages|decisions|costs|channel|memory\/[a-z]+)$/.exec(url.pathname);
       if (projectPost) {
         const [, projectId, what] = projectPost;
+        if (what === 'channel') return reply(201, queue.channelPost(projectId, body));
         if (what === 'manifest') return reply(200, queue.registerProject(projectId, body));
         if (what === 'settings') return reply(200, queue.saveSettings(projectId, body));
         if (what === 'messages') return reply(201, queue.postMessage(projectId, body));

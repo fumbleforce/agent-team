@@ -20,6 +20,10 @@
   "memory": { "injectCapTokens": 4000 },
   "pm": { "autonomy": "suggest", "dailyCapUsd": 20 },
   "team": { "roles": ["team-dev", "team-tester"] },
+  "integrations": [
+    { "kind": "slack", "channels": ["#example-project"] },
+    { "kind": "hubspot", "objects": ["contacts", "deals"], "roles": ["team-coordinator", "team-dev"] }
+  ],
   "delivery": { "repository": "group/project", "baseBranch": "main", "requiredChecks": ["test"], "autoMergeAuthorized": false },
   "ideation": {
     "enabled": false,

@@ -932,3 +932,9 @@ test('--settings-file merges owner overrides into the manifest and overlays the 
   fs.writeFileSync(settings, JSON.stringify({ scm: { kind: 'gitlab' } }));
   await assert.rejects(f.run(['--execute', '--issue', 'TEST-1', '--settings-file', settings], { env }), /scm cannot be overridden/);
 });
+
+test('integration credentials never reach the model process, whichever engine runs', () => {
+  const env = { PATH: '/bin', SLACK_BOT_TOKEN: 's', HUBSPOT_ACCESS_TOKEN: 'h', GOOGLE_DRIVE_MCP_TOKEN: 'g', CRM_MCP_TOKEN: 'c', LINEAR_API_KEY: 'l', AGENT_TEAM_TOKEN: 't', KEEP_ME: '1' };
+  const filtered = modelEnvironment(env, null, 'opencode', { integrations: [{ kind: 'mcp', name: 'crm', url: 'https://crm.example/' }] });
+  assert.deepEqual(filtered, { PATH: '/bin', KEEP_ME: '1' });
+});

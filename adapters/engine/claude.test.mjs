@@ -79,3 +79,17 @@ test('usage limits are recognized from stream events or stderr and nothing else'
   assert.equal(check('', 'API Error: 429 too many requests'), 'rate-limited');
   assert.equal(claudeStopReason({ eventsFile: path.join(dir, 'missing'), stderrFile: path.join(dir, 'missing') }), null);
 });
+
+test('integration servers granted to named roles are withheld from every other agent', () => {
+  const access = { slack: ['team-dev'], crm: ['team-coordinator'] };
+  const agents = claudeAgents(shared, ['tracker', 'slack', 'crm'], access);
+  assert.deepEqual(agents['team-tester'].disallowedTools, ['mcp__slack', 'mcp__crm']);
+  assert.deepEqual(agents['team-dev'].disallowedTools, ['Agent', 'mcp__tracker', 'mcp__slack', 'mcp__crm'], 'a tracker denial still denies every server');
+  assert.deepEqual(agents['team-pm'].disallowedTools, ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash', 'Agent', 'mcp__slack', 'mcp__crm']);
+  const { args } = claudeInvocation({ prompt: 'go', systemPromptFile: '/tmp/p.md', shared, mcp: { tracker: { type: 'http', url: 'https://t.example/' }, slack: { type: 'http', url: 'https://s.example/', headers: { Authorization: 'Bearer x' } }, crm: { type: 'http', url: 'https://c.example/' } }, access });
+  const allowed = args.slice(args.indexOf('--allowedTools') + 1, args.indexOf('--disallowedTools'));
+  assert.deepEqual(allowed, ['Bash', 'mcp__tracker', 'mcp__crm'], 'the coordinator keeps open servers and those naming it');
+  const disallowed = args.slice(args.indexOf('--disallowedTools') + 1, args.indexOf('--agents'));
+  assert.ok(disallowed.includes('mcp__slack'));
+  assert.equal(JSON.parse(args[args.indexOf('--mcp-config') + 1]).mcpServers.slack.headers.Authorization, 'Bearer x');
+});

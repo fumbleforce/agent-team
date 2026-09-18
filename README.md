@@ -298,9 +298,33 @@ Everything under `core/` and `agents/` is provider-neutral; `npm run lint` fails
 | tracker | `linear` | manifest `tracker.kind` |
 | launcher | `local`, `ec2`, stubs `fargate`, `fly-machine` | manifest `worker.launcher` |
 | artifacts | `local`, `s3` | worker `artifacts.kind` |
+| integration | `slack`, `google-drive`, `hubspot`, generic `mcp` | manifest `integrations[].kind` |
 | hosting | `systemd`, `fly`, `aws` | deployment only |
 
 Interfaces are documented in [core/adapters.md](core/adapters.md). A version 2 manifest (`project.v2.example.json`) selects providers per project; version 1 manifests keep working with the original defaults.
+
+## Integrations: external tools for any kind of task
+
+A project lists the external systems its team may use; each one is a remote MCP server the engine gets alongside the tracker:
+
+```json
+"integrations": [
+  { "kind": "slack", "channels": ["#ops"] },
+  { "kind": "hubspot", "objects": ["contacts", "deals"], "roles": ["team-coordinator", "team-dev"] },
+  { "kind": "google-drive", "url": "https://drive-mcp.example/mcp", "folders": ["1AbC..."] },
+  { "kind": "mcp", "name": "billing", "url": "https://billing.example/mcp", "purpose": "invoice records" }
+]
+```
+
+`agent-team init` asks for each integration's token once (`SLACK_BOT_TOKEN`, `HUBSPOT_ACCESS_TOKEN`, `GOOGLE_DRIVE_MCP_TOKEN`, `<NAME>_MCP_TOKEN`) and stores it with the other worker secrets. Inside a run the token travels only as a bearer header on that one server: the model process never sees any integration credential as a variable, granted or not. `roles` limits a server to the named roles; the engines translate that to their own tool permissions. The coordinator prompt names each tool, what it is for and the limits the manifest sets, and every external call appears in the run's live event stream on the dashboard. Slack and HubSpot default to the providers' hosted MCP endpoints; Google Drive and the generic kind name their server explicitly (a hosted connector or one you run).
+
+## Team channel
+
+Every project has a shared channel in the coordinator that active runs, the resident PM and the owner all read and post to. Inside a run the `team` command on PATH offers `team read [--after SEQ]`, `team say <text>` and `team claim|blocker|handoff|question <text>`; a run posts as its own role through its job lease and can only read its own project. The coordinator prompt has each cycle read the channel at its start and before publishing, so an owner note on the dashboard ("pause after this one", "the staging key changed") reaches every agent at its next checkpoint without a tracker round trip. The project page shows the channel live beside the PM conversation; the API is `GET/POST /projects/<id>/channel` and `POST /jobs/<id>/channel`.
+
+## Team blueprints: any set of personas
+
+The personas are data, not code. A blueprint directory holds `roles.json`, `roster.json` (names, titles, voices), `agents/<role>.md` and optional portraits; `AGENT_TEAM_BLUEPRINT=<name>` selects one under `teams/` for a whole control plane. The toolkit's root is the default delivery team; `teams/research-desk` is a research-and-writing desk (researcher, writer, editor) that works in a repository of notes and drafts and reaches documents, chat and CRM through integrations. Three roles are addressed by name and stay in every blueprint: `team-coordinator`, `team-pm` and `team-owner`; everything else, including which subagents exist and which the manifest's `team.roles` delegates to, is the blueprint's choice. See [teams/README.md](teams/README.md).
 
 ## Project memory
 
@@ -335,6 +359,10 @@ With `worker.launcher: ec2` the coordinator starts an instance per job from `wor
 4. When the pilot run is clean, raise `pm.autonomy` and let intake pick up approved tickets on its own; both are settings in the dashboard.
 
 See [adapters/hosting/aws/README.md](adapters/hosting/aws/README.md) for what the commands create and how to do it by hand.
+
+## Platform roadmap
+
+[docs/PLATFORM.md](docs/PLATFORM.md) maps the platform goals (self-provisioning, shared memory and communication, configurable teams, transparent dashboard, any task with external tools, owner interfaces, own ideas with task management, autonomous operation) to what runs today and what comes next.
 
 ## Next stages
 

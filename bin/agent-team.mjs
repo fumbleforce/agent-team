@@ -108,8 +108,8 @@ export async function init(options, { ask, log, awsRun = aws, region = configure
     let present = false;
     try { await awsRun(['ssm', 'get-parameter', '--region', deployment.aws.region, '--name', name]); present = true; } catch {}
     if (present && (options.yes || (await ask(`${secret.purpose} is already stored; replace it? (y/N)`)).toLowerCase() !== 'y')) continue;
-    values[secret.name] = await ask(`Paste the ${secret.purpose}`, { secret: true });
-    if (!values[secret.name]) throw new DeployError(`${secret.purpose} is required`);
+    values[secret.name] = await ask(`Paste the ${secret.purpose}${secret.optional ? ' (empty to skip; the engine may log in itself)' : ''}`, { secret: true });
+    if (!values[secret.name]) { if (secret.optional) { delete values[secret.name]; continue; } throw new DeployError(`${secret.purpose} is required`); }
   }
   await awsSecrets(deployment, { aws: awsRun, values, generate: generateSecret, replace: Object.keys(values), log });
   const file = writeDeployment(deployment, options.configDir);
