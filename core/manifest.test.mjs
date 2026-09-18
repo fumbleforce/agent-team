@@ -23,6 +23,10 @@ test('a version 2 manifest fills defaults and validates each section', () => {
   assert.deepEqual(manifest.team.roles, DEFAULT_ROLES);
   assert.deepEqual(approvalRoles(manifest), ['tester']);
   assert.equal(manifest.memory.injectCapTokens, 4000); assert.equal(manifest.pm.dailyCapUsd, 20);
+  assert.equal(manifest.tracker.stallAlertAfter, 1, 'the owner stall alert is on as soon as quarantine holds a project');
+  assert.equal(normalizeManifest(v1, { tracker: { stallAlertAfter: 0 } }).tracker.stallAlertAfter, 0);
+  for (const value of ['1', 1.5, -1, 51]) assert.throws(() => normalizeManifest(v1, { tracker: { stallAlertAfter: value } }), /stallAlertAfter/);
+  assert.equal(normalizeManifest(v1, { tracker: { stallAlertAfter: null } }).tracker.stallAlertAfter, 1, 'clearing the override restores the default');
   assert.deepEqual([manifest.delivery.repository, manifest.delivery.baseBranch], ['group/sub/project', 'develop']);
   for (const change of [{ scm: { kind: 'svn' } }, { scm: { kind: 'gitlab', branchPrefix: 'nope' } }, { engine: { default: 'claude', billing: 'free' } }, { worker: { launcher: 'balloon' } },
     { pm: { autonomy: 'yolo' } }, { team: { roles: ['team-dev', 'team-dev'] } }, { team: { roles: ['team-chef'] } }, { memory: { injectCapTokens: -1 } }, { delivery: { repository: 'other/repo' } }, { version: 3 }]) {

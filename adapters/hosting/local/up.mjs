@@ -22,7 +22,7 @@ export function writeConfigs({ projectId, checkout, manifest, configDir, token, 
   const write = (name, value) => { const file = path.join(dir, name); writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }); return file; };
   const coordinatorUrl = `http://127.0.0.1:${PORTS.coordinator}`;
   const files = {
-    coordinator: write('coordinator.json', { host: '127.0.0.1', port: PORTS.coordinator, db: path.join(data, 'queue.sqlite'), dataDir: data, projects: { [projectId]: { repository: manifest.scm.repository ?? projectId } } }),
+    coordinator: write('coordinator.json', { host: '127.0.0.1', port: PORTS.coordinator, db: path.join(data, 'queue.sqlite'), dataDir: data, dashboardUrl: `http://127.0.0.1:${PORTS.dashboard}`, projects: { [projectId]: { repository: manifest.scm.repository ?? projectId } } }),
     worker: write('worker.json', { coordinatorUrl, workerId: hostname().slice(0, 32) || 'local', concurrency: 1, stateDir: path.join(data, 'worker'), projects: { [projectId]: checkout }, engine }),
     dashboard: write('dashboard.json', { host: '127.0.0.1', port: PORTS.dashboard, coordinatorUrl, hostname: 'local' }),
     intake: write('intake.json', { coordinatorUrl, pollSeconds: 60, trackers: trackersWithCredentials(env), projects: { [projectId]: checkout } }),
