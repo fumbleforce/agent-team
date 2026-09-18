@@ -1,5 +1,5 @@
 import { DatabaseSync } from 'node:sqlite';
-import { randomUUID, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomUUID, timingSafeEqual } from 'node:crypto';
 import { createServer } from 'node:http';
 import { mkdirSync, readFileSync, chmodSync } from 'node:fs';
 import path from 'node:path';
@@ -30,10 +30,26 @@ function text(value, name, max = 256) {
 }
 export function requireToken(token) {
   if (typeof token !== 'string' || token.length < 24 || /\s/.test(token)) throw new Error('AGENT_TEAM_TOKEN must contain at least 24 non-whitespace characters');
+  if (token.startsWith('job.') && !/^job\.[a-f0-9-]{36}\.[\w-]{43}$/.test(token)) throw new Error('AGENT_TEAM_TOKEN must not start with "job."; that prefix marks tokens derived for one job');
   return token;
 }
 
-export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 90_000, launcher = null, memory = null, claimTimeoutMs = 15 * 60_000, onLaunchError = error => console.error(error.message) } = {}) {
+// A job token is derived from the shared token and one job id. A launched worker receives it in
+// place of the shared token, so a machine that runs model-driven commands can claim and report its
+// own job and read its project's settings and memory, and nothing else. In particular it cannot
+// register a manifest: autonomy, delivery authorization and worker size reach the coordinator only
+// from holders of the shared token.
+export function jobToken(token, jobId) {
+  return `job.${jobId}.${createHmac('sha256', requireToken(token)).update(`agent-team-job:${jobId}`).digest('base64url')}`;
+}
+const JOB_ROUTES = ['heartbeat', 'complete', 'fail', 'evidence', 'events', 'injection', 'artifacts', 'proposals'];
+function jobScopeAllows(scope, method, pathname) {
+  if (method === 'GET') return pathname === '/health' || [`/projects/${scope.projectId}/settings`, `/projects/${scope.projectId}/memory/assemble`, `/projects/${scope.projectId}/memory/search`].includes(pathname);
+  if (method !== 'POST') return false;
+  return pathname === '/claim' || pathname === `/projects/${scope.projectId}/costs` || JOB_ROUTES.some(route => pathname === `/jobs/${scope.jobId}/${route}`);
+}
+
+export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 90_000, launcher = null, jobTokenFor = null, memory = null, claimTimeoutMs = 15 * 60_000, onLaunchError = error => console.error(error.message) } = {}) {
   if (!Number.isInteger(leaseMs) || leaseMs < 1) throw new Error('Invalid leaseMs');
   if (!Number.isInteger(claimTimeoutMs) || claimTimeoutMs < 1) throw new Error('Invalid claimTimeoutMs');
   const registered = id => {
@@ -167,7 +183,7 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     const instance = launcherFor(job.projectId);
     db.prepare(`INSERT INTO launches(jobId,projectId,kind,handle,startedAt,state) VALUES(?,?,?,?,?,'starting') ON CONFLICT(jobId) DO UPDATE SET kind=excluded.kind, startedAt=excluded.startedAt, state='starting', handle=NULL, error=NULL`).run(job.id, job.projectId, instance.kind, null, now());
     // Fire and forget: the queue never blocks on a cloud API. Failures are recorded and the watchdog fails the job.
-    Promise.resolve().then(() => instance.start({ ...job, worker }))
+    Promise.resolve().then(() => instance.start({ ...job, worker, ...(jobTokenFor ? { token: jobTokenFor(job.id) } : {}) }))
       .then(handle => db.prepare(`UPDATE launches SET handle=?, state=CASE WHEN state='claimed' THEN 'claimed' ELSE 'started' END WHERE jobId=?`).run(JSON.stringify(handle), job.id))
       .catch(error => { db.prepare(`UPDATE launches SET state='failed', error=? WHERE jobId=?`).run(String(error.message).slice(0, 400), job.id); onLaunchError(error); });
   };
@@ -199,6 +215,12 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     leaseScope(jobId, workerId, leaseToken) {
       if (!/^[a-f0-9-]{36}$/.test(String(jobId))) return null;
       const row = db.prepare('SELECT projectId FROM jobs WHERE id=? AND state=? AND workerId=? AND leaseToken=?').get(jobId, 'running', String(workerId), String(leaseToken));
+      return row ? { jobId, projectId: row.projectId } : null;
+    },
+    // A job token is honoured only while its job can still be claimed or is running.
+    jobScope(jobId) {
+      if (!/^[a-f0-9-]{36}$/.test(String(jobId))) return null;
+      const row = db.prepare(`SELECT projectId FROM jobs WHERE id=? AND state IN ('queued','running')`).get(jobId);
       return row ? { jobId, projectId: row.projectId } : null;
     },
     launches: () => db.prepare('SELECT jobId, projectId, kind, handle, startedAt, state, error FROM launches ORDER BY startedAt DESC LIMIT 200').all().map(row => ({ ...row, handle: row.handle ? JSON.parse(row.handle) : null })),
@@ -559,6 +581,7 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
     try {
       const url = new URL(req.url, 'http://localhost');
       const header = req.headers.authorization ?? '';
+      let jobScope = null;
       // A running job's lease grants a model process two routes only: memory search for its own
       // project and proposals for its own job. Everything else needs the shared token.
       if (header.startsWith('Lease ')) {
@@ -567,6 +590,12 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
         const searchMatch = /^\/projects\/([A-Za-z0-9][A-Za-z0-9_-]{0,79})\/memory\/search$/.exec(url.pathname);
         const allowed = scope && ((req.method === 'GET' && searchMatch && searchMatch[1] === scope.projectId) || (req.method === 'POST' && url.pathname === `/jobs/${scope.jobId}/proposals`));
         if (!allowed) { req.resume(); return reply(401, { error: 'Unauthorized' }); }
+      } else if (header.startsWith('Bearer job.')) {
+        const [, jobId] = header.slice(7).split('.');
+        const auth = Buffer.from(header); const expected = Buffer.from(`Bearer ${/^[a-f0-9-]{36}$/.test(jobId ?? '') ? jobToken(token, jobId) : ''}`);
+        jobScope = auth.length === expected.length && timingSafeEqual(auth, expected) ? queue.jobScope?.(jobId) ?? null : null;
+        if (!jobScope) { req.resume(); return reply(401, { error: 'Unauthorized' }); }
+        if (!jobScopeAllows(jobScope, req.method, url.pathname)) { req.resume(); return reply(403, { error: 'This token is limited to its own job' }); }
       } else {
         const auth = Buffer.from(header); const expected = Buffer.from(`Bearer ${token}`);
         if (auth.length !== expected.length || !timingSafeEqual(auth, expected)) { req.resume(); return reply(401, { error: 'Unauthorized' }); }
@@ -618,6 +647,8 @@ export function createQueueServer(queue, { token = process.env.AGENT_TEAM_TOKEN 
       let size = 0; const chunks = [];
       for await (const chunk of req) { size += chunk.length; if (size > limit) { reply(413, { error: `JSON body exceeds ${limit} bytes` }); req.resume(); return; } chunks.push(chunk); }
       let body; try { body = JSON.parse(Buffer.concat(chunks).toString()); } catch { reject('Invalid JSON'); }
+      if (jobScope && url.pathname === '/claim' && !(body?.job === jobScope.jobId && Array.isArray(body.projectIds) && body.projectIds.length === 1 && body.projectIds[0] === jobScope.projectId)) reject('This token is limited to its own job', 403);
+      if (jobScope && url.pathname.endsWith('/costs') && body?.jobId !== jobScope.jobId) reject('This token is limited to its own job', 403);
       if (url.pathname === '/jobs') return reply(201, queue.enqueue(body));
       if (url.pathname === '/claim') return reply(200, queue.claim(body));
       if (evidenceMatch) return reply(200, queue.evidence(evidenceMatch[1], body));
@@ -688,7 +719,7 @@ export async function main(args = process.argv.slice(2)) {
   const dbPath = config.db ?? '.agent-team-coordinator/queue.sqlite';
   const dataDir = config.dataDir ?? path.dirname(path.resolve(dbPath));
   const memory = config.memory === false ? null : createMemory({ dataDir });
-  const queue = createQueue(dbPath, { projects: config.projects, memory, launcher: config.launcher ?? null, claimTimeoutMs: (config.claimTimeoutMinutes ?? 15) * 60_000 });
+  const queue = createQueue(dbPath, { projects: config.projects, memory, launcher: config.launcher ?? null, jobTokenFor: id => jobToken(process.env.AGENT_TEAM_TOKEN, id), claimTimeoutMs: (config.claimTimeoutMinutes ?? 15) * 60_000 });
   const server = createQueueServer(queue);
   server.on('error', error => { console.error(error.message); queue.close(); process.exitCode = 1; });
   server.listen(port, host, () => console.log(`Agent team coordinator listening on ${host}:${port}`));

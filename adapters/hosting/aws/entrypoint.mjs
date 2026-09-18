@@ -6,21 +6,25 @@ import { fileURLToPath } from 'node:url';
 
 // Control-plane entrypoint for AWS: one container or one EC2 instance runs the coordinator, the
 // tracker intake, the resident PM and the dashboard. Secrets come from SSM Parameter Store when
-// AGENT_TEAM_SSM_PREFIX is set (parameters named <prefix>/<VARIABLE>), otherwise from the
+// AGENT_TEAM_SSM_PREFIX is set (parameters named <prefix>/<VARIABLE>, the coordinator token and the
+// dashboard password preferably <prefix>/control/<VARIABLE> out of the workers' reach), otherwise from the
 // environment. Durable state lives under AGENT_TEAM_DATA (an EBS or EFS mount).
 const root = path.dirname(path.dirname(path.dirname(path.dirname(fileURLToPath(import.meta.url)))));
 const data = process.env.AGENT_TEAM_DATA ?? '/data';
 const configDir = path.join(data, 'config');
 mkdirSync(configDir, { recursive: true, mode: 0o700 });
 
+const CONTROL_SECRETS = ['AGENT_TEAM_TOKEN', 'AGENT_TEAM_DASHBOARD_PASSWORD'];
 const SECRETS = ['AGENT_TEAM_TOKEN', 'AGENT_TEAM_DASHBOARD_PASSWORD', 'LINEAR_API_KEY', 'ANTHROPIC_API_KEY', 'GITLAB_TOKEN', 'GH_TOKEN'];
 
 // Reads every known secret under the prefix in one call; missing parameters stay unset.
 function loadSsmSecrets(prefix) {
-  const names = SECRETS.map(name => `${prefix.replace(/\/$/, '')}/${name}`);
+  const base = prefix.replace(/\/$/, '');
+  // Control-scoped names come first so they win over a legacy copy directly under the prefix.
+  const names = [...CONTROL_SECRETS.map(name => `${base}/control/${name}`), ...SECRETS.map(name => `${base}/${name}`)];
   const output = execFileSync('aws', ['ssm', 'get-parameters', '--with-decryption', '--names', ...names, '--output', 'json'], { encoding: 'utf8', timeout: 30_000 });
   const parsed = JSON.parse(output);
-  for (const parameter of parsed.Parameters ?? []) {
+  for (const parameter of (parsed.Parameters ?? []).sort((a, b) => names.indexOf(a.Name) - names.indexOf(b.Name))) {
     const name = parameter.Name.split('/').pop();
     if (SECRETS.includes(name) && !process.env[name]) process.env[name] = parameter.Value;
   }
@@ -35,8 +39,7 @@ if (!process.env.AGENT_TEAM_DASHBOARD_PASSWORD) throw new Error('AGENT_TEAM_DASH
 // Launcher settings shared by every project that uses ephemeral workers; manifests refine them.
 let launcher = null;
 if (process.env.AGENT_TEAM_LAUNCHER) {
-  try { launcher = JSON.parse(process.env.AGENT_TEAM_LAUNCHER); } catch { throw new Error('AGENT_TEAM_LAUNCHER must be JSON such as {"kind":"ec2","options":{"region":"eu-north-1","subnetId":"...","securityGroupId":"...","instanceProfile":"...","coordinatorUrl":"https://...","token":"..."}}'); }
-  if (launcher.options && !launcher.options.token) launcher.options.token = process.env.AGENT_TEAM_TOKEN;
+  try { launcher = JSON.parse(process.env.AGENT_TEAM_LAUNCHER); } catch { throw new Error('AGENT_TEAM_LAUNCHER must be JSON such as {"kind":"ec2","options":{"region":"eu-north-1","subnetId":"...","securityGroupId":"...","instanceProfile":"...","coordinatorUrl":"https://..."}}'); }
 }
 
 const write = (name, value) => { const file = path.join(configDir, name); writeFileSync(file, JSON.stringify(value, null, 2), { mode: 0o600 }); return file; };

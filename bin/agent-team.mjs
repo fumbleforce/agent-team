@@ -1,13 +1,15 @@
 #!/usr/bin/env node
 import { spawn, execFile } from 'node:child_process';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { Writable } from 'node:stream';
 import { CONFIG_DIR, deriveFromManifest, generateSecret, listDeployments, newDeployment, readDeployment, writeDeployment } from '../core/deployment.mjs';
-import { deploy as awsDeploy, destroy as awsDestroy, image as awsImage, readSecret, secrets as awsSecrets, discover, DeployError } from '../adapters/hosting/aws/deploy.mjs';
+import { TOOLKIT_REPO, deploy as awsDeploy, destroy as awsDestroy, image as awsImage, readSecret, secrets as awsSecrets, discover, parameterName, BOUNDARY_ARN, DeployError } from '../adapters/hosting/aws/deploy.mjs';
 import { aws } from '../adapters/launcher/ec2.mjs';
 import { createClient } from '../core/worker.mjs';
+import { normalizeManifest } from '../core/manifest.mjs';
 import { parseEnqueueArgs } from '../core/cli.mjs';
 import { seedMemory } from '../core/seed-memory.mjs';
 
@@ -26,7 +28,10 @@ const USAGE = `Usage: agent-team <command> [project]
   enqueue <project> --issue KEY-1 [--publish]   Queue a job through the coordinator
   destroy [project]   Remove the AWS resources (asks about roles and the data volume)
 
-Options: --yes (no prompts; fails where one is unavoidable), --config-dir DIR`;
+Options: --yes (no prompts; fails where one is unavoidable), --config-dir DIR
+init only: --permissions-boundary ARN (attached to both IAM roles), --toolkit-ref COMMIT (the toolkit
+revision the hosts run; defaults to this checkout's commit when it is published), --default-vpc (share the account's
+default VPC instead of a dedicated one), --public-dashboard (open port 4311 to your address)`;
 
 // Prompts. Secret input is read with echo off so keys never show in a terminal or scroll-back.
 export function prompter({ input = process.stdin, output = process.stdout, answers = null } = {}) {
@@ -49,6 +54,8 @@ function parse(argv) {
     const arg = argv[i];
     if (arg === '--yes') options.yes = true;
     else if (arg === '--config-dir' && argv[i + 1]) options.configDir = argv[++i];
+    else if (arg === '--permissions-boundary' && argv[i + 1]) options.permissionsBoundary = argv[++i];
+    else if (arg === '--toolkit-ref' && argv[i + 1]) options.toolkitRef = argv[++i];
     else if (arg.startsWith('--') && options.positional.length >= 2) options.flags.push(arg);
     else if (arg.startsWith('--')) options.flags.push(arg);
     else options.positional.push(arg);
@@ -64,22 +71,40 @@ function resolveProject(options, name) {
   throw new DeployError(`Several deployments exist (${all.join(', ')})`, 'Name one: agent-team <command> <project>');
 }
 
+// The toolkit revision the hosts should run: this checkout's commit when the public repository
+// already has it, so what was reviewed locally is what runs and a later push changes nothing.
+const TOOLKIT_ROOT = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const git = args => new Promise(resolve => execFile('git', ['-C', TOOLKIT_ROOT, ...args], { timeout: 10_000 }, (error, stdout) => resolve(error ? null : stdout.trim())));
+export async function publishedRevision() {
+  const head = await git(['rev-parse', 'HEAD']);
+  if (!head || !/^[0-9a-f]{40}$/.test(head)) return null;
+  const branches = await git(['branch', '-r', '--contains', head]);
+  return branches && /^\s*origin\/main$/m.test(branches) ? head : null;
+}
+
 const myIp = () => new Promise(resolve => execFile('curl', ['-fsS', 'https://checkip.amazonaws.com'], { timeout: 10_000 }, (error, stdout) => resolve(error ? null : stdout.trim())));
 const configuredRegion = () => new Promise(resolve => execFile('aws', ['configure', 'get', 'region'], { timeout: 10_000 }, (error, stdout) => resolve(error ? null : stdout.trim() || null)));
 
 // init: derive everything from the manifest, ask for what cannot be derived, store secrets.
-export async function init(options, { ask, log, awsRun = aws, region = configuredRegion }) {
+export async function init(options, { ask, log, awsRun = aws, region = configuredRegion, revision = publishedRevision }) {
   const checkoutInput = options.positional[1] ?? await ask('Path to the project checkout', { fallback: process.cwd() });
   const derived = deriveFromManifest(path.resolve(checkoutInput));
   const existing = readDeployment(derived.projectId, options.configDir);
   const deployment = existing ? { ...existing, ...derived, aws: existing.aws } : newDeployment(derived, { region: await region() });
+  if (options.permissionsBoundary) { if (!BOUNDARY_ARN.test(options.permissionsBoundary)) throw new DeployError(`${options.permissionsBoundary} is not a policy ARN`, 'Pass the boundary as arn:aws:iam::<account>:policy/<name>.'); deployment.aws.permissionsBoundary = options.permissionsBoundary; }
+  if (options.toolkitRef && !/^[\w][\w./-]{0,199}$/.test(options.toolkitRef)) throw new DeployError(`${options.toolkitRef} is not a branch, tag or commit`);
+  const ref = options.toolkitRef ?? deployment.toolkit?.ref ?? await revision();
+  deployment.toolkit = ref ? { repo: TOOLKIT_REPO, ref } : null;
+  log(ref ? `Hosts will run the toolkit at ${ref}` : 'Hosts will follow the toolkit\'s main branch; pin a reviewed commit with --toolkit-ref COMMIT');
+  if (options.flags.includes('--default-vpc')) deployment.aws.network = 'default';
+  if (options.flags.includes('--public-dashboard')) deployment.aws.dashboard = 'public';
   if (!deployment.aws.region) deployment.aws.region = await ask('AWS region', { fallback: 'eu-central-1' });
   else if (!options.yes && !existing) deployment.aws.region = await ask('AWS region', { fallback: deployment.aws.region });
   log(`Project ${deployment.name} (${deployment.projectId}): ${deployment.scm.kind} ${deployment.scm.repository}, ${deployment.tracker.kind}, ${deployment.engine.default} via ${deployment.engine.billing}, workers on ${deployment.worker.launcher}`);
   await discover(deployment, { aws: awsRun, prompt: options.yes ? null : ask, log });
   const values = {};
   for (const secret of deployment.secrets.filter(secret => !secret.generated)) {
-    const name = `${deployment.ssmPrefix}/${secret.name}`;
+    const name = parameterName(deployment, secret);
     let present = false;
     try { await awsRun(['ssm', 'get-parameter', '--region', deployment.aws.region, '--name', name]); present = true; } catch {}
     if (present && (options.yes || (await ask(`${secret.purpose} is already stored; replace it? (y/N)`)).toLowerCase() !== 'y')) continue;
@@ -96,13 +121,14 @@ function report(deployment, log) {
   const { aws: a } = deployment;
   log(`${deployment.name} (${deployment.projectId}) in ${a.region}`);
   log(`  control plane  ${a.instanceId ?? 'not launched'}${a.publicIp ? `  ${a.publicIp}` : ''}`);
-  log(`  dashboard      ${a.publicIp ? `http://${a.publicIp}:4311  (user: any, password: agent-team password ${deployment.projectId})` : '-'}`);
+  const address = a.dashboard === 'public' ? (a.publicIp ? `http://${a.publicIp}:4311` : null) : (a.instanceId ? `agent-team open ${deployment.projectId}  (Session Manager tunnel)` : null);
+  log(`  dashboard      ${address ? `${address}  (user: any, password: agent-team password ${deployment.projectId})` : '-'}`);
   log(`  worker image   ${a.amiId ?? (deployment.worker.amiParameter ? 'not built' : 'not needed')}`);
   log(`  data volume    ${a.dataVolumeId ?? '-'}`);
 }
 
 // A port-forward to the coordinator through Session Manager, for commands run from a laptop.
-async function withCoordinator(deployment, fn) {
+async function withCoordinator(deployment, fn, { attempts = 30 } = {}) {
   if (!deployment.aws.instanceId) throw new DeployError('Control plane is not deployed', `Run: agent-team deploy ${deployment.projectId}`);
   const port = 14310 + Math.floor(Math.random() * 1000);
   const session = spawn('aws', ['ssm', 'start-session', '--region', deployment.aws.region, '--target', deployment.aws.instanceId, '--document-name', 'AWS-StartPortForwardingSession', '--parameters', JSON.stringify({ portNumber: ['4310'], localPortNumber: [String(port)] })], { stdio: ['ignore', 'pipe', 'pipe'] });
@@ -111,23 +137,36 @@ async function withCoordinator(deployment, fn) {
   try {
     const token = await readSecret(deployment, 'AGENT_TEAM_TOKEN');
     const request = createClient(`http://127.0.0.1:${port}`, token);
-    for (let attempt = 0; attempt < 30; attempt++) {
+    for (let attempt = 0; attempt < attempts; attempt++) {
       try { await request('/health'); break; } catch { if (session.exitCode !== null) throw new DeployError('Session Manager port-forward failed', stderr.includes('SessionManagerPlugin') ? 'Install the Session Manager plugin for the AWS CLI.' : stderr.trim().slice(-300)); await new Promise(resolve => setTimeout(resolve, 1000)); }
     }
     return await fn({ request, url: `http://127.0.0.1:${port}`, token });
   } finally { session.kill(); }
 }
 
-export async function main(argv = process.argv.slice(2), { ask = prompter(), log = console.log, awsRun = aws, region = configuredRegion } = {}) {
+// The coordinator learns the project's manifest from the owner's checkout. Launched workers hold a
+// job token that may not register one, so a job cannot grant itself autonomy or delivery rights.
+export async function registerManifest(deployment, request, log = () => {}) {
+  const file = path.join(deployment.checkout, '.agent-team.json');
+  if (!existsSync(file)) { log(`No manifest at ${file}; the coordinator keeps the one it has`); return false; }
+  await request(`/projects/${deployment.projectId}/manifest`, { workerId: 'owner', manifest: normalizeManifest(JSON.parse(readFileSync(file, 'utf8'))) });
+  log(`manifest registered from ${file}`);
+  return true;
+}
+
+export async function main(argv = process.argv.slice(2), { ask = prompter(), log = console.log, awsRun = aws, region = configuredRegion, revision = publishedRevision } = {}) {
   const options = parse(argv);
   const [command, name] = options.positional;
   if (!command || command === 'help' || command === '--help') { log(USAGE); return 0; }
-  if (command === 'init') { await init(options, { ask, log, awsRun, region }); return 0; }
+  if (command === 'init') { await init(options, { ask, log, awsRun, region, revision }); return 0; }
   const deployment = resolveProject(options, name);
   const save = current => writeDeployment(current, options.configDir);
   if (command === 'deploy' || command === 'image') {
     const only = command === 'image' ? ['image'] : null;
-    await awsDeploy(deployment, { aws: awsRun, only, save, log, prompt: options.yes ? null : ask, myIp: await myIp(), generate: generateSecret });
+    // A missing Session Manager plugin stops the deploy with its hint; anything else means "not up yet".
+    const probe = current => withCoordinator(current, ({ request }) => request('/health'), { attempts: 10 }).catch(error => { throw error instanceof DeployError && !/plugin/i.test(error.hint ?? '') ? new Error(error.message) : error; });
+    await awsDeploy(deployment, { aws: awsRun, only, save, log, prompt: options.yes ? null : ask, myIp: deployment.aws.dashboard === 'public' ? await myIp() : null, generate: generateSecret, probe });
+    if (command === 'deploy') await withCoordinator(deployment, ({ request }) => registerManifest(deployment, request, log));
     log('');
     report(deployment, log);
     if (command === 'deploy') log(`\nOpen the dashboard with: agent-team open ${deployment.projectId}\nSeed memory from the checkout with: agent-team seed ${deployment.projectId}`);
@@ -136,11 +175,17 @@ export async function main(argv = process.argv.slice(2), { ask = prompter(), log
   if (command === 'status') { report(deployment, log); return 0; }
   if (command === 'password') { log(await readSecret(deployment, 'AGENT_TEAM_DASHBOARD_PASSWORD', { aws: awsRun })); return 0; }
   if (command === 'open') {
-    if (!deployment.aws.publicIp) throw new DeployError('Control plane is not deployed', `Run: agent-team deploy ${deployment.projectId}`);
-    const url = `http://${deployment.aws.publicIp}:4311/`;
+    if (!deployment.aws.instanceId) throw new DeployError('Control plane is not deployed', `Run: agent-team deploy ${deployment.projectId}`);
+    const tunnel = deployment.aws.dashboard !== 'public';
+    const url = tunnel ? 'http://127.0.0.1:4311/' : `http://${deployment.aws.publicIp}:4311/`;
+    const session = tunnel ? spawn('aws', ['ssm', 'start-session', '--region', deployment.aws.region, '--target', deployment.aws.instanceId, '--document-name', 'AWS-StartPortForwardingSession', '--parameters', JSON.stringify({ portNumber: ['4311'], localPortNumber: ['4311'] })], { stdio: ['ignore', 'ignore', 'inherit'] }) : null;
+    if (session) await new Promise(resolve => setTimeout(resolve, 3000));
     const opener = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'start' : 'xdg-open';
     spawn(opener, [url], { stdio: 'ignore', detached: true }).unref();
-    log(url); return 0;
+    log(url);
+    if (!session) return 0;
+    log('Tunnel open; press Ctrl-C to close it.');
+    return new Promise(resolve => session.on('exit', code => resolve(code ?? 0)));
   }
   if (command === 'logs') {
     if (!deployment.aws.instanceId) throw new DeployError('Control plane is not deployed', `Run: agent-team deploy ${deployment.projectId}`);
@@ -148,17 +193,17 @@ export async function main(argv = process.argv.slice(2), { ask = prompter(), log
     return new Promise(resolve => child.on('exit', code => resolve(code ?? 0)));
   }
   if (command === 'seed') {
-    return withCoordinator(deployment, async ({ url, token }) => { await seedMemory({ project: deployment.checkout, id: deployment.projectId, coordinator: url, token, log }); return 0; });
+    return withCoordinator(deployment, async ({ url, token, request }) => { await registerManifest(deployment, request, log); await seedMemory({ project: deployment.checkout, id: deployment.projectId, coordinator: url, token, log }); return 0; });
   }
   if (command === 'enqueue') {
     const body = parseEnqueueArgs(deployment.projectId, options.flags);
-    return withCoordinator(deployment, async ({ request }) => { log(JSON.stringify(await request('/jobs', body), null, 2)); return 0; });
+    return withCoordinator(deployment, async ({ request }) => { await registerManifest(deployment, request); log(JSON.stringify(await request('/jobs', body), null, 2)); return 0; });
   }
   if (command === 'destroy') {
     const confirm = options.yes ? 'yes' : await ask(`Terminate the control plane and worker images for ${deployment.projectId}? Type the project id to confirm`);
     if (!options.yes && confirm !== deployment.projectId) { log('Nothing removed.'); return 1; }
     const removeData = options.flags.includes('--data') || (!options.yes && (await ask('Also delete the data volume (queue, memory, PM state)? (y/N)')).toLowerCase() === 'y');
-    const removeRoles = options.flags.includes('--roles') || (!options.yes && (await ask('Also delete the shared IAM roles? Only if no other project uses them. (y/N)')).toLowerCase() === 'y');
+    const removeRoles = options.flags.includes('--roles') || (!options.yes && (await ask('Also delete the IAM roles of this project? (y/N)')).toLowerCase() === 'y');
     await awsDestroy(deployment, { aws: awsRun, log, removeData, removeRoles, removeSecrets: options.flags.includes('--secrets') });
     save(deployment);
     log(`Removed. The deployment file ${path.join(options.configDir, `${deployment.projectId}.json`)} is kept for a redeploy.`);

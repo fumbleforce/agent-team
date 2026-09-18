@@ -270,7 +270,7 @@ Detailed evidence lives under each checkout's `.agent-team/runs/<id>/` (journal,
 
 ## API
 
-All routes require `Authorization: Bearer ...`; JSON request bodies are limited to 64 KiB.
+All routes require `Authorization: Bearer ...`; JSON request bodies are limited to 64 KiB. The bearer is the shared token, or a job token (`job.<id>.<mac>`) limited to its own job as described under Ephemeral workers.
 
 | Route | Purpose |
 | --- | --- |
@@ -325,7 +325,7 @@ Overrides live in the coordinator database as a small JSON document per project,
 
 ## Ephemeral workers
 
-With `worker.launcher: ec2` the coordinator starts an instance per job from `worker.ami` (or `ssm:/parameter` holding the current image) whose user-data runs `core/worker.mjs --once --job ID` and shuts down. Jobs unclaimed after `claimTimeoutMinutes` fail and their instance is terminated. `artifacts.kind: s3` uploads journal, events, stderr and diff at the end of each run and the dashboard links to them. See [adapters/hosting/aws/README.md](adapters/hosting/aws/README.md) for the control plane on AWS and the nightly AMI build.
+With `worker.launcher: ec2` the coordinator starts an instance per job from `worker.ami` (or `ssm:/parameter` holding the current image) whose user-data runs `core/worker.mjs --once --job ID` and shuts down. The launched worker receives a job token derived from the shared token instead of the shared token itself: it can claim and report that one job, record its cost and read its project's settings and memory; every other route, manifest registration included, answers 403, and the token stops working when the job ends. The owner's CLI registers the manifest for such projects. Jobs unclaimed after `claimTimeoutMinutes` fail and their instance is terminated. `artifacts.kind: s3` uploads journal, events, stderr and diff at the end of each run and the dashboard links to them. See [adapters/hosting/aws/README.md](adapters/hosting/aws/README.md) for the control plane on AWS and the nightly AMI build.
 
 ## Pilot runbook for a new project
 
