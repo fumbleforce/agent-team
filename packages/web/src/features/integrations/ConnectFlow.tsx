@@ -20,7 +20,10 @@ export function ConnectFlow({ slug, connectedKinds, onDone, only, label = '+ Con
   const [errors, setErrors] = useState<Record<string, string>>({}), [check, setCheck] = useState<{ ok: boolean; message: string } | null>(null), [busy, setBusy] = useState(false);
   const pick = (next: CatalogEntry | null) => { setEntry(next); setErrors({}); setCheck(null); setManual(false); };
   // Everything needed is already known: the fields from what was connected before, the credential from this machine.
-  const ready = entry !== null && !manual && entry.credentialPresent === true && entry.fields.filter(field => field.required).every(field => entry.prefill[field.key]);
+  // A field whose value is already known is never asked for again, whatever else may still be missing.
+  const known = entry && !manual ? entry.fields.filter(field => entry.prefill[field.key]) : [];
+  const asked = entry ? entry.fields.filter(field => !known.includes(field) && (known.length === 0 || field.required)) : [];
+  const ready = entry !== null && !manual && entry.credentialPresent !== false && entry.fields.filter(field => field.required).every(field => entry.prefill[field.key]);
 
   async function send(action: 'test' | 'setup', form: HTMLFormElement) {
     if (!entry) return;
@@ -60,20 +63,21 @@ export function ConnectFlow({ slug, connectedKinds, onDone, only, label = '+ Con
         </div>
       ) : (
         <form id="connect-flow" className="flex min-h-0 flex-col gap-4 overflow-y-auto" onSubmit={event => { event.preventDefault(); void send('setup', event.currentTarget); }}>
-          {ready && (
-            <>
-              <StatusLine boxed tone="working">{Object.values(entry.prefill).join(', ')} is already connected, and its sign-in was found ({entry.credentialSource}). Nothing else to set up.</StatusLine>
-              {entry.fields.map(field => <input key={field.key} type="hidden" name={field.key} value={entry.prefill[field.key] ?? ''} />)}
-              <div><Button variant="ghost" onClick={() => setManual(true)}>Use a different repository or token</Button></div>
-            </>
+          {/* What is already known is stated, not asked again: a repository connected before, a sign-in found on this machine. */}
+          {known.length > 0 && (
+            <div className="flex flex-col gap-2">
+              <StatusLine boxed tone="working">{known.map(field => entry.prefill[field.key]).join(', ')} is already connected{ready ? (entry.credentialSource ? `, and its sign-in was found (${entry.credentialSource}). Nothing else to set up.` : '. Nothing else to set up here.') : '; it is used here too.'}</StatusLine>
+              {known.map(field => <input key={field.key} type="hidden" name={field.key} value={entry.prefill[field.key]} />)}
+              <div><Button variant="ghost" onClick={() => setManual(true)}>Use something else</Button></div>
+            </div>
           )}
           <section className="flex flex-col gap-1.5"><SectionLabel>What the team does with it</SectionLabel>{entry.does.map(line => <Text key={line} size="small" tone="soft">· {line}</Text>)}</section>
-          {!ready && <section className="flex flex-col gap-2"><SectionLabel>Before you connect</SectionLabel><Steps items={entry.steps} /></section>}
+          {!ready && <section className="flex flex-col gap-2"><SectionLabel>{known.length ? 'One thing left: the sign-in' : 'Before you connect'}</SectionLabel><Steps items={entry.steps} /></section>}
           {!ready && entry.credential && (entry.credential.runsOn === 'coordinator'
             ? <StatusLine boxed tone={entry.credentialPresent ? 'working' : 'attention'}>{entry.credentialPresent ? `${entry.credential.label} found: ${entry.credentialSource}.` : `${entry.credential.variable} is not set on the coordinator yet. You can connect now; it starts working once the variable is set and the coordinator restarted.`}</StatusLine>
             : <StatusLine boxed tone="off">The {entry.credential.label.toLowerCase()} lives on the worker machines as {entry.credential.variable}; it is never entered here.</StatusLine>)}
-          {!ready && <section className="flex flex-col gap-3">
-            {entry.fields.map((field, index) => <Field key={field.key} label={field.required ? field.label : `${field.label} (optional)`} help={field.help} error={errors[field.key]}><Input name={field.key} placeholder={field.placeholder} required={field.required} autoFocus={index === 0} defaultValue={entry.prefill[field.key] ?? ''} /></Field>)}
+          {asked.length > 0 && <section className="flex flex-col gap-3">
+            {asked.map((field, index) => <Field key={field.key} label={field.required ? field.label : `${field.label} (optional)`} help={field.help} error={errors[field.key]}><Input name={field.key} placeholder={field.placeholder} required={field.required} autoFocus={index === 0} defaultValue={manual ? entry.prefill[field.key] ?? '' : ''} /></Field>)}
           </section>}
           {check && <StatusLine boxed tone={check.ok ? 'working' : 'stop'}>{check.message}</StatusLine>}
         </form>

@@ -46,9 +46,13 @@ export function mountSetupRoutes(app: Hono<any>, deps: Deps) {
   app.get('/api/projects/:slug/integrations/catalog', async c => {
     const { project } = await deps.projectFor(c, 'project.read');
     const connections = await integrations.connections(project.id);
+    // The repository is known from the connection made in the app, or from the manifest a checkout registered with `up`.
+    const row = await context.storage.db.selectFrom('projects').select('manifest').where('id', '=', project.id).executeTakeFirst();
+    const manifest = row ? JSON.parse(row.manifest) as { scm?: { kind?: string }; delivery?: { repository?: string; baseBranch?: string } } : {};
     return c.json({ entries: CATALOG.map(entry => {
       const shared = entry.sharesWith ? connections.find(item => item.kind === entry.sharesWith) : undefined;
-      const prefill = Object.fromEntries(entry.fields.flatMap(field => { const value = shared?.config[field.key]; return typeof value === 'string' && value ? [[field.key, value]] : []; }));
+      const registered: Record<string, unknown> = entry.sharesWith && manifest.scm?.kind === entry.sharesWith ? { repository: manifest.delivery?.repository, baseBranch: manifest.delivery?.baseBranch } : {};
+      const prefill = Object.fromEntries(entry.fields.flatMap(field => { const value = shared?.config[field.key] ?? registered[field.key]; return typeof value === 'string' && value ? [[field.key, value]] : []; }));
       return { ...described(entry), prefill };
     }) });
   });
