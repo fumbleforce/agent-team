@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { workerIdFor } from '@agent-team/protocol';
+import { resolveProjects } from '../../../worker/src/projects.ts';
 import { boot, TOKEN } from './testing.ts';
 
 test('two workers on one machine do not take each other\'s projects away, and a finished setup step stays finished', async () => {
@@ -29,5 +30,25 @@ test('two workers on one machine do not take each other\'s projects away, and a 
     await db.updateTable('workers').set({ last_seen_at: 1 }).execute();
     const away = await codeStep('alpha');
     assert.deepEqual([away.done, /no worker running right now/.test(away.detail)], [true, true]);
+  } finally { await coordinator.close(); }
+});
+
+test('a worker configured with the name of a project, as `up` writes it, ends up serving that project and completes the step of the guide', async () => {
+  const { coordinator, call, owner } = await boot();
+  try {
+    const cookie = await owner();
+    const machine = { authorization: `Bearer ${TOKEN}` };
+    const id = (await call('/machine/projects', { headers: machine, body: { slug: 'agent-team', name: 'Agent Team', manifest: { scm: { kind: 'github' }, delivery: { repository: 'acme/agent-team' } } } })).json.id as string;
+    const codeStep = async () => ((await call('/api/onboarding?project=agent-team', { cookie })).json.steps as { key: string; done: boolean }[]).find(step => step.key === 'code')!;
+
+    // Reporting the name itself is what the old configuration did: the coordinator does not know a project by that, and the step stays open.
+    await call('/worker/claim', { headers: machine, body: { workerId: 'host.agent-team', free: { work: 1 }, projects: ['agent-team'] } });
+    assert.equal((await codeStep()).done, false);
+
+    // The worker now looks the name up first and reports the id.
+    const { projects, unknown } = await resolveProjects({ 'agent-team': '/code/agent-team' }, { coordinatorUrl: coordinator.url, token: TOKEN });
+    assert.deepEqual([projects, unknown], [{ [id]: '/code/agent-team' }, []]);
+    await call('/worker/claim', { headers: machine, body: { workerId: 'host.agent-team', free: { work: 1 }, projects: Object.keys(projects) } });
+    assert.equal((await codeStep()).done, true);
   } finally { await coordinator.close(); }
 });

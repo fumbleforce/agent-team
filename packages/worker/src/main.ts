@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { engineAdapter, ENGINES } from '../../../adapters/engine/index.ts';
 import { PROVIDER_VARIABLES } from '../../../adapters/engine/providers.ts';
 import { readiness } from './platform.ts';
+import { resolveProjects } from './projects.ts';
 import { createWorker, type WorkerConfig } from './worker.ts';
 
 interface FileConfig { coordinatorUrl: string; workerId: string; stateDir: string; engine: string; lanes?: WorkerConfig['lanes']; projects: Record<string, string>; worktrees?: WorkerConfig['worktrees']; isolation?: 'strict' | 'isolated'; publish?: { scm: string; repository: string; base: string } }
@@ -13,19 +14,23 @@ const file = JSON.parse(readFileSync(process.argv[index + 1]!, 'utf8')) as FileC
 const token = process.env.AGENT_TEAM_TOKEN;
 if (!token) { console.error('AGENT_TEAM_TOKEN is required'); process.exit(1); }
 
+const named = await resolveProjects(file.projects, { coordinatorUrl: file.coordinatorUrl, token });
+for (const name of named.unknown) console.error(`The coordinator has no project called "${name}"; this worker will not serve it.`);
+if (Object.keys(named.projects).length === 0) { console.error('None of the projects this worker names exist on the coordinator.'); process.exit(1); }
+
 // A launched host is gone after its turn, so its config names where the branch is pushed when a work turn completes.
 const exec: NonNullable<WorkerConfig['publish']>['exec'] = (bin, args, { cwd }) => new Promise((resolve, reject) => execFile(bin, args, { cwd, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => error ? reject(new Error(String(stderr).trim().slice(-400) || error.message)) : resolve(stdout)));
 const worker = createWorker({
   coordinatorUrl: file.coordinatorUrl, token, workerId: file.workerId, stateDir: file.stateDir, engine: engineAdapter(file.engine),
   engines: Object.fromEntries(ENGINES.map(name => [name, engineAdapter(name)])),
   ready: readiness(Object.fromEntries(ENGINES.map(name => [name, engineAdapter(name)])), PROVIDER_VARIABLES),
-  lanes: file.lanes ?? { work: 1, bounded: 1, deliver: 1 }, projects: file.projects,
+  lanes: file.lanes ?? { work: 1, bounded: 1, deliver: 1 }, projects: named.projects,
   ...(file.publish ? { publish: { ...file.publish, exec } } : {}), ...(file.isolation ? { isolation: file.isolation } : {}),
   worktrees: file.worktrees === undefined ? { branchPrefix: 'agents/', base: 'HEAD' } : file.worktrees,
   // `--once` is how a launched, disposable host runs: the worker then holds itself to the rule for such hosts.
   ephemeral: process.argv.includes('--once'),
 });
-console.log(`Worker ${file.workerId} serving ${Object.keys(file.projects).length} project(s) with ${file.engine}`);
+console.log(`Worker ${file.workerId} serving ${Object.keys(named.projects).length} project(s) with ${file.engine}`);
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { worker.stop(); void worker.idle().then(() => process.exit(0)); });
 // A launched, disposable host runs what it was started for and exits: it waits for one claim, finishes it and stops.
 if (process.argv.includes('--once')) {
