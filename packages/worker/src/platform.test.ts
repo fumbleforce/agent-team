@@ -13,7 +13,7 @@ test('elsewhere a command passes through unchanged; on Windows the file behind t
   assert.equal(resolveBinary('engine', { env, platform: 'win32' }), path.join(dir, 'engine.cmd'));
   assert.equal(resolveBinary('missing', { env, platform: 'win32' }), null);
   // A launcher that only forwards to a native program is bypassed, so no shell ever reads the arguments.
-  assert.deepEqual(commandLine('engine', ['a b', '(x)'], { env, platform: 'win32' }), { file: path.join(dir, 'engine.exe'), args: ['a b', '(x)'], verbatim: false });
+  assert.deepEqual(commandLine('engine', ['a b', '(x)'], { env, platform: 'win32' }), { file: path.win32.join(dir, 'engine.exe'), args: ['a b', '(x)'], verbatim: false });
 });
 
 test('a package-manager launcher runs its script with this runtime; any other script goes through the shell, quoted', () => {

@@ -31,9 +31,10 @@ export function launcherTarget(file: string, read: (file: string) => string = fi
   let text: string;
   try { text = read(file); } catch { return null; }
   const script = /"%_prog%"\s+((?:[^\s"]+\s+)*)"%dp0%\\([^"]+\.(?:m?js|cjs))"\s+%\*/i.exec(text);
-  if (script) return { script: path.join(path.dirname(file), script[2]!), flags: script[1]!.trim().split(/\s+/).filter(Boolean) };
+  // Launchers exist only on Windows, so their paths are read by its rules wherever this runs.
+  if (script) return { script: path.win32.join(path.win32.dirname(file), script[2]!), flags: script[1]!.trim().split(/\s+/).filter(Boolean) };
   const native = /^\s*"%dp0%\\([^"]+\.exe)"\s+%\*\s*$/im.exec(text);
-  return native ? { file: path.join(path.dirname(file), native[1]!), flags: [] } : null;
+  return native ? { file: path.win32.join(path.win32.dirname(file), native[1]!), flags: [] } : null;
 }
 
 // Quoting for a command line the Windows shell reads before a `.cmd` script expands it again. Line breaks cannot cross that shell.
