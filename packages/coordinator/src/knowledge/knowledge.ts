@@ -31,6 +31,9 @@ ${body}`).catch(() => []);
     if (vector.length) await db.insertInto('embeddings').values({ doc_type: type, doc_id: id, model: embedder.model, vector: JSON.stringify(vector) }).onConflict(oc => oc.columns(['doc_type', 'doc_id']).doUpdateSet({ model: embedder.model, vector: JSON.stringify(vector) })).execute();
   }
 
+  // Sibling revisions take numbers too, so the next number comes from the revisions, not from the page's current one.
+  const lastRev = async (tx: Tx, pageId: string) => Number((await tx.selectFrom('kb_revisions').select(eb => eb.fn.max('rev_no').as('last')).where('page_id', '=', pageId).executeTakeFirst())?.last ?? 0);
+
   return {
     async tree(scope: Scope) {
       return db.selectFrom('kb_pages').select(['id', 'path', 'title', 'current_rev', 'updated_at']).where('scope_type', '=', scope.type).where('scope_id', '=', scope.id).where('archived_at', 'is', null).orderBy('path').execute();
@@ -42,7 +45,7 @@ ${body}`).catch(() => []);
       const result = await storage.transaction(async tx => {
         const page = await tx.selectFrom('kb_pages').selectAll().where('scope_type', '=', input.scope.type).where('scope_id', '=', input.scope.id).where('path', '=', input.path).executeTakeFirst();
         if (page && input.expectedRev !== undefined && input.expectedRev !== page.current_rev) throw new HttpError(409, 'stale', `The page is at revision ${page.current_rev}`);
-        const id = page?.id ?? newId(now()), rev = (page?.current_rev ?? 0) + 1;
+        const id = page?.id ?? newId(now()), rev = (page ? await lastRev(tx, page.id) : 0) + 1;
         if (page) await tx.updateTable('kb_pages').set({ title: input.title, current_rev: rev, updated_at: now() }).where('id', '=', id).execute();
         else await tx.insertInto('kb_pages').values({ id, scope_type: input.scope.type, scope_id: input.scope.id, path: input.path, title: input.title, current_rev: rev, archived_at: null, updated_at: now() }).execute();
         await tx.insertInto('kb_revisions').values({ page_id: id, rev_no: rev, body: input.body, author_kind: author.kind, author_id: author.id, note: input.note ?? null, created_at: now() }).execute();
@@ -53,6 +56,20 @@ ${body}`).catch(() => []);
       events.published(result.published);
       await embedDoc('page', result.id, input.title, input.body);
       return { id: result.id, rev: result.rev };
+    },
+
+    // A revision kept beside the current one rather than replacing it: the page, its search entry and its current revision stay as they are.
+    async writeSibling(author: Author, pageId: string, input: { body: string; note?: string | undefined }) {
+      const result = await storage.transaction(async tx => {
+        const page = await tx.selectFrom('kb_pages').selectAll().where('id', '=', pageId).executeTakeFirst();
+        if (!page) throw notFound('Page');
+        const rev = (await lastRev(tx, pageId)) + 1;
+        await tx.insertInto('kb_revisions').values({ page_id: pageId, rev_no: rev, body: input.body, author_kind: author.kind, author_id: author.id, note: input.note ?? `Sibling of revision ${page.current_rev}`, created_at: now() }).execute();
+        const published = await events.append(tx, [{ type: 'kb.page_conflict', actorKind: author.kind, userId: author.kind === 'user' ? author.id : null, agentId: author.kind === 'agent' ? author.id : null, projectId: page.scope_type === 'org' || page.scope_type === 'team' ? null : page.scope_id, payload: { pageId, path: page.path, rev, siblingOf: page.current_rev } }]);
+        return { rev, published };
+      });
+      events.published(result.published);
+      return { id: pageId, rev: result.rev };
     },
 
     async read(pageId: string, reader?: { agentId: string; turnId: string | null }) {

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { createTurns, seedDemo, startCoordinator } from '@agent-team/coordinator';
@@ -46,4 +46,48 @@ test('a usage limit defers the turn, a crash blocks the task, a hang times out',
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, taskState, scenario);
     await coordinator.close();
   }
+});
+
+// Rows come back without a prototype; a copy compares as a plain object.
+const plain = async <T extends object>(row: Promise<T>): Promise<T> => ({ ...await row });
+
+async function bootCapture(capture: NonNullable<Parameters<typeof createWorker>[0]['capture']>) {
+  const coordinator = await startCoordinator({ port: 0, storage: { kind: 'sqlite', path: ':memory:' }, machineToken: TOKEN, webRoot: null });
+  await seedDemo(coordinator.context);
+  const db = coordinator.context.storage.db;
+  const project = await db.selectFrom('projects').select('id').where('slug', '=', 'checkout-v2').executeTakeFirstOrThrow();
+  const agent = await db.selectFrom('agents').select('id').where('name', '=', 'Maren').executeTakeFirstOrThrow();
+  await db.insertInto('product_envs').values({ id: 'env1', project_id: project.id, name: 'capture-target', branch: null, url: 'https://staging.example.com/', source: 'manual', created_at: 1, last_status: null, last_latency_ms: null }).execute();
+  await createTurns(coordinator.context).enqueue({ agentId: agent.id, projectId: project.id, kind: 'capture', prepare: async (tx, workItemId) => {
+    await tx.insertInto('snapshots').values({ id: 'snap1', project_id: project.id, env_id: 'env1', url: 'https://staging.example.com/', viewport: 'tablet', state: 'requested', error: null, attachment_id: null, markers: '[]', description: null, issue_id: null, work_item_id: workItemId, requested_by: null, created_at: 1, captured_at: null }).execute();
+  } });
+  const stateDir = mkdtempSync(path.join(os.tmpdir(), 'agent-team-worker-'));
+  const worker = createWorker({ coordinatorUrl: coordinator.url, token: TOKEN, workerId: 'w1', stateDir, lanes: { work: 0, bounded: 1, deliver: 0 }, projects: { [project.id]: stateDir }, engine: fake, capture });
+  return { coordinator, db, worker };
+}
+
+test('a capture turn runs no engine: the image is uploaded under the lease and becomes the snapshot', async () => {
+  const asked: { url: string; viewport: string }[] = [];
+  const { coordinator, db, worker } = await bootCapture(async input => { asked.push({ url: input.url, viewport: input.viewport }); writeFileSync(input.outFile, Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 9, 9])); return { file: input.outFile, latencyMs: 42 }; });
+  assert.equal(await worker.tick(), true);
+  await worker.idle();
+  assert.deepEqual(asked, [{ url: 'https://staging.example.com/', viewport: 'tablet' }]);
+  const turn = await db.selectFrom('turns').select(['kind', 'lane', 'access', 'state']).executeTakeFirstOrThrow();
+  assert.deepEqual({ ...turn }, { kind: 'capture', lane: 'bounded', access: 'none', state: 'completed' });
+  const snapshot = await db.selectFrom('snapshots').select(['state', 'attachment_id']).where('id', '=', 'snap1').executeTakeFirstOrThrow();
+  assert.equal(snapshot.state, 'captured');
+  assert.equal((await db.selectFrom('attachments').select('bytes').where('id', '=', snapshot.attachment_id!).executeTakeFirstOrThrow()).bytes, 6);
+  assert.deepEqual(await plain(db.selectFrom('product_envs').select(['last_status', 'last_latency_ms']).where('id', '=', 'env1').executeTakeFirstOrThrow()), { last_status: 'ok', last_latency_ms: 42 });
+  assert.equal(await db.selectFrom('trace_steps').select('seq').where('turn_id', 'in', db.selectFrom('turns').select('id').where('kind', '=', 'capture')).executeTakeFirst(), undefined);
+  await coordinator.close();
+});
+
+test('a capture without a browser fails with its reason, not uncertain', async () => {
+  const { coordinator, db, worker } = await bootCapture(async () => { throw new Error('No browser found to capture with'); });
+  await worker.tick();
+  await worker.idle();
+  assert.deepEqual(await plain(db.selectFrom('turns').select(['state', 'stop_reason']).executeTakeFirstOrThrow()), { state: 'failed', stop_reason: 'capture' });
+  assert.deepEqual(await plain(db.selectFrom('snapshots').select(['state', 'error']).where('id', '=', 'snap1').executeTakeFirstOrThrow()), { state: 'failed', error: 'No browser found to capture with' });
+  assert.equal((await db.selectFrom('product_envs').select('last_status').where('id', '=', 'env1').executeTakeFirstOrThrow()).last_status, 'failed');
+  await coordinator.close();
 });

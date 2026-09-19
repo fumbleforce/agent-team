@@ -11,6 +11,9 @@ const USAGE = `agent-team <command>
   demo                                       serve the sample organization on an in-memory database
   setup-link [--url URL]                     print a one-time link for creating the owner (needs AGENT_TEAM_TOKEN)
   migrate --config FILE                      bring the database named in a coordinator config up to date
+  deploy aws [--plan|--apply] [--only STEP] [--skip STEP]   plan (the default) or apply the AWS deployment in <config dir>/aws-deployment.json
+  status aws                                 show what the AWS deployment has recorded and the control plane's state
+  destroy aws [--yes] [--roles] [--data] [--secrets]   list what would be deleted; delete it only with --yes
   call <tool> [json]                         call a platform tool from inside a turn, for engines that cannot mount the tool endpoint`;
 
 const [command, ...rest] = process.argv.slice(2);
@@ -44,6 +47,8 @@ else if (command === 'up') {
   await storage.migrate();
   await storage.close();
   console.log('The database is up to date');
+} else if (['deploy', 'status', 'destroy'].includes(command ?? '') && rest[0] === 'aws') {
+  process.exit(await (await import('../adapters/hosting/aws/cli.ts')).awsCli(command!, rest.slice(1)));
 } else if (command === 'call') {
   // The turn's token comes from a private file or the environment, never from the command line.
   const url = process.env.AGENT_TEAM_PLATFORM_URL, tokenFile = process.env.AGENT_TEAM_TURN_TOKEN_FILE;

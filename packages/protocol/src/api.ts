@@ -1,5 +1,5 @@
 import { z } from 'zod';
-import { MessageKind, OrgRole, ProjectRole } from './enums.ts';
+import { MessageKind, OrgRole, ProjectRole, Viewport } from './enums.ts';
 
 export const Password = z.string().min(12).max(200);
 export const LoginBody = z.object({ email: z.email(), password: z.string().min(1).max(200) });
@@ -30,5 +30,6 @@ export const CreateIssueBody = z.object({ title: z.string().min(1).max(200), bod
   // Spots marked on a product snapshot, as fractions of the image so they hold at any size.
   markers: z.array(z.object({ x: z.number().min(0).max(1), y: z.number().min(0).max(1), note: z.string().max(200).default('') })).max(12).default([]), environment: z.string().max(80).nullish() });
 export const ProductEnvBody = z.object({ name: z.string().min(1).max(60), branch: z.string().max(200).nullish(), url: z.url().max(500) });
+export const CaptureBody = z.object({ viewport: Viewport });
 export const ProviderBody = z.object({ name: z.string().min(1).max(60), kind: z.enum(['subscription', 'metered', 'local']), engine: z.string().regex(/^[a-z][a-z0-9-]{0,30}$/), models: z.array(z.string().min(1).max(120)).min(1).max(40), maxConcurrentTurns: z.number().int().min(1).max(64).default(2) });
 export const SeatProviderBody = z.object({ providerId: z.string().nullable(), model: z.string().max(120).nullable() });

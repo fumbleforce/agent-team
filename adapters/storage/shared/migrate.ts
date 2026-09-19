@@ -13,9 +13,10 @@ import * as integrations from '../migrations/0009_integrations.ts';
 import * as product from '../migrations/0010_product.ts';
 import * as schedules from '../migrations/0011_schedules.ts';
 import * as embeddings from '../migrations/0012_embeddings.ts';
+import * as snapshots from '../migrations/0013_snapshots.ts';
 
 type ContextMigration = { up(db: Kysely<unknown>, context: MigrationContext): Promise<void> };
-const MIGRATIONS: Record<string, ContextMigration> = { '0001_init': init, '0002_runtime': runtime, '0003_costs_knowledge': knowledge, '0004_deliberation': deliberation, '0005_delivery': delivery, '0006_checks': checks, '0007_proposals': proposals, '0008_issues': issues, '0009_integrations': integrations, '0010_product': product, '0011_schedules': schedules, '0012_embeddings': embeddings };
+const MIGRATIONS: Record<string, ContextMigration> = { '0001_init': init, '0002_runtime': runtime, '0003_costs_knowledge': knowledge, '0004_deliberation': deliberation, '0005_delivery': delivery, '0006_checks': checks, '0007_proposals': proposals, '0008_issues': issues, '0009_integrations': integrations, '0010_product': product, '0011_schedules': schedules, '0012_embeddings': embeddings, '0013_snapshots': snapshots };
 
 // Forward-only, each in its own transaction, recorded in Kysely's migration table.
 export async function runMigrations(db: Kysely<never> | Kysely<any>, context: MigrationContext): Promise<void> {

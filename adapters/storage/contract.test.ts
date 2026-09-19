@@ -2,14 +2,16 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { newId } from '@agent-team/protocol';
 import { createStorage, type StorageAdapter, type StorageConfig } from './index.ts';
+import { postgresForTests } from './testing.ts';
 
-const configs: StorageConfig[] = [{ kind: 'sqlite', path: ':memory:' }];
-if (process.env.AGENT_TEAM_TEST_PG_URL) configs.push({ kind: 'postgres', url: process.env.AGENT_TEAM_TEST_PG_URL });
+// Postgres runs in-process, a fresh database per test; AGENT_TEAM_TEST_PG_URL points the same suite at a real server instead.
+const configs: StorageConfig[] = [{ kind: 'sqlite', path: ':memory:' }, { kind: 'postgres', url: process.env.AGENT_TEAM_TEST_PG_URL ?? '' }];
 
 async function fresh(config: StorageConfig): Promise<StorageAdapter> {
-  const storage = await createStorage(config);
+  const local = config.kind === 'postgres' && !config.url ? await postgresForTests() : null;
+  const storage = await createStorage(local?.config ?? config);
   await storage.migrate();
-  return storage;
+  return local ? { ...storage, close: async () => { await storage.close(); await local.stop(); } } : storage;
 }
 
 for (const config of configs) {

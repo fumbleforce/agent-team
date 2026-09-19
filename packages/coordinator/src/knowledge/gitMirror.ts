@@ -21,7 +21,8 @@ export function createGitMirror(context: Context, directory: string) {
       const cursor = existsSync(cursorFile) ? (JSON.parse(readFileSync(cursorFile, 'utf8')) as { after: number; seen: string[] }) : { after: 0, seen: [] };
       const revisions = await db.selectFrom('kb_revisions').innerJoin('kb_pages', 'kb_pages.id', 'kb_revisions.page_id')
         .select(['kb_revisions.page_id', 'kb_revisions.rev_no', 'kb_revisions.body', 'kb_revisions.author_kind', 'kb_revisions.author_id', 'kb_revisions.note', 'kb_revisions.created_at', 'kb_pages.scope_type', 'kb_pages.scope_id', 'kb_pages.path', 'kb_pages.title'])
-        .where('kb_revisions.created_at', '>=', cursor.after).orderBy('kb_revisions.created_at').orderBy('kb_revisions.rev_no').limit(500).execute();
+        // A sibling kept from a sync conflict is numbered past the page's current revision and is not the page's text.
+        .where('kb_revisions.created_at', '>=', cursor.after).whereRef('kb_revisions.rev_no', '<=', 'kb_pages.current_rev').orderBy('kb_revisions.created_at').orderBy('kb_revisions.rev_no').limit(500).execute();
       let committed = 0;
       for (const revision of revisions) {
         const key = `${revision.page_id}:${revision.rev_no}`;

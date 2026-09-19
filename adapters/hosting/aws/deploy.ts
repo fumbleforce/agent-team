@@ -135,7 +135,7 @@ export async function secrets(deployment: Deployment, { aws = defaultAws, values
     if (exists && !replace.includes(secret.name)) { log(`secret ${secret.name} present`); continue; }
     const value = values[secret.name] ?? (secret.generated && generate ? generate() : null);
     if (!value && secret.optional) { log(`secret ${secret.name} not provided`); continue; }
-    if (!value) throw new DeployError(`Secret ${secret.name} is missing`, `Run \`agent-team init ${deployment.projectId}\` to provide the ${secret.purpose}.`);
+    if (!value) throw new DeployError(`Secret ${secret.name} is missing`, `Set ${secret.name} (the ${secret.purpose}) in the environment and run: agent-team deploy aws --apply`);
     await aws(['ssm', 'put-parameter', ...region(deployment), '--name', name, '--type', 'SecureString', '--overwrite', '--value', value]);
     log(`secret ${secret.name} stored`);
   }
@@ -150,11 +150,11 @@ async function ensureRole(aws: Aws, deployment: Deployment, name: string, statem
   if (!role) {
     try { await aws(['iam', 'create-role', '--role-name', name, '--assume-role-policy-document', TRUST, ...(boundary ? ['--permissions-boundary', boundary] : [])]); }
     catch (error) {
-      if (!boundary && /AccessDenied|not authorized/i.test(message(error))) throw new DeployError(`Creating the role ${name} was denied`, `If this account requires a permissions boundary on new roles, record it with: agent-team init ${deployment.checkout ?? ''} --permissions-boundary arn:aws:iam::<account>:policy/<name>`);
+      if (!boundary && /AccessDenied|not authorized/i.test(message(error))) throw new DeployError(`Creating the role ${name} was denied`, `If this account requires a permissions boundary on new roles, record it with: agent-team deploy aws --apply --permissions-boundary arn:aws:iam::<account>:policy/<name>`);
       throw error;
     }
   }
-  else if (boundary && role.PermissionsBoundary?.PermissionsBoundaryArn !== boundary) throw new DeployError(`Role ${name} exists without the permissions boundary ${boundary}`, 'Delete the role (agent-team destroy --roles) or attach the boundary as an administrator, then deploy again.');
+  else if (boundary && role.PermissionsBoundary?.PermissionsBoundaryArn !== boundary) throw new DeployError(`Role ${name} exists without the permissions boundary ${boundary}`, 'Delete the role (agent-team destroy aws --yes --roles) or attach the boundary as an administrator, then deploy again.');
   await aws(['iam', 'put-role-policy', '--role-name', name, '--policy-name', 'agent-team', '--policy-document', JSON.stringify({ Version: '2012-10-17', Statement: statements })]);
   // Earlier versions attached the managed Session Manager policy, which also reads every parameter in the account.
   const attached: { PolicyArn: string }[] = (await aws(['iam', 'list-attached-role-policies', '--role-name', name])).AttachedPolicies ?? [];
@@ -177,7 +177,7 @@ async function ensureRole(aws: Aws, deployment: Deployment, name: string, statem
 // tag, and stop only instances with that tag. Both deny every parameter outside the prefix outright.
 export function rolePolicies(deployment: Deployment): { worker: Statement[]; control: Statement[] } {
   const { accountId, region: reg, roles, subnetId } = deployment.aws;
-  if (!accountId || !reg || !subnetId) throw new DeployError('The account, region and subnet must be known before roles are written', `Run: agent-team deploy ${deployment.projectId}`);
+  if (!accountId || !reg || !subnetId) throw new DeployError('The account, region and subnet must be known before roles are written', 'Run: agent-team deploy aws --apply');
   const own = `arn:aws:ssm:${reg}:${accountId}:parameter${deployment.ssmPrefix}`;
   const ec2 = (type: string, owner: string = accountId) => `arn:aws:ec2:${reg}:${owner}:${type}/*`;
   const projectTag = (key: string) => ({ StringEquals: { [`${key}/agent-team:project`]: deployment.projectId } });
@@ -196,6 +196,8 @@ export function rolePolicies(deployment: Deployment): { worker: Statement[]; con
     { Effect: 'Allow', Action: 'ec2:RunInstances', Resource: [`arn:aws:ec2:${reg}:${accountId}:subnet/${subnetId}`, ec2('snapshot', ''), ...['volume', 'network-interface', 'security-group', 'key-pair', 'spot-instances-request'].map(type => ec2(type))] },
     { Effect: 'Allow', Action: 'ec2:CreateTags', Resource: ec2('instance'), Condition: { StringEquals: { 'ec2:CreateAction': 'RunInstances' } } },
     { Effect: 'Allow', Action: 'ec2:TerminateInstances', Resource: ec2('instance'), Condition: projectTag('aws:ResourceTag') },
+    // The EC2 launcher hands each job's token to its instance through a parameter, never through user data.
+    { Effect: 'Allow', Action: ['ssm:PutParameter', 'ssm:DeleteParameter'], Resource: `${own}/jobs/*` },
     { Effect: 'Allow', Action: 'iam:PassRole', Resource: `arn:aws:iam::${accountId}:role/${roles.worker}`, Condition: { StringEquals: { 'iam:PassedToService': 'ec2.amazonaws.com' } } }];
   return { worker, control };
 }
@@ -214,7 +216,7 @@ export async function iam(deployment: Deployment, { aws = defaultAws, log = quie
 // to the plain-HTTP port.
 export async function network(deployment: Deployment, { aws = defaultAws, myIp, log = quiet }: DeployOptions = {}) {
   if (deployment.aws.network === 'dedicated') await dedicatedNetwork(deployment, aws, log);
-  if (!deployment.aws.vpcId || !deployment.aws.subnetId) throw new DeployError('No network to deploy into', `Run: agent-team init ${deployment.checkout ?? ''}`);
+  if (!deployment.aws.vpcId || !deployment.aws.subnetId) throw new DeployError('No network to deploy into', 'Run: agent-team deploy aws --apply');
   const name = `agent-team-${deployment.projectId}`;
   let sg = deployment.aws.securityGroupId;
   if (!sg) sg = (await aws(['ec2', 'describe-security-groups', ...region(deployment), '--filters', `Name=group-name,Values=${name}`, `Name=vpc-id,Values=${deployment.aws.vpcId}`])).SecurityGroups?.[0]?.GroupId ?? null;
@@ -251,7 +253,7 @@ const dataVolume = (instance: Instance | null) => instance?.BlockDeviceMappings?
 // The single control-plane host with a persistent data volume. Reuses a running instance when the
 // recorded id is still alive; otherwise launches a new one, re-attaching the previous data volume.
 export async function controlPlane(deployment: Deployment, { aws = defaultAws, log = quiet, instanceType = 't3.small', dataGb = 20 }: DeployOptions = {}) {
-  if (!deployment.aws.subnetId || !deployment.aws.securityGroupId) throw new DeployError('The network must exist before the control plane', `Run: agent-team deploy ${deployment.projectId}`);
+  if (!deployment.aws.subnetId || !deployment.aws.securityGroupId) throw new DeployError('The network must exist before the control plane', 'Run: agent-team deploy aws --apply');
   let instance = deployment.aws.instanceId ? await instanceState(aws, deployment, deployment.aws.instanceId) : null;
   if (instance && ['running', 'pending'].includes(instance.State?.Name ?? '')) log(`control plane ${deployment.aws.instanceId} running`);
   else {
@@ -282,7 +284,7 @@ export async function controlPlane(deployment: Deployment, { aws = defaultAws, l
 
 export function bakeScript(deployment: Deployment, { template = readFileSync(path.join(HERE, 'worker-bake.sh'), 'utf8'), toolkitRepo = deployment.toolkit?.repo ?? TOOLKIT_REPO, toolkitRef = deployment.toolkit?.ref ?? 'main' }: { template?: string; toolkitRepo?: string; toolkitRef?: string } = {}) {
   const tokenVariable = deployment.secrets.find(secret => secret.adapter === deployment.scm.kind)?.name;
-  if (!tokenVariable) throw new DeployError(`No secret holds the ${deployment.scm.kind} token`, `Run: agent-team init ${deployment.checkout ?? ''}`);
+  if (!tokenVariable) throw new DeployError(`No secret holds the ${deployment.scm.kind} token`, `Add a secret with adapter "${deployment.scm.kind}" to the deployment file (agent-team status aws prints its path).`);
   const provisioning = deployment.worker.provisioning ?? { packages: [], setup: [] };
   const values: Record<string, string> = { REGION: deployment.aws.region ?? '', SSM_PREFIX: deployment.ssmPrefix, TOOLKIT_REPO: toolkitRepo, TOOLKIT_REF: toolkitRef, PROJECT_HOST: deployment.scm.host, PROJECT_REPO: deployment.scm.repository, TOKEN_VARIABLE: tokenVariable, PROJECT_SETUP: deployment.worker.setup,
     ENVIRONMENT_PACKAGES: provisioning.packages.join(' '), ENVIRONMENT_SETUP: provisioning.setup.length ? provisioning.setup.join(' && ') : 'true' };
@@ -301,7 +303,7 @@ async function removeImage(aws: Aws, deployment: Deployment, stale: Image) {
 // power off, snapshot it, publish the id to Parameter Store and prune older images.
 export async function image(deployment: Deployment, { aws = defaultAws, log = quiet, keep = 3, now = () => new Date(), volumeGb = 60, toolkitRef = deployment.toolkit?.ref ?? 'main' }: DeployOptions = {}) {
   if (deployment.worker.launcher !== 'ec2' || !deployment.worker.amiParameter) { log('worker image not needed for this launcher'); return deployment; }
-  if (!deployment.aws.subnetId || !deployment.aws.securityGroupId) throw new DeployError('The network must exist before an image is baked', `Run: agent-team deploy ${deployment.projectId}`);
+  if (!deployment.aws.subnetId || !deployment.aws.securityGroupId) throw new DeployError('The network must exist before an image is baked', 'Run: agent-team deploy aws --apply');
   const stamp = now().toISOString().replace(/[-:]/g, '').slice(0, 13).replace('T', '-');
   const base: string = (await aws(['ssm', 'get-parameter', ...region(deployment), '--name', UBUNTU])).Parameter.Value;
   const builder: string = (await aws(['ec2', 'run-instances', ...region(deployment), '--image-id', base, '--instance-type', deployment.worker.instanceType, '--subnet-id', deployment.aws.subnetId, '--security-group-ids', deployment.aws.securityGroupId,
@@ -324,7 +326,7 @@ export async function image(deployment: Deployment, { aws = defaultAws, log = qu
 
 // Waits until the control plane answers on its one port.
 export async function verify(deployment: Deployment, { aws = defaultAws, probe = null, fetchImpl = fetch, log = quiet, attempts = 40, sleep = defaultSleep }: DeployOptions = {}) {
-  const late = new DeployError('The control plane did not come up in time', `Inspect with: agent-team logs ${deployment.projectId}`);
+  const late = new DeployError('The control plane did not come up in time', `Check agent-team status aws, then read journalctl -u agent-team.service in a Session Manager session on ${deployment.aws.instanceId ?? 'the host'}.`);
   if (deployment.aws.access !== 'public') {
     // Without a public port the signal is the host registering with Session Manager, which the tunnels need.
     for (let attempt = 0; attempt < attempts; attempt++) {

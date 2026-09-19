@@ -3,6 +3,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { z } from 'zod';
 import { newId, type CreateIssueBody } from '@agent-team/protocol';
+import type { Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 
 const IMAGE = /^image\/(png|jpeg|webp|gif)$/;
@@ -14,16 +15,16 @@ export function createIssues(context: Context, blobDir: string) {
   const db = storage.db;
 
   return {
-    async attach(userId: string, input: { name: string; mime: string; bytes: Uint8Array }) {
+    async attach(userId: string | null, input: { name: string; mime: string; bytes: Uint8Array }, executor: Tx | typeof db = db) {
       if (!IMAGE.test(input.mime)) throw new HttpError(415, 'attachment', 'Only PNG, JPEG, WebP and GIF images can be attached');
       if (input.bytes.length === 0 || input.bytes.length > MAX_BYTES) throw new HttpError(413, 'attachment', 'An attachment is at most 8 MB');
       const sha256 = createHash('sha256').update(input.bytes).digest('hex');
-      const existing = await db.selectFrom('attachments').select('id').where('sha256', '=', sha256).executeTakeFirst();
+      const existing = await executor.selectFrom('attachments').select('id').where('sha256', '=', sha256).executeTakeFirst();
       if (existing) return existing.id;
       mkdirSync(blobDir, { recursive: true, mode: 0o700 });
       writeFileSync(path.join(blobDir, sha256), input.bytes, { mode: 0o600 });
       const id = newId(now());
-      await db.insertInto('attachments').values({ id, sha256, bytes: input.bytes.length, mime: input.mime, name: input.name.slice(0, 120), storage_kind: 'local', storage_key: sha256, created_by: userId, created_at: now() }).execute();
+      await executor.insertInto('attachments').values({ id, sha256, bytes: input.bytes.length, mime: input.mime, name: input.name.slice(0, 120), storage_kind: 'local', storage_key: sha256, created_by: userId, created_at: now() }).execute();
       return id;
     },
 

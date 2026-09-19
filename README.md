@@ -76,6 +76,7 @@ Provider names appear only under `adapters/`. `npm run lint` enforces that, the 
 ```sh
 npm test               # node --test over packages, adapters and scripts
 npm run check          # tsc --noEmit and the three lints
+AGENT_TEAM_TEST_STORAGE=postgres npm run test:postgres   # the package suite again, on the Postgres adapter (in-process, no server)
 npm run test:e2e       # Playwright smoke over the demo (needs `npx playwright install chromium` once)
 ```
 
@@ -85,4 +86,4 @@ Tests never call a paid model or a real account. The component gallery at `/dev/
 
 Proven by the automated tests: the storage contract on SQLite, access control, the event log and stream resume, claims and leases, quarantine, deliberation, reviews and the merge gate on synthetic repositories, permissions and the write-scope gate, and every screen's API over the demo.
 
-Not yet run against the real thing: the Postgres adapter against a database; the engine adapters other than the one checked in [docs/PLATFORM.md](docs/PLATFORM.md); chat, document-folder sync and OpenID Connect against real services; the Fly and AWS deployments. Treat each as unproven until a pilot has run it.
+Not yet run against the real thing: a hosted Postgres (the adapter passes the suite on an in-process Postgres); the engine adapters other than the one checked in [docs/PLATFORM.md](docs/PLATFORM.md); chat, document-folder sync and OpenID Connect against real services; the Fly and AWS deployments. Treat each as unproven until a pilot has run it.

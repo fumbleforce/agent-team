@@ -96,9 +96,11 @@ export interface HandoffsTable { id: string; project_id: string; direction: stri
 
 export interface IntegrationsSchema { connections: ConnectionsTable; handoffs: HandoffsTable }
 
-export interface ProductEnvsTable { id: string; project_id: string; name: string; branch: string | null; url: string; source: string; created_at: Ms }
+export interface ProductEnvsTable { id: string; project_id: string; name: string; branch: string | null; url: string; source: string; created_at: Ms; last_status: string | null; last_latency_ms: number | null }
+// A snapshot starts as a request (state requested, no attachment) and is filled by the capture turn that serves it.
+export interface SnapshotsTable { id: string; project_id: string; env_id: string; url: string; viewport: string; state: string; error: string | null; attachment_id: string | null; markers: Json; description: string | null; issue_id: string | null; work_item_id: string | null; requested_by: string | null; created_at: Ms; captured_at: Ms | null }
 
-export interface ProductSchema { product_envs: ProductEnvsTable }
+export interface ProductSchema { product_envs: ProductEnvsTable; snapshots: SnapshotsTable }
 
 export interface SchedulesTable { id: string; project_id: string; kind: string; interval_ms: number; next_at: Ms; last_at: Ms | null }
 

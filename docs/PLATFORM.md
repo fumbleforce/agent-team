@@ -6,20 +6,20 @@
 
 | Area | State |
 | --- | --- |
-| Storage adapter, migrations, event log and live stream | Built; contract suite runs on SQLite. The Postgres adapter is written to the same contract and has never been run against a database |
+| Storage adapter, migrations, event log and live stream | Built. The contract suite and the whole package test suite run on both adapters: SQLite, and the Postgres adapter against an in-process Postgres (`npm run test:postgres`, also in CI). A hosted Postgres such as Supabase has not been tried; set `AGENT_TEAM_TEST_PG_URL` to point the contract suite at one |
 | Accounts, roles, invitations, audit trail, OpenID Connect | Built; OpenID Connect is tested against a local fake identity provider only |
 | Turns, leases, scoped quarantine, daily caps, provider concurrency | Built and tested on a fake engine |
 | Structured deliberation, reviews, approvals, merge queue, publish and the merge gate | Built; the gate is tested on synthetic repositories and recorded host responses for both source hosts |
 | Roles, graded permissions, committed ceiling, write-scope gate | Built and tested |
 | Team proposals, delegation bounds, weekly retro | Built and tested |
 | Knowledge pages, memories, search, optional semantic search, git mirror | Built; semantic search is tested with a toy embedder |
-| Document-folder sync | One way, outbound, against a fake API. Inbound changes are not built |
+| Document-folder sync | Two-way against a fake API: an inbound edit becomes a revision authored by the sync, a conflict keeps the local text current and the remote as a sibling revision. Never run against the real service |
 | Chat mirror, outbound and inbound | Built against fakes; never run against the real service |
-| Tracker sync (two trackers), issues, attachments, product environments and marked-up snapshots | Built. Snapshots are pasted images; the worker does not capture pages itself |
+| Tracker sync (two trackers), issues, attachments, product environments and marked-up snapshots | Built. A snapshot is captured by a worker driving a locally installed browser from its command line (one real capture of the demo succeeded on this machine), or pasted |
 | Checks ingestion and the branch-by-suite matrix | Built |
 | Costs, budgets, CSV export | Built |
 | Web app: every screen in the design, token-driven, with a component gallery | Built; Playwright smoke tests click through every screen on the demo |
-| Hosting: local, systemd, Fly, AWS | Local is used daily by the tests and `up`. The Fly and AWS entrypoints boot locally; neither has been deployed from this code. The AWS deploy plan is tested against a fake account |
+| Hosting: local, systemd, Fly, AWS | Local is used daily by the tests and `up`. The Fly and AWS entrypoints boot locally; neither has been deployed from this code. The AWS deploy plan and its CLI (`deploy aws`, plan by default, `--apply` to change anything) are tested against a fake account. Disposable workers are started by the coordinator when work waits and no worker serves the project; the launched host reads its token from the parameter store, never from user data. The Fly configuration passes `fly config validate` |
 | Engine adapters | See below |
 
 ## The one real turn
@@ -35,8 +35,8 @@ The other three engine adapters are written from vendor documentation and pass t
 ## Open
 
 - A pilot on a real project: a write turn through to a merged change, on both source hosts.
-- Postgres (and Supabase) against a real database; the CI job for it needs a service container.
+- A hosted Postgres (Supabase) with a real connection string.
 - Real credentials for chat, the document folder and an identity provider.
-- Deploying Fly and AWS from this code. The launched-worker path writes no worker configuration onto a new host yet, and the deploy library is not wired into the CLI.
-- Inbound document-folder sync and worker-side page captures for the product view.
+- Deploying Fly and AWS from this code: both create billable resources and need the owner's go-ahead. The launched host's boot script has only been syntax-checked.
+- The three other engine CLIs are not installed on this machine, so their adapters remain unrun.
 - Voice mode and portraits were dropped on purpose (section 1 of the spec).

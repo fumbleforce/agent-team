@@ -28,4 +28,4 @@ export interface StorageAdapter {
   close(): Promise<void>;
 }
 
-export type StorageConfig = { kind: 'sqlite'; path: string } | { kind: 'postgres'; url: string };
+export type StorageConfig = { kind: 'sqlite'; path: string } | { kind: 'postgres'; url: string; poolSize?: number };

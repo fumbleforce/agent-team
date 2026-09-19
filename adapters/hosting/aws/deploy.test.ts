@@ -1,83 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { deploy, destroy, controlPlaneUserData, bakeScript, secrets, iam, network, verify, rolePolicies, newDeployment, DeployError, STEPS, type DeploymentFacts } from './deploy.ts';
+import { fakeAws, type State } from './fakeAws.ts';
 
 const facts = (): DeploymentFacts => ({ projectId: 'example', name: 'Example', checkout: '/nonexistent', scm: { kind: 'gitlab', repository: 'group/project', host: 'gitlab.com' },
   worker: { launcher: 'ec2', instanceType: 'c6i.2xlarge', setup: 'npm ci', amiParameter: '/agent-team/example/worker-ami' }, ssmPrefix: '/agent-team/example',
   secrets: [{ name: 'AGENT_TEAM_TOKEN', generated: true, scope: 'control', purpose: 'machine token' }, { name: 'LINEAR_API_KEY', generated: false, purpose: 'linear API key', adapter: 'linear' }, { name: 'GITLAB_TOKEN', generated: false, purpose: 'gitlab token', adapter: 'gitlab' }] });
 const fresh = () => newDeployment(facts(), { region: 'eu-central-1' });
-const notFound = (name: string) => new Error(`aws x y: An error occurred (${name})`);
 const hinted = (pattern: RegExp) => (error: unknown) => error instanceof DeployError && pattern.test(error.hint);
 const provided = { LINEAR_API_KEY: 'k', GITLAB_TOKEN: 't' };
 const noSleep = async () => {};
-type State = Record<string, any>; // The fake account is a loose bag of what was created.
-
-// A fake AWS account: remembers what was created so a second run finds it.
-function fakeAws(state: State = {}) {
-  const calls: string[][] = [];
-  state.parameters ??= {}; state.roles ??= new Set(); state.profiles ??= new Set(); state.groups ??= {}; state.instances ??= {}; state.images ??= []; state.launched ??= 0;
-  const run = async (args: string[]): Promise<State> => {
-    calls.push(args);
-    const [service, action] = args;
-    const flag = (name: string) => { const index = args.indexOf(name); return index === -1 ? '' : args[index + 1] ?? ''; };
-    if (service === 'sts') return { Account: '123456789012' };
-    // The default VPC always exists; the dedicated one only after it has been created.
-    if (service === 'ec2' && action === 'describe-vpcs') return { Vpcs: flag('--filters').includes('is-default') ? [{ VpcId: 'vpc-default' }] : state.vpc ? [{ VpcId: 'vpc-own' }] : [] };
-    if (service === 'ec2' && action === 'create-vpc') { state.vpc = { tags: flag('--tag-specifications') }; return { Vpc: { VpcId: 'vpc-own' } }; }
-    if (service === 'ec2' && action === 'describe-subnets') return { Subnets: args.includes('Name=vpc-id,Values=vpc-default') ? [{ SubnetId: 'subnet-default', VpcId: 'vpc-default' }] : state.subnet ? [{ SubnetId: 'subnet-own', VpcId: 'vpc-own' }] : [] };
-    if (service === 'ec2' && action === 'create-subnet') { state.subnet = { zone: flag('--availability-zone') || null }; return { Subnet: { SubnetId: 'subnet-own' } }; }
-    if (service === 'ec2' && action === 'describe-volumes') return { Volumes: [{ AvailabilityZone: 'eu-central-1b' }] };
-    if (service === 'ec2' && action === 'describe-internet-gateways') return { InternetGateways: state.gateway ? [{ InternetGatewayId: 'igw-1', Attachments: state.gateway.attached ? [{ VpcId: 'vpc-own' }] : [] }] : [] };
-    if (service === 'ec2' && action === 'create-internet-gateway') { state.gateway = { attached: false }; return { InternetGateway: { InternetGatewayId: 'igw-1' } }; }
-    if (service === 'ec2' && action === 'attach-internet-gateway') { if (state.failAttach) { state.failAttach = false; throw new Error('RequestLimitExceeded'); } state.gateway.attached = true; return {}; }
-    if (service === 'ec2' && action === 'detach-internet-gateway') { state.gateway.attached = false; return {}; }
-    if (service === 'ec2' && action === 'delete-internet-gateway') { state.gateway = null; return {}; }
-    if (service === 'ec2' && action === 'describe-route-tables') return { RouteTables: [{ RouteTableId: 'rtb-1', Routes: state.route ? [{ DestinationCidrBlock: '0.0.0.0/0' }] : [] }] };
-    if (service === 'ec2' && action === 'create-route') { state.route = true; return {}; }
-    if (service === 'ec2' && action === 'delete-subnet') { state.subnet = null; return {}; }
-    if (service === 'ec2' && action === 'delete-vpc') { state.vpc = null; state.route = false; return {}; }
-    if (service === 'ssm' && action === 'get-parameter') {
-      const name = flag('--name');
-      if (name.startsWith('/aws/service/')) return { Parameter: { Value: 'ami-base' } };
-      if (!(name in state.parameters)) throw notFound('ParameterNotFound');
-      return { Parameter: { Value: state.parameters[name] } };
-    }
-    if (service === 'ssm' && action === 'describe-instance-information') return { InstanceInformationList: [{ PingStatus: 'Online' }] };
-    if (service === 'ssm' && action === 'put-parameter') { state.parameters[flag('--name')] = flag('--value'); return {}; }
-    if (service === 'ssm' && action === 'delete-parameter') { delete state.parameters[flag('--name')]; return {}; }
-    if (service === 'iam') {
-      const name = flag('--role-name') || flag('--instance-profile-name');
-      if (action === 'get-role') { if (!state.roles.has(name)) throw notFound('NoSuchEntity'); return { Role: state.roleDetails?.[name] ?? {} }; }
-      if (action === 'create-role') { if (state.requireBoundary && !args.includes('--permissions-boundary')) throw new Error('AccessDenied: not authorized to perform iam:CreateRole'); state.roles.add(name); (state.roleDetails ??= {})[name] = args.includes('--permissions-boundary') ? { PermissionsBoundary: { PermissionsBoundaryArn: flag('--permissions-boundary') } } : {}; return {}; }
-      if (action === 'list-attached-role-policies') return { AttachedPolicies: state.legacyPolicy?.has(name) ? [{ PolicyArn: 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore' }] : [] };
-      if (action === 'detach-role-policy') { state.legacyPolicy?.delete(name); return {}; }
-      if (action === 'get-instance-profile') { if (!state.profiles.has(name)) throw notFound('NoSuchEntity'); return {}; }
-      if (action === 'create-instance-profile') { state.profiles.add(name); return {}; }
-      return {};
-    }
-    if (service === 'ec2' && action === 'describe-security-groups') { const name = /Values=(.*)/.exec(flag('--filters'))?.[1] ?? ''; return { SecurityGroups: state.groups[name] ? [{ GroupId: state.groups[name] }] : [] }; }
-    if (service === 'ec2' && action === 'create-security-group') { state.groups[flag('--group-name')] = 'sg-1'; return { GroupId: 'sg-1' }; }
-    if (service === 'ec2' && action === 'revoke-security-group-egress') { state.egressRevoked = true; return {}; }
-    if (service === 'ec2' && action === 'authorize-security-group-egress') { const rule = JSON.parse(flag('--ip-permissions'))[0]; const key = JSON.stringify(rule); if ((state.egress ??= []).some((item: unknown) => JSON.stringify(item) === key)) throw new Error('InvalidPermission.Duplicate'); state.egress.push(rule); return {}; }
-    if (service === 'ec2' && action === 'authorize-security-group-ingress') { const key = `${flag('--port')} ${flag('--cidr') || 'group'}`; if (state.authorized?.has(key)) throw new Error('Duplicate rule'); (state.authorized ??= new Set()).add(key); return {}; }
-    if (service === 'ec2' && action === 'run-instances') {
-      const id = `i-${++state.launched}`;
-      state.instances[id] = { InstanceId: id, State: { Name: 'running' }, PublicIpAddress: '203.0.113.7', PrivateIpAddress: '10.0.0.7', BlockDeviceMappings: [{ DeviceName: '/dev/xvdf', Ebs: { VolumeId: 'vol-data' } }], userData: flag('--user-data'), tags: flag('--tag-specifications') };
-      return { Instances: [{ InstanceId: id }] };
-    }
-    if (service === 'ec2' && action === 'describe-instances') {
-      const ids = flag('--instance-ids'); if (ids && !state.instances[ids]) throw notFound('InvalidInstanceID.NotFound');
-      return { Reservations: [{ Instances: ids ? [state.instances[ids]] : Object.values(state.instances) }] };
-    }
-    if (service === 'ec2' && action === 'wait') return {};
-    if (service === 'ec2' && action === 'create-image') { const id = `ami-${state.images.length + 1}`; state.images.push({ ImageId: id, CreationDate: String(state.images.length), BlockDeviceMappings: [{ Ebs: { SnapshotId: `snap-${id}` } }] }); return { ImageId: id }; }
-    if (service === 'ec2' && action === 'describe-images') return { Images: [...state.images] };
-    if (service === 'ec2' && action === 'deregister-image') { state.images = state.images.filter((image: State) => image.ImageId !== flag('--image-id')); return {}; }
-    if (service === 'ec2' && action === 'terminate-instances') { for (const id of args.slice(args.indexOf('--instance-ids') + 1).filter(a => a.startsWith('i-'))) delete state.instances[id]; return {}; }
-    return {};
-  };
-  return { run, calls, state };
-}
 
 test('deploy creates every resource once, records ids, and a rerun only verifies what exists', async () => {
   const aws = fakeAws();
@@ -121,7 +53,7 @@ test('a terminated control plane is relaunched with the previous data volume re-
 });
 
 test('missing provided secrets and expired credentials fail with actionable hints', async () => {
-  await assert.rejects(secrets(fresh(), { aws: fakeAws().run, values: {}, generate: () => 'x' }), error => error instanceof DeployError && /LINEAR_API_KEY is missing/.test(error.message) && /agent-team init example/.test(error.hint));
+  await assert.rejects(secrets(fresh(), { aws: fakeAws().run, values: {}, generate: () => 'x' }), error => error instanceof DeployError && /LINEAR_API_KEY is missing/.test(error.message) && /agent-team deploy aws --apply/.test(error.hint));
   await assert.rejects(deploy(fresh(), { aws: async () => { throw new Error('ExpiredToken'); } }), error => error instanceof DeployError && /credentials are missing or expired/.test(error.message) && /aws login/.test(error.hint));
   // An optional secret nobody provided is skipped, not invented.
   const aws = fakeAws(); const deployment = fresh(); deployment.secrets.push({ name: 'SLACK_TOKEN', generated: false, optional: true, purpose: 'chat token' });
@@ -144,7 +76,7 @@ test('templates are filled from the deployment and refuse unknown placeholders',
   assert.match(real, /shutdown -h now/); assert.match(real, /setup_24\.x/); assert.match(real, /ExecStart=\/usr\/bin\/node packages\/worker\/src\/main\.ts /);
   for (const text of [real, controlPlaneUserData(deployment)]) assert.doesNotMatch(text, /4311|\.mjs|DASHBOARD_PASSWORD|__[A-Z_]+__/);
   deployment.secrets = deployment.secrets.filter(secret => secret.adapter !== 'gitlab');
-  assert.throws(() => bakeScript(deployment), hinted(/agent-team init/));
+  assert.throws(() => bakeScript(deployment), hinted(/agent-team status aws/));
 });
 
 test('destroy removes instances, images, the group and optionally data, secrets and roles', async () => {
@@ -246,5 +178,5 @@ test('verify waits for the tunnelled coordinator, and stops at once when the tun
   await verify(deployment, { aws: aws.run, sleep: noSleep, log: line => log.push(line), probe: async () => { if (++probes < 3) throw new Error('connection refused'); } });
   assert.equal(probes, 3); assert.match(log.at(-1) ?? '', /answering through the tunnel/);
   await assert.rejects(verify(deployment, { aws: aws.run, sleep: noSleep, probe: async () => { throw new DeployError('Session Manager port-forward failed', 'Install the Session Manager plugin for the AWS CLI.'); } }), hinted(/plugin/));
-  await assert.rejects(verify(deployment, { aws: aws.run, sleep: noSleep, attempts: 2, probe: async () => { throw new Error('never'); } }), hinted(/agent-team logs example/));
+  await assert.rejects(verify(deployment, { aws: aws.run, sleep: noSleep, attempts: 2, probe: async () => { throw new Error('never'); } }), hinted(/agent-team status aws/));
 });

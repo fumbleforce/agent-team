@@ -14,7 +14,7 @@ const TASK_RULES: Record<TurnKind, string> = {
   review: 'Review the task below at its current head. Report findings precisely.',
   retro: 'The weekly retro is open in the thread below, with the figures of this week. Post one note with discussion.post: what went well in a line, and at most three problems with their evidence and a suggestion. If you are the PM, read the notes already there and turn at most three of them into team proposals with proposal.create.',
   ideate: 'Propose at most three substantial next pieces of work with problem, benefit and scope.',
-  publish: '', deliver: '',
+  publish: '', deliver: '', capture: '',
 };
 
 // Everything a turn starts from, built deterministically from stored state: no model, no hidden context.

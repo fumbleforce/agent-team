@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startCoordinator } from '../server.ts';
+import { postgresForTests } from '../../../../adapters/storage/testing.ts';
 import { DEMO_LOGIN, seedDemo } from './seed.ts';
 
 // Every screen's data endpoint answers for the seeded organization, and nothing is served without a session.
@@ -10,8 +11,9 @@ const SCREENS = [
   '/api/projects/checkout-v2/issues', '/api/projects/checkout-v2/product', '/api/projects/checkout-v2/integrations', '/api/projects/checkout-v2/search?q=idempotency',
 ];
 
-test('the demo serves every screen to its owner and nothing to a stranger', async () => {
-  const coordinator = await startCoordinator({ port: 0, storage: { kind: 'sqlite', path: ':memory:' }, machineToken: 'x'.repeat(24), webRoot: null, trackers: null, demoLogin: DEMO_LOGIN });
+for (const kind of ['sqlite', 'postgres'] as const) test(`${kind}: the demo serves every screen to its owner and nothing to a stranger`, async () => {
+  const local = kind === 'postgres' ? await postgresForTests() : null;
+  const coordinator = await startCoordinator({ port: 0, storage: local?.config ?? { kind: 'sqlite', path: ':memory:' }, machineToken: 'x'.repeat(24), webRoot: null, trackers: null, demoLogin: DEMO_LOGIN });
   await seedDemo(coordinator.context);
   const entered = await fetch(`${coordinator.url}/demo/enter`, { redirect: 'manual' });
   const cookie = entered.headers.get('set-cookie')!.split(';')[0]!;
@@ -26,4 +28,5 @@ test('the demo serves every screen to its owner and nothing to a stranger', asyn
   const hits = await (await fetch(`${coordinator.url}/api/projects/checkout-v2/search?q=idempotency`, { headers: { cookie } })).json() as { hits: { title: string }[] };
   assert.equal(hits.hits[0]?.title, 'Idempotency in checkout');
   await coordinator.close();
+  await local?.stop();
 });

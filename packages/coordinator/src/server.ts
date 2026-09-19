@@ -16,11 +16,13 @@ import { readFileSync } from 'node:fs';
 import { createTrackerSync, type TrackerClient } from './sync/tracker.ts';
 import { trackerClient } from '../../../adapters/tracker/index.ts';
 
+import { createLaunches, type LauncherFactory } from './runtime/launch.ts';
+export type { LauncherFactory } from './runtime/launch.ts';
 export type TrackerFactory = (kind: string) => Promise<TrackerClient | null>;
 // The tracker clients are adapters; a project without a credential for its tracker is simply not polled.
 const adapterTrackers: TrackerFactory = async kind => trackerClient(kind);
 
-export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; webRoot?: string | null; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; trackerPollMs?: number; knowledgeMirror?: string }
+export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; webRoot?: string | null; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string }
 
 // Loopback, a CGNAT (tailnet) address, or every interface when explicitly allowed.
 export function validBind(host: string, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -50,7 +52,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const sync = createTrackerSync(context), trackers = config.trackers === undefined ? adapterTrackers : config.trackers;
   const slack = createSlackMirror(context), drive = createDriveSync(context), gitMirror = config.knowledgeMirror ? createGitMirror(context, config.knowledgeMirror) : null;
   // Outbound mirrors run on a short timer and never stop the coordinator when their other side is down.
-  const mirrorTimer = setInterval(() => { void slack.sync().then(() => gitMirror?.sync()).then(() => drive.sync()).catch(error => console.error(`Mirror failed: ${(error as Error).message}`)); }, 10_000);
+  const mirrorTimer = setInterval(() => { void slack.sync().then(() => gitMirror?.sync()).then(() => drive.pull()).then(() => drive.sync()).catch(error => console.error(`Mirror failed: ${(error as Error).message}`)); }, 10_000);
   mirrorTimer.unref();
   // Inbound chat is optional and never fatal: without its token it simply stays off.
   const closeInbound = await createSlackInbound(context).connect().catch(error => { console.error(`Inbound chat is off: ${(error as Error).message}`); return null; });
@@ -63,10 +65,14 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
       if (client) await sync.syncProject(project.id, client).catch(error => console.error(`Tracker sync failed for ${project.id}: ${(error as Error).message}`));
     }
   };
+  // Disposable workers are started only when the deployment supplies a launcher factory.
+  const launches = config.launchers ? createLaunches(context, config.launchers) : null;
+  const launchTimer = setInterval(() => { void launches?.sweep().catch(error => console.error(error)); }, 30_000);
+  launchTimer.unref();
   const pollTimer = setInterval(() => { void poll(); }, config.trackerPollMs ?? 60_000);
   pollTimer.unref();
   const server = await new Promise<ServerType>(resolve => { const s = serve({ fetch: app.fetch, hostname: host, port: config.port ?? DEFAULT_PORT }, () => resolve(s)); });
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : (config.port ?? DEFAULT_PORT);
-  return { context, server, url: `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`, poll, close: async () => { clearInterval(timer); clearInterval(pollTimer); clearInterval(mirrorTimer); closeInbound?.(); await new Promise(resolve => server.close(resolve)); await storage.close(); } };
+  return { context, server, url: `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`, poll, close: async () => { clearInterval(timer); clearInterval(pollTimer); clearInterval(mirrorTimer); clearInterval(launchTimer); await launches?.close(); closeInbound?.(); await new Promise(resolve => server.close(resolve)); await storage.close(); } };
 }

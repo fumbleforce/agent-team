@@ -21,7 +21,8 @@
     "up": "node bin/agent-team.ts up",
     "demo": "node bin/agent-team-demo.ts",
     "test:e2e": "playwright test",
-    "pilot": "node scripts/pilot-turn.ts"
+    "pilot": "node scripts/pilot-turn.ts",
+    "test:postgres": "node --test --test-concurrency=1 \"packages/**/*.test.ts\""
   },
   "workspaces": [
     "packages/*",
@@ -34,8 +35,12 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@electric-sql/pglite": "^0.5.8",
+    "@electric-sql/pglite-socket": "^0.2.11",
     "@playwright/test": "^1.63.0",
     "@types/node": "^26.6.2",
+    "@types/pg": "^8.23.1",
+    "pg": "^8.23.0",
     "typescript": "^7.0.2"
   }
 }

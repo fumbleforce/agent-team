@@ -1,8 +1,9 @@
+import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { engineAdapter, ENGINES } from '../../../adapters/engine/index.ts';
 import { createWorker, type WorkerConfig } from './worker.ts';
 
-interface FileConfig { coordinatorUrl: string; workerId: string; stateDir: string; engine: string; lanes?: WorkerConfig['lanes']; projects: Record<string, string>; worktrees?: WorkerConfig['worktrees'] }
+interface FileConfig { coordinatorUrl: string; workerId: string; stateDir: string; engine: string; lanes?: WorkerConfig['lanes']; projects: Record<string, string>; worktrees?: WorkerConfig['worktrees']; publish?: { scm: string; repository: string; base: string } }
 
 const index = process.argv.indexOf('--config');
 if (index < 0 || !process.argv[index + 1]) { console.error('Usage: node packages/worker/src/main.ts --config FILE [--once [--job LABEL]]'); process.exit(1); }
@@ -10,10 +11,13 @@ const file = JSON.parse(readFileSync(process.argv[index + 1]!, 'utf8')) as FileC
 const token = process.env.AGENT_TEAM_TOKEN;
 if (!token) { console.error('AGENT_TEAM_TOKEN is required'); process.exit(1); }
 
+// A launched host is gone after its turn, so its config names where the branch is pushed when a work turn completes.
+const exec: NonNullable<WorkerConfig['publish']>['exec'] = (bin, args, { cwd }) => new Promise((resolve, reject) => execFile(bin, args, { cwd, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => error ? reject(new Error(String(stderr).trim().slice(-400) || error.message)) : resolve(stdout)));
 const worker = createWorker({
   coordinatorUrl: file.coordinatorUrl, token, workerId: file.workerId, stateDir: file.stateDir, engine: engineAdapter(file.engine),
   engines: Object.fromEntries(ENGINES.map(name => [name, engineAdapter(name)])),
   lanes: file.lanes ?? { work: 1, bounded: 1, deliver: 1 }, projects: file.projects,
+  ...(file.publish ? { publish: { ...file.publish, exec } } : {}),
   worktrees: file.worktrees === undefined ? { branchPrefix: 'agents/', base: 'HEAD' } : file.worktrees,
 });
 console.log(`Worker ${file.workerId} serving ${Object.keys(file.projects).length} project(s) with ${file.engine}`);

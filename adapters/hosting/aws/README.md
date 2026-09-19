@@ -6,9 +6,30 @@ The control plane on AWS: one process (`packages/coordinator/src/main.ts` behind
 | --- | --- |
 | `entrypoint.ts` | Reads secrets from Parameter Store into the environment and starts the control plane (`../shared/controlPlane.ts`) |
 | `deploy.ts` | Idempotent deployment plan: secrets, network, IAM, control-plane host, worker image, verification, and `destroy` |
+| `cli.ts` | The `deploy aws`, `status aws` and `destroy aws` commands of `bin/agent-team.ts` |
 | `control-plane-user-data.sh` | User data for the single EC2 host: Node 24, the toolkit, the web build, `/data`, `agent-team.service` |
 | `worker-bake.sh` | Bake script for the worker image, filled by `bakeScript` in `deploy.ts` |
 | `Dockerfile`, `ecs-task-definition.json` | The same entrypoint as a container on ECS Fargate |
+
+## Commands
+
+The deployment description is `aws-deployment.json` in the config directory (`AGENT_TEAM_CONFIG_DIR`, else `~/.config/agent-team`). Write the project facts there; an applied deploy rewrites the file with the ids of what it created. It never holds a secret value: values are read from environment variables named after each secret when a deploy stores them, and generated secrets are created in place.
+
+```json
+{ "projectId": "example", "name": "Example", "checkout": null, "region": "eu-central-1",
+  "scm": { "kind": "gitlab", "repository": "group/project", "host": "gitlab.com" },
+  "worker": { "launcher": "ec2", "instanceType": "c6i.2xlarge", "setup": "npm ci", "amiParameter": "/agent-team/example/worker-ami" },
+  "ssmPrefix": "/agent-team/example",
+  "secrets": [{ "name": "AGENT_TEAM_TOKEN", "generated": true, "scope": "control", "purpose": "machine token" },
+    { "name": "GITLAB_TOKEN", "generated": false, "purpose": "gitlab token", "adapter": "gitlab" }] }
+```
+
+| Command | Effect |
+| --- | --- |
+| `agent-team deploy aws [--plan] [--only STEP[,STEP]] [--skip STEP[,STEP]]` | The default: reads the caller identity, prints what each step would create, changes nothing and leaves the file alone |
+| `agent-team deploy aws --apply [--only ...] [--skip ...] [--permissions-boundary ARN]` | Runs the steps and saves after each. Nothing is created in the account without `--apply` |
+| `agent-team status aws` | The file's path, what it has recorded and the control-plane instance's state |
+| `agent-team destroy aws [--roles] [--data] [--secrets]` | Lists what would be deleted and exits 1; add `--yes` to delete it |
 
 ## What `deploy` does
 
@@ -60,6 +81,8 @@ Secrets are read from Parameter Store under `AGENT_TEAM_SSM_PREFIX` and then `<p
 
 ## Workers
 
-`worker-bake.sh` produces the image: Ubuntu, Node 24, the engine CLIs (`claude`, `opencode`, `codex`, `agent`), `glab`/`gh`, the toolkit with its dependencies at `/opt/agent-team`, and a warm clone at `/srv/project` with the project's own setup already run. It installs `agent-team-worker.service`, which runs `node packages/worker/src/main.ts --config /etc/agent-team/worker.json` as the unprivileged `agent` account once that file exists; `/etc/agent-team/worker.env` supplies `AGENT_TEAM_TOKEN` and the project's credentials. Whoever launches an instance from the image writes both files in its user data, with `coordinatorUrl` set to `http://<control plane private ip>:4310`.
+`worker-bake.sh` produces the image: Ubuntu, Node 24, the engine CLIs (`claude`, `opencode`, `codex`, `agent`), `glab`/`gh`, the toolkit with its dependencies at `/opt/agent-team`, and a warm clone at `/srv/project` with the project's own setup already run. It installs `agent-team-worker.service`, which runs `node packages/worker/src/main.ts --config /etc/agent-team/worker.json` as the unprivileged `agent` account once that file exists; `/etc/agent-team/worker.env` supplies `AGENT_TEAM_TOKEN` and the project's credentials. The EC2 launcher (`adapters/launcher/ec2.ts`) writes both files in the instance's user data before it starts the worker: `worker.json` from the launch facts (`coordinatorUrl` set to `http://<control plane private ip>:4310`, a worker id per job, the state directory, the engine, the project's checkout, worktrees and the publish target) and `worker.env` from Parameter Store at boot through the instance role, mode 600 and owned by `agent`. User data holds parameter names only. The launcher stores each job's token at `<prefix>/jobs/<job id>` before the launch and deletes it on stop; the control role may write only under `<prefix>/jobs/`. A worker of the project can read another running job's token of the same project.
 
-The worker instance profile needs what `rolePolicies(deployment).worker` grants: `ssm:GetParametersByPath` on its prefix, `bedrock:InvokeModel*` when the engine bills through Bedrock, and `s3:PutObject` on the artifacts bucket.
+Such a worker is disposable, so the launcher refuses to start one unless the project manifest authorizes publishing (`publishAuthorized`), turns run in packet mode and a publish target is configured so the branch is pushed at the end of each turn.
+
+The worker instance profile needs what `rolePolicies(deployment).worker` grants: `ssm:GetParametersByPath` and `ssm:GetParameters` on its prefix, `bedrock:InvokeModel*` when the engine bills through Bedrock, and `s3:PutObject` on the artifacts bucket.

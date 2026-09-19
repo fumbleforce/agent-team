@@ -4,7 +4,7 @@ import { Hono, type Context as Hc } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
-import { AcceptInviteBody, InviteBody, LoginBody, newId, ProductEnvBody, PostMessageBody, SetupBody, TaskState, type StoredEvent } from '@agent-team/protocol';
+import { AcceptInviteBody, CaptureBody, InviteBody, LoginBody, newId, ProductEnvBody, PostMessageBody, SetupBody, TaskState, type StoredEvent } from '@agent-team/protocol';
 import { createAccounts } from '../auth/accounts.ts';
 import { createOidc } from '../auth/oidc.ts';
 import { can, canSeeProject, type Action, type Viewer } from '../auth/rbac.ts';
@@ -21,6 +21,7 @@ import { createCosts } from '../costs/costs.ts';
 import { createChecks } from '../checks/checks.ts';
 import { createProposals } from '../runtime/proposals.ts';
 import { createIssues } from '../repos/issues.ts';
+import { createCaptures } from '../runtime/captures.ts';
 import { createVersionedDocs } from '../repos/versionedDocs.ts';
 import { ConnectionBody, createIntegrations, HandoffBody } from '../repos/integrations.ts';
 import { ClaimBody, FinishBody, LeaseBody, CreateIssueBody, MemoryActionBody, ProviderBody, RegisterProjectBody, SeatProviderBody, StepsBody, WritePageBody } from '@agent-team/protocol';
@@ -43,6 +44,7 @@ export function createApp(context: Context) {
   const checks = createChecks(context);
   const proposals = createProposals(context);
   const issues = createIssues(context, path.join(context.dataDir, 'blobs'));
+  const captures = createCaptures(context, turns, issues);
   const docs = createVersionedDocs(context);
   const integrations = createIntegrations(context, turns);
   const LIBRARY = { type: 'library' as const, id: '' };
@@ -86,7 +88,13 @@ export function createApp(context: Context) {
 
   // Worker routes: machine token plus, per turn, the lease. A lost lease answers 409 and the worker stops.
   app.use('/worker/*', async (c, next) => { machine(c); await next(); });
-  app.post('/worker/claim', async c => c.json({ turn: await turns.claim(await body(c, ClaimBody)) }));
+  app.post('/worker/claim', async c => {
+    const claim = await body(c, ClaimBody);
+    // Every poll records the worker as seen, with what it serves: the Team page and the launcher read it.
+    const seen = { name: claim.workerId, lanes: JSON.stringify(claim.free), projects: JSON.stringify(claim.projects), last_seen_at: context.now() };
+    await context.storage.db.insertInto('workers').values({ id: claim.workerId, isolation: 'isolated', providers: '[]', ...seen }).onConflict(oc => oc.column('id').doUpdateSet(seen)).execute();
+    return c.json({ turn: await turns.claim(claim) });
+  });
   app.post('/worker/turns/:id/heartbeat', async c => { const lease = await body(c, LeaseBody); await turns.heartbeat(c.req.param('id'), lease.workerId, lease.leaseToken); return c.json({ ok: true }); });
   app.post('/worker/turns/:id/steps', async c => { const input = await body(c, StepsBody); await turns.steps(c.req.param('id'), input.workerId, input.leaseToken, input.steps); return c.json({ ok: true }); });
   app.post('/worker/turns/:id/delivery', async c => {
@@ -95,6 +103,12 @@ export function createApp(context: Context) {
     const turn = await context.storage.db.selectFrom('turns').select(['task_id', 'kind']).where('id', '=', c.req.param('id')).executeTakeFirstOrThrow();
     if (turn.kind !== 'deliver' || !turn.task_id) throw new HttpError(409, 'delivery', 'Not a delivery turn');
     return c.json(await reviews.deliveryFor(turn.task_id));
+  });
+  // The body is the captured image; the lease travels in headers because the body is not JSON.
+  app.post('/worker/turns/:id/artifacts', async c => {
+    const latency = Number(c.req.header('x-latency-ms'));
+    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    return c.json(await captures.artifact(c.req.param('id'), c.req.header('x-worker-id') ?? '', c.req.header('x-lease-token') ?? '', { mime: (c.req.header('content-type') ?? '').split(';')[0]!.trim(), bytes, latencyMs: Number.isFinite(latency) && latency >= 0 ? Math.round(latency) : null }));
   });
   app.post('/worker/turns/:id/finish', async c => { const input = await body(c, FinishBody); const finished = await turns.finish(c.req.param('id'), input.workerId, input.leaseToken, input.outcome);
     // A work turn that reported ready_for_review hands its head to the reviewers.
@@ -294,8 +308,8 @@ export function createApp(context: Context) {
 
   app.get('/api/projects/:slug/product', async c => {
     const { project } = await projectFor(c, 'project.read');
-    const environments = await context.storage.db.selectFrom('product_envs').select(['id', 'name', 'branch', 'url']).where('project_id', '=', project.id).orderBy('created_at').execute();
-    return c.json({ environments, raised: (await issues.list(project.id)).filter(issue => issue.source === 'product') });
+    const environments = await context.storage.db.selectFrom('product_envs').select(['id', 'name', 'branch', 'url', 'last_status', 'last_latency_ms']).where('project_id', '=', project.id).orderBy('created_at').execute();
+    return c.json({ environments, snapshots: await captures.list(project.id), seq: await context.events.head(), raised: (await issues.list(project.id)).filter(issue => issue.source === 'product') });
   });
   app.post('/api/projects/:slug/product', async c => {
     const { project } = await projectFor(c, 'project.configure');
@@ -304,6 +318,12 @@ export function createApp(context: Context) {
     const id = newId(context.now());
     await context.storage.db.insertInto('product_envs').values({ id, project_id: project.id, name: input.name, branch: input.branch ?? null, url: input.url, source: 'manual', created_at: context.now() }).execute();
     return c.json({ id });
+  });
+
+  app.post('/api/projects/:slug/envs/:envId/capture', async c => {
+    const { project } = await projectFor(c, 'project.contribute');
+    const input = await body(c, CaptureBody);
+    return c.json(await captures.request(c.get('viewer').userId, project, await workspace.pm(project.id), c.req.param('envId'), input.viewport));
   });
 
   app.get('/api/projects/:slug/integrations', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ connections: await integrations.connections(project.id), handoffs: await integrations.handoffs(project.id) }); });

@@ -24,6 +24,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+      - run: npm run test:postgres
+        env:
+          AGENT_TEAM_TEST_STORAGE: postgres
       - run: npm run check
       - run: npm run build:web
 

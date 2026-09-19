@@ -1,10 +1,11 @@
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { outsideWriteScope, turnToken, type Lane, type PermissionGrant, type TraceStepInput, type TurnKind } from '@agent-team/protocol';
+import { outsideWriteScope, turnToken, type Lane, type PermissionGrant, type TraceStepInput, type TurnKind, type Viewport } from '@agent-team/protocol';
 import type { EngineAdapter } from '../../../adapters/engine/contract.ts';
 import { publish as publishChange, type Exec } from '../../../adapters/scm/publish.ts';
 import { SCM_GATES } from '../../../adapters/scm/gates.ts';
 import { deliver as gate, type Approvals, type DeliveryConfig } from './deliver/gate.ts';
+import { capturePage, type CaptureFn } from './capture.ts';
 import { executeTurn, turnDirectory } from './execute.ts';
 import { cappedBy, changedPaths, committedCeiling, ensureWorktree, headSha, worktreeFor } from './worktree.ts';
 
@@ -26,10 +27,12 @@ export interface WorkerConfig {
   worktrees?: { branchPrefix: string; base: string } | null;
   publish?: { scm: string; repository: string; base: string; exec: Exec } | null;
   deliver?: DeliverFn;
+  // Page captures for the product view; the default drives a locally installed browser.
+  capture?: CaptureFn;
   // Other engines installed on this worker, for agents whose provider names one; the default serves everyone else.
   engines?: Record<string, EngineAdapter>;
 }
-interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null }
+interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; capture?: { url: string; viewport: Viewport } | null }
 interface Lease { workerId: string; leaseToken: string }
 
 class LeaseLost extends Error {}
@@ -60,6 +63,27 @@ export function createWorker(config: WorkerConfig) {
       .catch((error: Error): DeliveryResult => ({ state: 'blocked', reason: error.message, mergeAttempted: false }));
     const result = { state: delivery.state, reason: delivery.reason.slice(0, 500), mergeAttempted: delivery.mergeAttempted, ...(delivery.mergeCommit ? { mergeCommit: delivery.mergeCommit } : {}) };
     await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'completed', summary: result.reason, delivery: result } });
+  }
+
+  // No model runs here either: one headless browser run, the image uploaded under the lease, then the outcome.
+  // A capture changes nothing, so every failure is a plain failure with its reason, never an uncertain one.
+  async function runCapture(turn: Claimed, lease: Lease, lost: () => boolean) {
+    const turnDir = turnDirectory(config.stateDir, turn.turnId);
+    const outFile = path.join(turnDir, 'capture.png');
+    let outcome: { state: 'completed' | 'failed'; stopReason?: string; summary: string };
+    try {
+      if (!turn.capture) throw new Error('The claim names no page to capture');
+      mkdirSync(turnDir, { recursive: true, mode: 0o700 });
+      const captured = await (config.capture ?? capturePage)({ url: turn.capture.url, viewport: turn.capture.viewport, outFile, env: config.env ?? process.env });
+      const response = await fetch(`${config.coordinatorUrl}/worker/turns/${turn.turnId}/artifacts`, { method: 'POST', headers: { 'content-type': 'image/png', authorization: `Bearer ${config.token}`, 'x-worker-id': lease.workerId, 'x-lease-token': lease.leaseToken, 'x-latency-ms': String(captured.latencyMs) }, body: readFileSync(captured.file), signal: AbortSignal.timeout(30_000) });
+      if (response.status === 409) throw new LeaseLost();
+      if (!response.ok) throw new Error(`The coordinator refused the image (${response.status})`);
+      outcome = { state: 'completed', summary: `Captured ${turn.capture.url} at ${turn.capture.viewport} in ${captured.latencyMs} ms` };
+    } catch (error) {
+      if (error instanceof LeaseLost) throw error;
+      outcome = { state: 'failed', stopReason: 'capture', summary: (error as Error).message.slice(0, 500) };
+    } finally { rmSync(outFile, { force: true }); }
+    if (!lost()) await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome });
   }
 
   async function runEngine(turn: Claimed, lane: Lane, lease: Lease, signal: AbortSignal, lost: () => boolean) {
@@ -111,6 +135,7 @@ export function createWorker(config: WorkerConfig) {
     const heartbeat = setInterval(() => { call(`/worker/turns/${turn.turnId}/heartbeat`, lease).catch(() => { leaseLost = true; abort.abort(); }); }, turn.leaseMs / 3);
     try {
       if (turn.kind === 'deliver') await runDelivery(turn, lease);
+      else if (turn.kind === 'capture') await runCapture(turn, lease, () => leaseLost);
       else await runEngine(turn, lane, lease, abort.signal, () => leaseLost);
     } finally { clearInterval(heartbeat); busy[lane]--; }
   }
