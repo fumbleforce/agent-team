@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { killTree, spawnCommand } from './platform.ts';
 import { newParseState, type EngineAdapter, type EngineStep, type StopReason, type TurnSpec } from '../../../adapters/engine/contract.ts';
 
-export interface TurnResult { state: 'completed' | 'failed' | 'deferred' | 'interrupted' | 'timed_out'; stopReason: StopReason | 'timeout' | 'aborted'; summary: string | null; tokensIn: number; tokensOut: number; costUsd: number; sessionId: string | null }
+export interface TurnResult { state: 'completed' | 'failed' | 'deferred' | 'interrupted' | 'timed_out'; stopReason: StopReason | 'timeout' | 'aborted'; summary: string | null; tokensIn: number; tokensOut: number; contextTokens: number; costUsd: number; sessionId: string | null }
 const GRACE_MS = 5000;
 
 // Runs one engine process for one turn. The caller owns the lease; aborting the signal kills the process.
@@ -18,7 +18,7 @@ export function executeTurn(options: { adapter: EngineAdapter; spec: TurnSpec; t
   return new Promise(resolve => {
     const child = spawnCommand(prepared.bin, prepared.args, { cwd: spec.cwd, env: prepared.env, stdio: ['pipe', 'pipe', 'pipe'] });
     // An engine that cannot be started is a failed turn with a known state, not a crashed worker.
-    child.on('error', error => { clearTimeout(timer); resolve({ state: 'failed', stopReason: 'crashed', summary: `The engine could not be started: ${error.message}`.slice(0, 500), tokensIn: 0, tokensOut: 0, costUsd: 0, sessionId: null }); });
+    child.on('error', error => { clearTimeout(timer); resolve({ state: 'failed', stopReason: 'crashed', summary: `The engine could not be started: ${error.message}`.slice(0, 500), tokensIn: 0, tokensOut: 0, contextTokens: 0, costUsd: 0, sessionId: null }); });
     options.onSpawn?.(child.pid);
     child.stdin!.on('error', () => {});
     child.stdin!.end(prepared.input ?? '');
@@ -45,7 +45,7 @@ export function executeTurn(options: { adapter: EngineAdapter; spec: TurnSpec; t
 
     child.on('close', (code, exitSignal) => {
       clearTimeout(timer);
-      const usage = { summary: state.summary, tokensIn: state.tokensIn, tokensOut: state.tokensOut, costUsd: state.costUsd, sessionId: state.sessionId };
+      const usage = { summary: state.summary, tokensIn: state.tokensIn, tokensOut: state.tokensOut, contextTokens: state.contextTokens, costUsd: state.costUsd, sessionId: state.sessionId };
       if (ended) return resolve({ state: ended === 'timeout' ? 'timed_out' : 'interrupted', stopReason: ended, ...usage });
       const stopReason = adapter.classifyExit({ code, signal: exitSignal }, state, stderrTail);
       // A usage limit is nobody's fault: the turn is deferred and its item returns to the queue.

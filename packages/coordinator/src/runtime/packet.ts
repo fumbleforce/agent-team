@@ -39,6 +39,12 @@ const REPORT = 'Finish by calling task.update with a summary of what you did and
 export async function buildResumeDelta(tx: Tx, turn: { agentId: string; projectId: string; taskId: string; since: number; noReport?: boolean }): Promise<string> {
   const parts: string[] = [];
   if (turn.noReport) parts.push('Your last turn on this task ended without a report. Say where the work stands now: call task.update before anything else if the work is done, otherwise continue and report at the end.');
+  // What the task asks for may have changed, and people write in the task's own thread (or its tracker issue, which is mirrored there).
+  const task = await tx.selectFrom('tasks').select(['key', 'title', 'brief', 'updated_at']).where('id', '=', turn.taskId).executeTakeFirst();
+  if (task && Number(task.updated_at) > turn.since && task.brief) parts.push(`# The task as it reads now (it changed since your last turn)\n${task.key}: ${task.title}\n${clip(task.brief, 2000)}`);
+  const said = await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select(['messages.author_kind', 'messages.body']).where('threads.subject_type', '=', 'task').where('threads.subject_id', '=', turn.taskId)
+    .where('messages.created_at', '>', turn.since).where('messages.author_kind', '=', 'user').orderBy('messages.created_at').limit(8).execute();
+  if (said.length) parts.push(`# Written on this task since your last turn\n${said.map(row => `- ${clip(row.body, 600)}`).join('\n')}`);
   const decisions = await tx.selectFrom('decisions').select(['outcome', 'summary']).where('project_id', '=', turn.projectId).where('created_at', '>', turn.since).orderBy('created_at').limit(8).execute();
   if (decisions.length) parts.push(`# New decisions\n${decisions.map(row => `- ${row.outcome}: ${clip(row.summary, 400)}`).join('\n')}`);
   const reviews = await tx.selectFrom('approvals').select(['kind', 'verdict', 'summary', 'findings', 'head_sha']).where('task_id', '=', turn.taskId).where('created_at', '>', turn.since).orderBy('created_at').limit(6).execute();

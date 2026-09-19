@@ -94,10 +94,13 @@ export function createTracer(options: { worktree: string | null; turnDir: string
     // Called before the engine starts, so the baseline is the worktree as the turn found it.
     start() { if (worktree) enqueue(async () => { baseline = previous = restBase = await snapshot(); }); },
     steps(steps: EngineStep[]) {
+      // Engines name files by their full path; inside a task's folder only the part after it says anything.
+      const roots = options.worktree ? [options.worktree, options.worktree.replaceAll('\\', '/'), options.worktree.replaceAll('/', '\\')] : [];
+      const local = (text: string) => roots.reduce((value, root) => value.split(`${root}\\`).join('').split(`${root}/`).join('').split(root).join('.'), text);
       for (const step of steps) {
         const { target: _target, body, ...stored } = step;
         lastSeq = Math.max(lastSeq, step.seq);
-        options.onSteps([{ ...stored, title: redact(stored.title), ...(stored.detail ? { detail: redact(stored.detail) } : {}) }]);
+        options.onSteps([{ ...stored, title: redact(local(stored.title)), ...(stored.detail ? { detail: redact(local(stored.detail)) } : {}) }]);
         const closing = open;
         open = step;
         enqueue(async () => {

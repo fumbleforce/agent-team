@@ -27,7 +27,7 @@ async function boot() {
   };
   return { storage, db, turns, projectId: project.id, taskId: task.id, agent, claim, work, runTurn, tick: (ms: number) => { clock += ms; }, now: () => clock };
 }
-const DONE = { state: 'completed', summary: 'Wrote the handler; tests are left.', tokensIn: 1000, tokensOut: 100 } as const;
+const DONE = { state: 'completed', summary: 'Wrote the handler; tests are left.', tokensIn: 1000, tokensOut: 100, contextTokens: 1000 } as const;
 
 test('the next work turn of the same agent and task on the same worker resumes the session with a delta', async () => {
   const { storage, db, claim, work, runTurn, projectId, taskId, agent, now } = await boot();
@@ -44,11 +44,16 @@ test('the next work turn of the same agent and task on the same worker resumes t
     await db.insertInto('decisions').values({ id: 'dec-s', project_id: projectId, thread_id: 'th-s', message_id: 'm-s', deliberation_id: null, kind: 'decision', outcome: 'accepted', summary: 'Use the queue, not cron', needs_human: false, resolved_by_user: null, resolved_at: null, created_at: now() + 1 }).execute();
     await db.insertInto('approvals').values({ id: 'ap-s', task_id: taskId, kind: 'reviewer', agent_id: agent.id, turn_id: first.turnId, head_sha: 'b'.repeat(40), verdict: 'changes', findings: JSON.stringify([{ severity: 'major', path: 'src/pay.ts', note: 'Retries are unbounded' }]), summary: 'One problem', state: 'valid', created_at: now() + 1 }).execute();
 
+    // The task itself changed, and a person wrote on it: both must reach a session that is only told what is new.
+    await db.updateTable('tasks').set({ brief: 'Also cover the retry path.', updated_at: now() + 5 }).where('id', '=', taskId).execute();
+    await db.insertInto('threads').values({ id: 'th-task', project_id: projectId, kind: 'task', subject_type: 'task', subject_id: taskId, title: 'Task thread', visibility: 'team', owner_user_id: null, created_at: now() }).execute();
+    await db.insertInto('messages').values({ id: 'm-task', thread_id: 'th-task', author_kind: 'user', author_id: null, kind: 'note', body: 'Billing wants this behind a flag.', payload: '{}', created_at: now() + 6 }).execute();
+
     await work();
     const second = (await claim())!;
     assert.equal(second.resume?.sessionId, 'engine-1');
     assert.equal(second.resume?.baseSha, 'a'.repeat(40));
-    for (const expected of ['Use the queue, not cron', 'Retries are unbounded', 'keep the old endpoint alive', 'task.update']) assert.ok(second.resume!.prompt.includes(expected), expected);
+    for (const expected of ['Use the queue, not cron', 'Retries are unbounded', 'keep the old endpoint alive', 'task.update', 'Also cover the retry path.', 'Billing wants this behind a flag.']) assert.ok(second.resume!.prompt.includes(expected), expected);
     assert.ok(!second.resume!.prompt.includes('(no brief)'), 'a delta does not repeat the packet');
     // An engine that cannot resume starts from this packet instead, which carries the agent's own summaries.
     assert.ok(second.packet.prompt.includes('Wrote the handler; tests are left.'));
@@ -74,7 +79,7 @@ test('sessions rotate at the context threshold, on a model change and on another
     const { storage, db, claim, work, runTurn, agent } = await boot();
     try {
       await work();
-      await runTurn((await claim())!, { ...DONE, tokensIn: cause === 'context' ? ROTATE_AT_TOKENS : 1000 });
+      await runTurn((await claim())!, { ...DONE, tokensIn: 900_000, contextTokens: cause === 'context' ? ROTATE_AT_TOKENS : 1000 });
       if (cause === 'model') await db.updateTable('agents').set({ model: 'another-model' }).where('id', '=', agent.id).execute();
       await work();
       const next = (await claim(cause === 'worker' ? 'w2' : 'w1'))!;

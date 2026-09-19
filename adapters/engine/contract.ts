@@ -29,8 +29,10 @@ export type EngineStep = TraceStepInput & { target?: string; body?: string };
 export interface PreparedTurn { bin: string; args: string[]; input?: string; env: NodeJS.ProcessEnv; files: { path: string; content: string }[] }
 export type StopReason = 'completed' | 'rate-limited' | 'auth' | 'context-overflow' | 'resume-missing' | 'crashed';
 
-export interface ParseState { nextSeq: number; sessionId: string | null; tokensIn: number; tokensOut: number; costUsd: number; summary: string | null; limited: boolean }
-export const newParseState = (): ParseState => ({ nextSeq: 0, sessionId: null, tokensIn: 0, tokensOut: 0, costUsd: 0, summary: null, limited: false });
+// `contextTokens` is what the latest model call carried: the size of the conversation, which is what decides when a session is too long.
+// `tokensIn` adds up every call of the turn, most of it the same cached text read again, and says nothing about that.
+export interface ParseState { nextSeq: number; sessionId: string | null; contextTokens: number; tokensIn: number; tokensOut: number; costUsd: number; summary: string | null; limited: boolean }
+export const newParseState = (): ParseState => ({ nextSeq: 0, sessionId: null, contextTokens: 0, tokensIn: 0, tokensOut: 0, costUsd: 0, summary: null, limited: false });
 
 // One engine CLI behind one contract. Secrets never appear in argv; `parse` is pure apart from `state`.
 export interface EngineAdapter {

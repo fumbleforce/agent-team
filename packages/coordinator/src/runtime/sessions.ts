@@ -69,7 +69,7 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
       if (turn.kind !== 'work' || !turn.task_id) return { requeued: false, drafts: [] };
       if (turn.session_id) {
         const session = await tx.selectFrom('agent_sessions').select('turn_count').where('id', '=', turn.session_id).executeTakeFirst();
-        await tx.updateTable('agent_sessions').set({ turn_count: Number(session?.turn_count ?? 0) + 1, context_tokens: outcome.tokensIn ?? 0, last_turn_at: now() }).where('id', '=', turn.session_id).execute();
+        await tx.updateTable('agent_sessions').set({ turn_count: Number(session?.turn_count ?? 0) + 1, context_tokens: outcome.contextTokens ?? 0, last_turn_at: now() }).where('id', '=', turn.session_id).execute();
       }
       const base = { actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, turnId: turn.id };
       if (outcome.stopReason === 'resume-missing') {

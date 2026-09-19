@@ -10,7 +10,7 @@ const KIND: Record<string, TraceStepInput['kind']> = { Read: 'read', Grep: 'read
 const DENIED = ['Bash(git push:*)', 'Bash(git reset --hard:*)', 'Bash(gh pr merge:*)', 'Bash(glab mr merge:*)', 'Agent'];
 
 type Block = { type?: string; text?: string; name?: string; input?: Record<string, unknown> };
-type StreamEvent = { type?: string; subtype?: string; session_id?: string; is_error?: boolean; result?: string; total_cost_usd?: number; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }; message?: { content?: Block[] }; rate_limit_info?: { status?: string } };
+type StreamEvent = { type?: string; subtype?: string; session_id?: string; is_error?: boolean; result?: string; total_cost_usd?: number; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }; message?: { content?: Block[]; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } }; rate_limit_info?: { status?: string } };
 
 const detail = (input: Record<string, unknown> = {}) => String(input.description ?? input.command ?? input.file_path ?? input.pattern ?? input.query ?? '').replace(/\s+/g, ' ').slice(0, 120);
 
@@ -59,11 +59,14 @@ export const claude: EngineAdapter = {
       return [];
     }
     if (event.type !== 'assistant') return [];
+    const carried = event.message?.usage;
+    if (carried) state.contextTokens = (carried.input_tokens ?? 0) + (carried.cache_read_input_tokens ?? 0) + (carried.cache_creation_input_tokens ?? 0) + (carried.output_tokens ?? 0);
     const steps: EngineStep[] = [];
     for (const block of event.message?.content ?? []) {
       if (block.type === 'text' && block.text?.trim()) steps.push({ seq: state.nextSeq++, kind: 'think', title: block.text.replace(/\s+/g, ' ').slice(0, 300), status: 'ok' });
       // Platform calls are traced by the coordinator when it handles them, identically for every engine.
-      if (block.type === 'tool_use' && block.name && !block.name.startsWith('mcp__platform')) {
+      // Looking up a tool's definition is the engine's own housekeeping, not a step of the work.
+      if (block.type === 'tool_use' && block.name && !block.name.startsWith('mcp__platform') && block.name !== 'ToolSearch') {
         const info = detail(block.input), kind = KIND[block.name] ?? 'run', target = block.input?.file_path ?? block.input?.notebook_path;
         // The path is only a hint for where to ask git; the diff itself never comes from the tool's input.
         steps.push({ seq: state.nextSeq++, kind, title: info ? `${block.name}: ${info}` : block.name, status: 'ok', ...(kind === 'edit' && typeof target === 'string' ? { target } : {}) });

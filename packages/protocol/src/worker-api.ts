@@ -21,7 +21,7 @@ export const FinishBody = LeaseBody.extend({
     stopReason: z.string().max(80).optional(), summary: z.string().max(2000).optional(),
     // When a usage limit lifts, if the engine said; the provider stays limited until then.
     resetAt: z.number().int().min(0).optional(),
-    tokensIn: z.number().int().min(0).optional(), tokensOut: z.number().int().min(0).optional(), costMinor: z.number().int().min(0).optional(),
+    tokensIn: z.number().int().min(0).optional(), tokensOut: z.number().int().min(0).optional(), contextTokens: z.number().int().min(0).optional(), costMinor: z.number().int().min(0).optional(),
     // The worker reads it from the worktree; it is what reviewers are asked to look at.
     headSha: z.string().regex(/^[0-9a-f]{40}$/).optional(),
     // A review turn: the head its own detached worktree was verified to be at before the engine started and after it ended.

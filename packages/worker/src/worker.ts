@@ -209,7 +209,7 @@ export function createWorker(config: WorkerConfig) {
       const setup = worktree ? await untouchedOverlays(worktree.path) : [];
       const violations = worktree ? outsideWriteScope(grants, (await changedPaths(worktree.path, worktree.baseCommit)).filter(file => !setup.includes(file))) : [];
       if (violations.length) {
-        if (!lost()) await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'failed', stopReason: 'write-scope', summary: `Changed outside the write scope: ${violations.slice(0, 20).join(', ')}`, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costMinor: Math.round(result.costUsd * 100) } });
+        if (!lost()) await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'failed', stopReason: 'write-scope', summary: `Changed outside the write scope: ${violations.slice(0, 20).join(', ')}`, tokensIn: result.tokensIn, tokensOut: result.tokensOut, contextTokens: result.contextTokens, costMinor: Math.round(result.costUsd * 100) } });
         return;
       }
       // Publishing is worker code: after a completed work turn the branch is pushed and a draft change opened or reused.

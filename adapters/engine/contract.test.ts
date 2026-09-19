@@ -67,3 +67,13 @@ test('claude: stream events become typed trace steps, usage and a session id', (
   assert.deepEqual([state.sessionId, state.costUsd, state.tokensIn, state.summary], ['abc', 0.12, 900, 'Done.']);
   assert.equal(adapter.classifyExit({ code: 1, signal: null }, newParseState(), 'Error: No conversation found with session ID'), 'resume-missing');
 });
+
+test('claude: the context size is what the latest model call carried, not the sum over the turn; tool lookups are not steps', () => {
+  const claude = engineAdapter('claude'), state = newParseState();
+  const call = (input: number, cached: number, output: number, content: unknown[]) => JSON.stringify({ type: 'assistant', message: { content, usage: { input_tokens: input, cache_read_input_tokens: cached, cache_creation_input_tokens: 0, output_tokens: output } } });
+  const steps = [call(10, 40_000, 200, [{ type: 'tool_use', name: 'ToolSearch', input: { query: 'select:x' } }]), call(12, 41_000, 300, [{ type: 'text', text: 'Done.' }])].flatMap(line => claude.parse(line, state));
+  claude.parse(JSON.stringify({ type: 'result', total_cost_usd: 0.4, usage: { input_tokens: 22, cache_read_input_tokens: 81_000, output_tokens: 500 }, result: 'Done.' }), state);
+  assert.deepEqual(steps.map(step => step.kind), ['think']);
+  assert.equal(state.contextTokens, 41_312);
+  assert.equal(state.tokensIn, 81_022);
+});
