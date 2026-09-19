@@ -66,7 +66,8 @@ export function teamFromDirectory(dir, { id = path.basename(dir), name = null, d
   const agents = {};
   for (const [role, agent] of Object.entries(roles.agent ?? {})) {
     const match = /^\{file:\.\/(agents\/[A-Za-z0-9_-]+\.md)\}$/.exec(agent.prompt ?? '');
-    const prompt = match ? readFileSync(path.join(dir, match[1]), 'utf8') : agent.prompt;
+    // A Windows checkout may hold the prompt files with CRLF endings; the team document keeps LF.
+    const prompt = match ? readFileSync(path.join(dir, match[1]), 'utf8').replace(/\r\n/g, '\n') : agent.prompt;
     agents[role] = { mode: agent.mode, description: agent.description ?? role, prompt, ...(agent.steps ? { steps: agent.steps } : {}), deny: [] };
   }
   return validateTeam({ id, name: name ?? (id === 'default' ? 'Delivery team' : id.replace(/-/g, ' ')), description, roster: Object.fromEntries(Object.keys(agents).map(role => [role, roster[role]]).filter(([, member]) => member)), defaultRoles: defaultRoles ?? roles.team?.defaultRoles ?? null, agents });

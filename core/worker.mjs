@@ -65,7 +65,11 @@ export function createClient(url, token, fetchImpl = fetch) {
     const response = await fetchImpl(new URL(route, base), { method: body === undefined ? 'GET' : 'POST',
       headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(10_000) });
-    if (!response.ok) throw new Error(`Coordinator request failed (${response.status})`);
+    if (!response.ok) {
+      // The coordinator's own validation message names the rejected field; nothing else is relayed.
+      let reason = ''; try { reason = String((await response.json())?.error ?? '').slice(0, 200); } catch { /* not JSON */ }
+      throw new Error(`Coordinator request failed (${response.status})${reason ? `: ${reason}` : ''}`);
+    }
     return response.json();
   };
 }

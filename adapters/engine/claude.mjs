@@ -111,12 +111,12 @@ export const systemPrompt = claudeSystemPrompt;
 export function claudeInvocation({ ideate, prompt, model, systemPromptFile, shared, mcp = {}, denied = [], access = {} }) {
   const args = [prompt, '--print', '--output-format', 'stream-json', '--verbose', '--no-session-persistence',
     '--setting-sources', 'user', '--strict-mcp-config', '--mcp-config', JSON.stringify(ideate ? { mcpServers: {} } : { mcpServers: mcp }),
-    '--permission-mode', 'acceptEdits', '--permission-prompts', 'none',
+    '--permission-mode', 'acceptEdits',
     '--append-system-prompt-file', systemPromptFile];
   const mcpNames = Object.keys(mcp);
   // The coordinator itself keeps a server only when access is open or names it.
   const coordinatorServers = mcpNames.filter(name => !Array.isArray(access[name]) || access[name].includes('team-coordinator'));
-  if (ideate) args.push('--restricted', '--tools', 'Read,Grep,Glob,Write');
+  if (ideate) args.push('--tools', 'Read,Grep,Glob,Write');
   else args.push('--allowedTools', 'Bash', ...coordinatorServers.map(name => `mcp__${name}`), '--disallowedTools', ...DENIED, ...denied.map(rule => `Bash(${rule}:*)`), ...mcpNames.filter(name => !coordinatorServers.includes(name)).map(name => `mcp__${name}`), '--agents', JSON.stringify(claudeAgents(shared, mcpNames, access)));
   if (model) args.push('--model', model);
   return { bin: BIN, args };
@@ -200,10 +200,14 @@ export function ask({ systemPromptFile, prompt, cwd, timeoutMs = 240_000, env = 
     const filtered = claudeEnvironment(env, billing);
     for (const key of Object.keys(filtered)) if (key.startsWith('AGENT_TEAM_') || /_API_KEY$/.test(key) && key !== 'ANTHROPIC_API_KEY') delete filtered[key];
     const mcpNames = Object.keys(mcp).map(name => `mcp__${name}`);
-    const args = [prompt, '--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--no-session-persistence', '--setting-sources', 'user', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: mcp }),
-      ...(mcpNames.length ? ['--allowedTools', ...mcpNames] : ['--restricted']), '--tools', [...tools, ...mcpNames].join(','), '--permission-mode', 'default', '--permission-prompts', 'none', '--append-system-prompt-file', systemPromptFile];
+    // The prompt carries the whole conversation context and travels on stdin: a command line has a
+    // hard length limit on Windows, and print mode reads its prompt from stdin when none is given.
+    const args = ['--print', '--output-format', 'stream-json', '--verbose', '--include-partial-messages', '--no-session-persistence', '--setting-sources', 'user', '--strict-mcp-config', '--mcp-config', JSON.stringify({ mcpServers: mcp }),
+      ...(mcpNames.length ? ['--allowedTools', ...mcpNames] : []), '--tools', [...tools, ...mcpNames].join(','), '--permission-mode', 'default', '--append-system-prompt-file', systemPromptFile];
     if (model) args.push('--model', model);
-    const child = spawnCommand(BIN, args, { cwd, env: filtered, stdio: ['ignore', 'pipe', 'pipe'] });
+    const child = spawnCommand(BIN, args, { cwd, env: filtered, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stdin.on('error', () => {});
+    child.stdin.end(prompt);
     let buffer = ''; let stderr = ''; let reply = ''; let streamed = '';
     const kill = () => child.kill('SIGKILL');
     const timer = setTimeout(kill, timeoutMs);

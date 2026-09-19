@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { commandLine, killTree, launcherScript, openInBrowser, packageRunnerCommand, pathKey, prependPath, resolveBinary, shellQuote, shimFiles, treeAlive, treeSpawnOptions } from './platform.mjs';
+import { commandLine, killTree, launcherScript, nativeLauncher, openInBrowser, packageRunnerCommand, pathKey, prependPath, resolveBinary, shellQuote, shimFiles, treeAlive, treeSpawnOptions } from './platform.mjs';
 
 const LAUNCHER = `@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n\r\nIF EXIST "%dp0%\\node.exe" (\r\n  SET "_prog=%dp0%\\node.exe"\r\n) ELSE (\r\n  SET "_prog=node"\r\n  SET PATHEXT=%PATHEXT:;.JS;=;%\r\n)\r\n\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%"  "%dp0%\\node_modules\\some-engine\\cli.js" %*\r\n`;
 
@@ -40,6 +40,13 @@ test('command names pass through unchanged except on Windows, where the file on 
     assert.deepEqual(commandLine('native', ['--version'], { env, platform: 'win32' }), { file: path.join(tools, 'native.exe'), args: ['--version'], options: {} });
     assert.deepEqual(commandLine('engine', ['x'], { env, platform: 'linux' }), { file: 'engine', args: ['x'], options: {} });
     assert.deepEqual(commandLine('missing', ['x'], { env, platform: 'win32' }), { file: 'missing', args: ['x'], options: {} }, 'an unknown name is left to the process API, which reports it');
+    // A launcher that only forwards to a native program beside it becomes that program: no shell, no 8191-character line limit.
+    writeFileSync(path.join(tools, 'native-cli.cmd'), '@ECHO off\r\nGOTO start\r\n:find_dp0\r\nSET dp0=%~dp0\r\nEXIT /b\r\n:start\r\nSETLOCAL\r\nCALL :find_dp0\r\n"%dp0%\\node_modules\\native-cli\\bin\\native-cli.exe"   %*\r\n');
+    const exe = path.join(tools, 'node_modules\\native-cli\\bin\\native-cli.exe');
+    assert.deepEqual(nativeLauncher(path.join(tools, 'native-cli.cmd')), { file: exe });
+    assert.equal(nativeLauncher(path.join(tools, 'engine.cmd')), null);
+    const long = 'p'.repeat(20_000);
+    assert.deepEqual(commandLine('native-cli', [long, 'line\nbreak'], { env, platform: 'win32' }), { file: exe, args: [long, 'line\nbreak'], options: {} });
     // Any other script goes through the shell with every argument quoted for it.
     writeFileSync(path.join(tools, 'other.bat'), '@echo off\r\necho %*\r\n');
     const shell = commandLine('other', ['a b', 'say "hi"'], { env: { ...env, ComSpec: 'C:\\Windows\\cmd.exe' }, platform: 'win32' });

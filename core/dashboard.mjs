@@ -502,7 +502,7 @@ export function createDashboardServer(config) {
               return back({ text: count ? `Saved ${count} override${count === 1 ? '' : 's'}; they apply to the next intake poll, PM session and run.` : 'Saved; no values differ from the repository.' });
             }
             if (what === 'message') {
-              const body = (form.get('message') ?? '').trim();
+              const body = (form.get('message') ?? '').replace(/\r\n/g, '\n').trim();
               if (!body) return back({ error: true, text: 'Write a message first.' });
               await request(`/projects/${projectId}/messages`, { author: 'owner', body, state: 'pending' });
               return back({ text: `Sent to ${ROSTER[PM].name}; the reply appears here when the PM session finishes.` });

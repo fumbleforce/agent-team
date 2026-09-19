@@ -33,6 +33,11 @@ function text(value, name, max = 256) {
   if (typeof value !== 'string' || !value.trim() || value.length > max || /[\x00-\x1f\x7f]/.test(value)) reject(`Invalid ${name}`);
   return value;
 }
+// Conversation text keeps its line breaks and tabs; every other control character is refused.
+function prose(value, name, max) {
+  if (typeof value !== 'string' || !value.trim() || value.length > max || /[\x00-\x08\x0b-\x1f\x7f]/.test(value)) reject(`Invalid ${name}`);
+  return value;
+}
 export function requireToken(token) {
   if (typeof token !== 'string' || token.length < 24 || /\s/.test(token)) throw new Error('AGENT_TEAM_TOKEN must contain at least 24 non-whitespace characters');
   if (token.startsWith('job.') && !/^job\.[a-f0-9-]{36}\.[\w-]{43}$/.test(token)) throw new Error('AGENT_TEAM_TOKEN must not start with "job."; that prefix marks tokens derived for one job');
@@ -592,7 +597,7 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
     },
     postMessage(projectId, input) {
       registered(projectId); object(input, ['threadId', 'author', 'body', 'state', 'meta', 'id']);
-      text(input.author, 'author', 80); text(input.body, 'body', 12000);
+      text(input.author, 'author', 80); prose(input.body, 'body', 12000);
       if (input.state !== undefined && !['pending', 'streaming', 'final', 'failed'].includes(input.state)) reject('Invalid state');
       const thread = this.thread(projectId, { threadId: input.threadId });
       const id = input.id ?? randomUUID();
@@ -607,7 +612,7 @@ export function createQueue(dbPath, { projects = {}, now = Date.now, leaseMs = 9
       object(input, ['body', 'state', 'meta']);
       const row = db.prepare('SELECT * FROM messages WHERE id=?').get(id);
       if (!row) reject('Message not found', 404);
-      if (input.body !== undefined) text(input.body, 'body', 12000);
+      if (input.body !== undefined) prose(input.body, 'body', 12000);
       if (input.state !== undefined && !['pending', 'streaming', 'final', 'failed'].includes(input.state)) reject('Invalid state');
       db.prepare('UPDATE messages SET body=COALESCE(?, body), state=COALESCE(?, state), meta=COALESCE(?, meta) WHERE id=?').run(input.body ?? null, input.state ?? null, input.meta ? JSON.stringify(input.meta) : null, id);
       return { ok: true };

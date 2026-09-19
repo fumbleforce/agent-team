@@ -24,14 +24,16 @@ export function parseArgs(args) {
   return options;
 }
 
-// Expands directories to their markdown-like files; skips anything outside the checkout.
+// Expands directories to their markdown-like files; skips anything outside the checkout. Names are
+// repository paths with forward slashes on every platform, as memory scopes and sources require.
+const repositoryPath = (checkout, absolute) => path.relative(checkout, absolute).split(path.sep).join('/');
 function expand(checkout, relative) {
   const absolute = path.resolve(checkout, relative);
   if (!absolute.startsWith(checkout + path.sep)) throw new Error(`Refusing to read outside the checkout: ${relative}`);
   let info;
   try { info = statSync(absolute); } catch { return []; }
-  if (info.isFile()) return [path.relative(checkout, absolute)];
-  return readdirSync(absolute).filter(name => /\.(md|mdc|txt)$/.test(name)).sort().map(name => path.relative(checkout, path.join(absolute, name)));
+  if (info.isFile()) return [repositoryPath(checkout, absolute)];
+  return readdirSync(absolute).filter(name => /\.(md|mdc|txt)$/.test(name)).sort().map(name => repositoryPath(checkout, path.join(absolute, name)));
 }
 
 // Collects { relativePath: content } for the manifest's instruction files, charter and includes.

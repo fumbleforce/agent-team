@@ -304,7 +304,7 @@ test('claude ideation is restricted to read-only file tools without MCP or subag
   assert.equal(await f.run(['--execute', '--engine', 'claude', '--ideate', '--proposal-limit', '2'], { env }), 0);
   assert.equal(f.journals()[0].proposals[0].title, proposal.title);
   const capture = JSON.parse(fs.readFileSync(f.env.CONFIG_CAPTURE, 'utf8'));
-  assert.ok(capture.args.includes('--restricted'));
+  assert.ok(!capture.args.includes('--restricted'));
   assert.deepEqual(capture.args.slice(capture.args.indexOf('--tools'), capture.args.indexOf('--tools') + 2), ['--tools', 'Read,Grep,Glob,Write']);
   assert.deepEqual(JSON.parse(capture.args[capture.args.indexOf('--mcp-config') + 1]), { mcpServers: {} });
   assert.ok(!capture.args.includes('--agents'));

@@ -30,8 +30,9 @@ export function resolveBinary(name, { env = process.env, platform = process.plat
   const hasExtension = extensions.some(extension => name.toLowerCase().endsWith(extension.toLowerCase()));
   for (const directory of searchPath(env).split(path.delimiter)) {
     if (!directory) continue;
-    // PATHEXT is upper-case; the files usually are not, which matters on a case-sensitive disk.
-    const candidates = hasExtension ? [name] : [...extensions.flatMap(extension => [name + extension, name + extension.toLowerCase()]), name];
+    // PATHEXT is upper-case; the files usually are not, which matters on a case-sensitive disk. The
+    // usual spelling goes first so a case-insensitive disk reports the name as it was written.
+    const candidates = hasExtension ? [name] : [...extensions.flatMap(extension => [name + extension.toLowerCase(), name + extension]), name];
     for (const candidate of candidates) {
       const file = path.join(directory.replace(/^"|"$/g, ''), candidate);
       try { if (statSync(file).isFile()) return file; } catch { /* keep looking */ }
@@ -48,6 +49,16 @@ export function launcherScript(file, { read = readFileSync } = {}) {
   const match = /"%_prog%"\s+((?:[^\s"]+\s+)*)"%dp0%\\([^"]+\.(?:m?js|cjs))"\s+%\*/i.exec(text);
   if (!match) return null;
   return { script: path.join(path.dirname(file), match[2]), flags: match[1].trim().split(/\s+/).filter(Boolean) };
+}
+
+// A `.cmd` launcher that only hands its arguments to a native program beside it (`claude.cmd`
+// runs `claude.exe`): that program is started directly, without the shell and its 8191-character
+// limit on a command line, which a prompt or an agents definition exceeds easily.
+export function nativeLauncher(file, { read = readFileSync } = {}) {
+  let text;
+  try { text = read(file, 'utf8'); } catch { return null; }
+  const match = /^\s*"%dp0%\\([^"]+\.exe)"\s+%\*\s*$/im.exec(text);
+  return match ? { file: path.join(path.dirname(file), match[1]) } : null;
 }
 
 // Quoting for a command line the Windows shell reads before a `.cmd` script expands it again:
@@ -68,6 +79,8 @@ export function commandLine(bin, args = [], { env = process.env, platform = proc
   if (!SCRIPT_EXTENSIONS.includes(path.extname(file).toLowerCase())) return { file, args, options: {} };
   const launcher = launcherScript(file);
   if (launcher) return { file: execPath, args: [...launcher.flags, launcher.script, ...args], options: {} };
+  const native = nativeLauncher(file);
+  if (native) return { file: native.file, args, options: {} };
   const line = [`"${file}"`, ...args.map(shellQuote)].join(' ');
   return { file: env.ComSpec ?? env.COMSPEC ?? 'cmd.exe', args: ['/d', '/s', '/c', `"${line}"`], options: { windowsVerbatimArguments: true } };
 }

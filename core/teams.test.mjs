@@ -1,5 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { PACKAGE_DIR } from './blueprint.mjs';
 import { materialize, shippedTeams, subagentRoles, teamFromDirectory, validateTeam } from './teams.mjs';
 
@@ -29,6 +32,15 @@ test('directory blueprints become team documents and the toolkit ships two', () 
   assert.match(teams[0].agents['team-dev'].prompt, /\w/);
   assert.deepEqual(subagentRoles(teams[1]), ['team-pm', 'team-researcher', 'team-writer', 'team-editor']);
   assert.equal(teamFromDirectory(`${PACKAGE_DIR}/teams/research-desk`).roster['team-researcher'].name, 'Ada');
+});
+
+test('a blueprint checked out with CRLF line endings still loads, with LF prompts', t => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'team-crlf-')); t.after(() => rmSync(dir, { recursive: true, force: true }));
+  mkdirSync(path.join(dir, 'agents'));
+  const agent = (mode, role) => ({ mode, prompt: `{file:./agents/${role}.md}` });
+  writeFileSync(path.join(dir, 'roles.json'), JSON.stringify({ agent: { 'team-coordinator': agent('primary', 'team-coordinator'), 'team-pm': agent('subagent', 'team-pm'), 'team-owner': agent('primary', 'team-owner') } }));
+  for (const role of ['team-coordinator', 'team-pm', 'team-owner']) writeFileSync(path.join(dir, 'agents', `${role}.md`), `# ${role}\r\n\r\nDo the work.\r\n`);
+  assert.equal(teamFromDirectory(dir, { id: 'crlf' }).agents['team-owner'].prompt, '# team-owner\n\nDo the work.');
 });
 
 test('materializing keeps the committed permissions as the ceiling and lets a team only tighten them', () => {

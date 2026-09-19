@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn, execFile } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13,7 +13,7 @@ import { createClient } from '../core/worker.mjs';
 import { normalizeManifest, flatTracker } from '../core/manifest.mjs';
 import { preflight, renderChecks, blocking } from '../core/preflight.mjs';
 import { trackerAdapter, trackerClient } from '../adapters/tracker/index.mjs';
-import { readToken as readLocalToken, start as startLocal, writeConfigs as writeLocalConfigs } from '../adapters/hosting/local/up.mjs';
+import { PORTS, localDir, readToken as readLocalToken, start as startLocal, writeConfigs as writeLocalConfigs } from '../adapters/hosting/local/up.mjs';
 import { parseEnqueueArgs } from '../core/cli.mjs';
 import { seedMemory } from '../core/seed-memory.mjs';
 import { openInBrowser } from '../core/platform.mjs';
@@ -38,7 +38,9 @@ const USAGE = `Usage: agent-team <command> [project]
   password [project]  Show the dashboard password
   logs [project]      Tail the control plane journal over Session Manager
   seed [project]      Seed project memory from the checkout's instruction files
-  enqueue <project> --issue KEY-1 [--publish]   Queue a job through the coordinator
+  enqueue [project] --issue KEY-1 [--publish] [--timeout-minutes N]   Queue a job through the coordinator
+                      (seed and enqueue reach the team up runs here, or the AWS deployment of that name;
+                      inside a checkout the project can be left out)
   destroy [project]   Remove the AWS resources (asks about roles and the data volume)
 
 Options: --yes (no prompts, no guided setup; fails where one is unavoidable), --config-dir DIR
@@ -152,7 +154,7 @@ function report(deployment, log) {
 // can. The inbox issue is stored as a dashboard override so the repository file stays untouched.
 export async function bootstrapTracker(manifest, { env = process.env, log, client = null }) {
   const adapter = trackerAdapter(manifest.tracker.kind);
-  const tracker = client ?? (adapter.hasCredential ? adapter.hasCredential(env) : env[adapter.API_KEY_VARIABLE]) ? (client ?? trackerClient(manifest.tracker.kind)) : null;
+  const tracker = client ?? (adapter.hasCredential ? adapter.hasCredential(env) : env[adapter.API_KEY_VARIABLE]) ? (client ?? trackerClient(manifest.tracker.kind, adapter.credential ? { apiKey: adapter.credential(env) } : env[adapter.API_KEY_VARIABLE] ? { apiKey: env[adapter.API_KEY_VARIABLE] } : {})) : null;
   if (!tracker?.bootstrap) { log(`${adapter.NAME}: create the ready label and an owner inbox issue by hand if they do not exist`); return null; }
   const result = await tracker.bootstrap(flatTracker(manifest), { log });
   log(`${adapter.NAME}: labels in place; owner inbox ${result.ownerInboxIssue}`);
@@ -170,20 +172,55 @@ export function engineOverride(manifest, { engine, billing, model } = {}) {
 }
 
 // up: from a checkout to a running team, on this machine or on AWS, in one idempotent command.
+// The answers `up` was given for a project on this machine: the target and the engine flags. They
+// live beside the local service files, so a later `up` asks nothing it already knows; a flag
+// passed again overrides the stored answer and replaces it.
+const PREFERENCE_KEYS = ['target', 'engine', 'billing', 'model'];
+export function preferencesFile(projectId, configDir) { return path.join(localDir(projectId, configDir), 'up.json'); }
+export function readPreferences(projectId, configDir) {
+  try { const stored = JSON.parse(readFileSync(preferencesFile(projectId, configDir), 'utf8')); return Object.fromEntries(['checkout', ...PREFERENCE_KEYS].filter(key => typeof stored[key] === 'string').map(key => [key, stored[key]])); } catch { return {}; }
+}
+
+// The team `up` runs on this machine for a project, when there is one: its coordinator and token.
+// Named by the project id, or by the checkout the command runs in.
+export function localTeam(options, name) {
+  const cwdManifest = manifestFile(process.cwd());
+  const projectId = name ?? (existsSync(cwdManifest) ? projectIdOf(normalizeManifest(JSON.parse(readFileSync(cwdManifest, 'utf8')))) : null);
+  if (!projectId) return null;
+  const token = readLocalToken(projectId, options.configDir);
+  if (!token) return null;
+  let url = `http://127.0.0.1:${PORTS.coordinator}`;
+  try { url = JSON.parse(readFileSync(path.join(localDir(projectId, options.configDir), 'worker.json'), 'utf8')).coordinatorUrl ?? url; } catch { /* the default port */ }
+  return { projectId, token, url, checkout: readPreferences(projectId, options.configDir).checkout ?? process.cwd() };
+}
+export function writePreferences(projectId, configDir, preferences) {
+  const file = preferencesFile(projectId, configDir);
+  mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
+  writeFileSync(file, `${JSON.stringify(preferences, null, 2)}\n`, { mode: 0o600 });
+  return file;
+}
+const manifestFile = checkout => path.join(checkout, '.agent-team.json');
+const projectIdOf = manifest => manifest.queueProjectId ?? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
 export async function up(options, { ask, log, awsRun = aws, region = configuredRegion, revision = publishedRevision, env = process.env, run, startLocalImpl = startLocal, seed = seedMemory, open = true, trackerClientImpl = null, interactive = !options.yes && Boolean(process.stdin.isTTY) }) {
   const choose = chooser(ask);
   const probe = run ?? defaultRun;
-  // On rails: whatever a flag or the checkout does not say is asked, once, in order.
-  const checkout = path.resolve(options.positional[1] ?? (interactive ? await ask('Path to the project checkout', { fallback: process.cwd() }) : process.cwd()));
+  // On rails: whatever a flag, the checkout or a stored answer does not say is asked, once, in order.
+  // Running inside a checkout that carries a manifest means that project; nobody is asked for its path.
+  const checkout = path.resolve(options.positional[1] ?? (interactive && !existsSync(manifestFile(process.cwd())) ? await ask('Path to the project checkout', { fallback: process.cwd() }) : process.cwd()));
+  const file = manifestFile(checkout);
+  let manifest = null;
+  if (existsSync(file)) manifest = normalizeManifest(JSON.parse(readFileSync(file, 'utf8')));
+  const stored = manifest ? readPreferences(projectIdOf(manifest), options.configDir) : {};
+  const remembered = PREFERENCE_KEYS.filter(key => options[key] === undefined && stored[key] !== undefined);
+  for (const key of remembered) options[key] = stored[key];
+  if (remembered.length) log(`Using stored answers for this project: ${remembered.map(key => `${key} ${options[key]}`).join(', ')} (from ${preferencesFile(projectIdOf(manifest), options.configDir)}; pass the flag to change one)`);
   const target = options.target ?? (interactive ? await choose('Where should the team run?', [
     { value: 'local', label: 'This machine', hint: 'foreground, loopback only, stops with Ctrl-C' },
     { value: 'aws', label: 'AWS', hint: 'a dedicated network, spot workers, secrets in Parameter Store' }], { fallback: 'local' }) : 'local');
   if (!['local', 'aws'].includes(target)) throw new DeployError(`Unknown target ${target}`, 'Use --target local or --target aws');
-  const file = path.join(checkout, '.agent-team.json');
-  let manifest = null;
   let secretPreset = {};
-  if (existsSync(file)) manifest = normalizeManifest(JSON.parse(readFileSync(file, 'utf8')));
-  else if (interactive) {
+  if (!manifest && interactive) {
     log(`No .agent-team.json in ${checkout} yet; a few questions will write one.`);
     const draft = await draftManifest({ checkout, ask, choose, run: probe, target, env, log });
     writeManifest(checkout, draft.manifest);
@@ -205,7 +242,8 @@ export async function up(options, { ask, log, awsRun = aws, region = configuredR
   const committed = manifest;
   const engine = manifest ? engineOverride(manifest, options) : null;
   if (engine) manifest = { ...manifest, engine };
-  const projectId = manifest ? manifest.queueProjectId ?? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') : null;
+  const projectId = manifest ? projectIdOf(manifest) : null;
+  if (manifest) writePreferences(projectId, options.configDir, { checkout, target, ...Object.fromEntries(PREFERENCE_KEYS.filter(key => key !== 'target' && options[key] !== undefined).map(key => [key, options[key]])) });
   // Credentials: asked once and kept privately for the local target; handed to init for AWS.
   let secretValues = {};
   if (manifest && interactive) { const collected = await collectSecrets({ manifest, projectId, configDir: options.configDir, env, ask, log, store: target === 'local', preset: secretPreset }); env = collected.env; secretValues = collected.values; }
@@ -296,6 +334,16 @@ export async function main(argv = process.argv.slice(2), { ask = prompter(), log
     const manifest = normalizeManifest(JSON.parse(readFileSync(file, 'utf8')));
     const projectId = manifest.queueProjectId ?? manifest.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     await collectSecrets({ manifest, projectId, configDir: options.configDir, env: {}, ask, log, replace: true });
+    return 0;
+  }
+  // Seeding and queueing reach the team running here when `up` started one for the project and
+  // no AWS deployment carries its name; the deployment keeps precedence when both exist.
+  const local = ['seed', 'enqueue'].includes(command) && !(name && readDeployment(name, options.configDir)) ? localTeam(options, name) : null;
+  if (local) {
+    const request = createClient(local.url, local.token);
+    try { await request('/health'); } catch { throw new DeployError(`The local team for ${local.projectId} is not running`, 'Start it with `agent-team up` in the checkout, then rerun this command.'); }
+    if (command === 'seed') { await seedMemory({ project: local.checkout, id: local.projectId, coordinator: local.url, token: local.token, log }); return 0; }
+    log(JSON.stringify(await request('/jobs', parseEnqueueArgs(local.projectId, options.flags)), null, 2));
     return 0;
   }
   const deployment = resolveProject(options, name);

@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { main, prompter } from './agent-team.mjs';
+import { bootstrapTracker, main, prompter } from './agent-team.mjs';
 import { readDeployment } from '../core/deployment.mjs';
 
 const manifest = { version: 2, name: 'Example', queueProjectId: 'example', instructions: [], scm: { kind: 'gitlab', repository: 'group/project', baseBranch: 'main' },
@@ -210,4 +210,80 @@ test('up with nothing prepared asks its way to a running team: manifest, engine,
   assert.equal(picked, 0);
   const settings = requests.filter(([method, url]) => method === 'POST' && url === '/projects/shop/settings').at(-1);
   assert.deepEqual(settings[2].overrides.engine, { default: 'claude', billing: 'subscription' });
+});
+
+test('tracker bootstrap authenticates with the credential from the environment it was given', async t => {
+  // `up` merges the stored secrets into `env`; process.env itself may hold no token at all.
+  const saved = { fetch: globalThis.fetch, GH_TOKEN: process.env.GH_TOKEN, GITHUB_ISSUES_TOKEN: process.env.GITHUB_ISSUES_TOKEN };
+  delete process.env.GH_TOKEN; delete process.env.GITHUB_ISSUES_TOKEN;
+  t.after(() => { globalThis.fetch = saved.fetch; for (const name of ['GH_TOKEN', 'GITHUB_ISSUES_TOKEN']) if (saved[name] !== undefined) process.env[name] = saved[name]; });
+  const seen = [];
+  globalThis.fetch = async (url, init) => { seen.push(init.headers.authorization); return new Response('{}', { status: 500 }); };
+  const github = { version: 2, name: 'Shop', scm: { kind: 'github', repository: 'acme/shop', baseBranch: 'main' }, tracker: { kind: 'github', repository: 'acme/shop', readyLabel: 'agent:ready' }, engine: { default: 'claude', billing: 'subscription' }, worker: { launcher: 'local' } };
+  await bootstrapTracker(github, { env: { GH_TOKEN: 'ghp_stored' }, log: () => {} }).catch(() => {});
+  assert.deepEqual([...new Set(seen)], ['Bearer ghp_stored']);
+});
+
+test('up remembers the target and engine flags per project, and inside a checkout needs no path', async t => {
+  const configDir = mkdtempSync(path.join(os.tmpdir(), 'up-prefs-')); t.after(() => rmSync(configDir, { recursive: true, force: true }));
+  const checkout = path.join(configDir, 'repo'); mkdirSync(checkout);
+  writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ version: 2, name: 'Repo', queueProjectId: 'repo', instructions: [], scm: { kind: 'github', repository: 'o/r' }, tracker: { kind: 'github', repository: 'o/r', readyLabel: 'agent:ready' }, engine: { default: 'claude', billing: 'api' } }));
+  writeFileSync(path.join(checkout, '.gitignore'), '.agent-team/\n.agent-team-result.json\n');
+  const run = (bin, args) => bin === 'claude' && args[0] === 'auth' ? { ok: true, stdout: JSON.stringify({ loggedIn: true, authMethod: 'claude.ai', apiProvider: 'firstParty' }), stderr: '' } : { ok: ['git', 'claude', 'gh'].includes(bin), stdout: 'v1', stderr: '' };
+  const requests = [];
+  const { createServer } = await import('node:http');
+  const server = createServer((req, res) => { let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => { requests.push([req.method, req.url, body ? JSON.parse(body) : null]); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(req.url === '/health' ? { ok: true } : { ok: true, overrides: {} })); }); });
+  await new Promise(resolve => server.listen(4310, '127.0.0.1', resolve)); t.after(() => server.close());
+  const startLocalImpl = () => ({ stop() {}, started: Promise.resolve(), finished: Promise.resolve(), children: new Map() });
+  const trackerClientImpl = { bootstrap: async () => ({ labels: [], created: [], ownerInboxIssue: 'GH-9' }) };
+  const options = { log: () => {}, env: { GH_TOKEN: 'ghp_x' }, run, startLocalImpl, seed: async () => {}, open: false, trackerClientImpl };
+  // First time: the path is given, the target is chosen, billing comes from a flag.
+  const first = await main(['up', checkout, '--config-dir', configDir, '--no-intake', '--billing', 'subscription'], { ...options, ask: prompter({ answers: ['1'] }), interactive: true });
+  assert.equal(first, 0);
+  assert.deepEqual(JSON.parse(readFileSync(path.join(configDir, 'local', 'repo', 'up.json'), 'utf8')), { checkout, target: 'local', billing: 'subscription' });
+  // Second time, from inside the checkout: nothing is asked and the stored billing applies.
+  // The cwd is restored before teardown: Windows will not remove a directory a process is standing in.
+  const cwd = process.cwd(); process.chdir(checkout);
+  try {
+    const log = [];
+    const again = await main(['up', '--config-dir', configDir, '--no-intake'], { ...options, log: line => log.push(line), ask: prompter({ answers: [] }), interactive: true });
+    assert.equal(again, 0);
+    assert.match(log.join('\n'), /Using stored answers for this project: target local, billing subscription/);
+    assert.deepEqual(requests.filter(([method, url]) => method === 'POST' && url === '/projects/repo/settings').at(-1)[2].overrides.engine, { default: 'claude', billing: 'subscription' });
+    // A flag passed again wins and replaces the stored answer.
+    const changed = await main(['up', '--config-dir', configDir, '--no-intake', '--billing', 'api'], { ...options, env: { GH_TOKEN: 'ghp_x', ANTHROPIC_API_KEY: 'k' }, ask: prompter({ answers: [] }), interactive: true });
+    assert.equal(changed, 0);
+    assert.equal(JSON.parse(readFileSync(path.join(configDir, 'local', 'repo', 'up.json'), 'utf8')).billing, 'api');
+  } finally { process.chdir(cwd); }
+});
+
+test('enqueue and seed reach the local team when up runs one here, named or from inside the checkout', async t => {
+  const configDir = mkdtempSync(path.join(os.tmpdir(), 'local-enqueue-')); t.after(() => rmSync(configDir, { recursive: true, force: true }));
+  const checkout = path.join(configDir, 'repo'); mkdirSync(checkout);
+  writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ version: 2, name: 'Repo', queueProjectId: 'repo', instructions: ['AGENTS.md'], scm: { kind: 'github', repository: 'o/r' }, tracker: { kind: 'github', repository: 'o/r', readyLabel: 'agent:ready' }, engine: { default: 'claude', billing: 'subscription' } }));
+  writeFileSync(path.join(checkout, 'AGENTS.md'), '# Rules\n\nBe kind.\n');
+  const requests = [];
+  const { createServer } = await import('node:http');
+  const server = createServer((req, res) => { let body = ''; req.on('data', chunk => { body += chunk; }); req.on('end', () => { requests.push([req.method, req.url, req.headers.authorization, body ? JSON.parse(body) : null]); res.writeHead(200, { 'content-type': 'application/json' }); res.end(JSON.stringify(req.url === '/jobs' ? { id: 'job-1', state: 'queued' } : req.url.endsWith('/memory/seed') ? { ids: ['rules-from-agents-md'], sha: 'abcdef0123456789' } : { ok: true })); }); });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve)); t.after(() => server.close());
+  const url = `http://127.0.0.1:${server.address().port}`;
+  // What `up` leaves behind for a local team: the service token, the worker's coordinator address and the stored answers.
+  const dir = path.join(configDir, 'local', 'repo'); mkdirSync(dir, { recursive: true });
+  writeFileSync(path.join(dir, 'service.env'), `AGENT_TEAM_TOKEN=${'t'.repeat(32)}\nAGENT_TEAM_URL=${url}\n`);
+  writeFileSync(path.join(dir, 'worker.json'), JSON.stringify({ coordinatorUrl: url }));
+  writeFileSync(path.join(dir, 'up.json'), JSON.stringify({ checkout, target: 'local' }));
+  const log = [];
+  assert.equal(await main(['enqueue', 'repo', '--issue', 'GH-7', '--publish', '--timeout-minutes', '60', '--config-dir', configDir], { log: line => log.push(line) }), 0);
+  const job = requests.find(([method, route]) => method === 'POST' && route === '/jobs');
+  assert.equal(job[2], `Bearer ${'t'.repeat(32)}`);
+  assert.deepEqual(job[3], { projectId: 'repo', publish: true, autoMerge: false, issue: 'GH-7', timeoutMinutes: 60 });
+  assert.match(log.join('\n'), /"id": "job-1"/);
+  // Inside the checkout the project is the manifest's; seed reads the stored checkout. The cwd is
+  // restored before teardown: Windows will not remove a directory a process is standing in.
+  const cwd = process.cwd(); process.chdir(checkout);
+  try { assert.equal(await main(['seed', '--config-dir', configDir], { log: line => log.push(line) }), 0); } finally { process.chdir(cwd); }
+  const seed = requests.find(([method, route]) => method === 'POST' && route === '/projects/repo/memory/seed');
+  assert.deepEqual(Object.keys(seed[3].files), ['AGENTS.md']);
+  // No local team and no deployment: the old guidance stands.
+  await assert.rejects(main(['enqueue', 'other', '--issue', 'GH-1', '--config-dir', configDir], { log: () => {} }), /No deployment named other/);
 });

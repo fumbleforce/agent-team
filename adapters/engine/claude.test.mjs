@@ -52,7 +52,7 @@ test('coordinator and ideation invocations differ in tools, MCP exposure and age
   assert.deepEqual(coordinator.args.slice(-2), ['--model', 'sonnet']);
   assert.ok(!coordinator.args.some(arg => /max-budget|fallback-model|dangerously|bare/.test(arg)));
   const ideation = claudeInvocation({ ideate: true, prompt: 'ideas', systemPromptFile: '/run/system-prompt.md', shared });
-  assert.ok(ideation.args.includes('--restricted'));
+  assert.ok(!ideation.args.includes('--restricted') && !ideation.args.includes('--permission-prompts'), 'flags the CLI does not know end the run before it starts');
   assert.deepEqual(ideation.args.slice(ideation.args.indexOf('--tools'), ideation.args.indexOf('--tools') + 2), ['--tools', 'Read,Grep,Glob,Write']);
   assert.deepEqual(JSON.parse(ideation.args[ideation.args.indexOf('--mcp-config') + 1]), { mcpServers: {} });
   assert.ok(!ideation.args.includes('--agents') && !ideation.args.includes('--model'));

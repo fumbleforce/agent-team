@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, wr
 import os from 'node:os';
 import path from 'node:path';
 import { createQueue } from './queue.mjs';
-import { runWorker, runnerArgs, parseJournal, runProcess, validateConfig, latestWorktree, RUNNER_STOP_GRACE_MS } from './worker.mjs';
+import { createClient, runWorker, runnerArgs, parseJournal, runProcess, validateConfig, latestWorktree, RUNNER_STOP_GRACE_MS } from './worker.mjs';
 import { parseEnqueueArgs } from './cli.mjs';
 
 const config = { workerId: 'test', concurrency: 2, projects: { a: '/tmp/synthetic-a', b: '/tmp/synthetic-b' } };
@@ -378,4 +378,12 @@ test('the memory and team shims follow the platform: shell scripts everywhere, .
     assert.equal(spelled.AGENT_TEAM_MEMORY_LEASE, 'w:lease');
     assert.equal(memoryEnvironment({ coordinatorUrl: 'http://127.0.0.1:4310', job, binDir: '/bin/shims', env: {} }).PATH, `/bin/shims${path.delimiter}`);
   } finally { rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the coordinator client names the rejected field on a failed request and nothing more', async () => {
+  const fetchImpl = async (url, init) => new Response(JSON.stringify({ error: 'Invalid body', token: init.headers.authorization }), { status: 400, headers: { 'content-type': 'application/json' } });
+  const request = createClient('http://127.0.0.1:4310', 'a'.repeat(32), fetchImpl);
+  await assert.rejects(request('/messages/x', { body: 'bell\x07' }), error => error.message === 'Coordinator request failed (400): Invalid body');
+  const plain = createClient('http://127.0.0.1:4310', 'a'.repeat(32), async () => new Response('nope', { status: 502 }));
+  await assert.rejects(plain('/health'), /^Error: Coordinator request failed \(502\)$/);
 });

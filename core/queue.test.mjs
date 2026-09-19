@@ -321,3 +321,16 @@ test('a job token claims and reports only its own job, reads only its project, a
   assert.equal((await call(`/jobs/${mine.id}/complete`, { ...credentials(job), result: { outcome: 'idle', summary: 'none' } })).status, 200);
   assert.equal((await call('/health')).status, 401, 'a finished job leaves no usable token behind');
 });
+
+test('conversation messages keep line breaks and tabs but refuse other control characters', () => {
+  const q = createQueue(':memory:', { projects });
+  try {
+    const body = 'Shipped:\n- GH-4 inbox\n\n\tNext: pick a ticket.';
+    const { id } = q.postMessage('a', { author: 'team-pm', body: '…', state: 'streaming' });
+    q.updateMessage(id, { body, state: 'final' });
+    assert.equal(q.thread('a').messages.find(message => message.id === id).body, body);
+    assert.equal(q.postMessage('a', { author: 'owner', body: 'line one\nline two' }).threadId, q.thread('a').id);
+    assert.throws(() => q.updateMessage(id, { body: 'bell\x07' }), /Invalid body/);
+    assert.throws(() => q.postMessage('a', { author: 'owner', body: 'nul\x00' }), /Invalid body/);
+  } finally { q.close(); }
+});
