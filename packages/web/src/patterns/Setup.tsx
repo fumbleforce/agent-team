@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Chip, cx, Icon, StatusDot, Text, type DotTone } from '../ui';
+import { Chip, cx, Icon, Spinner, StatusDot, Text, type DotTone } from '../ui';
 
 // A large, clickable choice: what a person picks from when setting something up.
 export function ChoiceCard({ title, note, aside, onClick }: { title: string; note: string; aside?: ReactNode; onClick(): void }) {
@@ -17,8 +17,10 @@ export function Steps({ items }: { items: string[] }) {
 }
 
 // One line of state with a dot: ready, waiting, or failed.
-export function StatusLine({ tone, children, boxed }: { tone: DotTone; children: ReactNode; boxed?: boolean }) {
-  return <div className={cx('flex items-start gap-2', boxed && 'rounded-control border border-line bg-raised px-3 py-2')}><span className="pt-1"><StatusDot tone={tone} /></span><Text size="small" tone="soft">{children}</Text></div>;
+// The mark sits in a box as tall as one line of the text, so it lines up with the first line however long the sentence is.
+// `busy` swaps the dot for a spinner: the thing described is going on right now.
+export function StatusLine({ tone, children, boxed, busy }: { tone: DotTone; children: ReactNode; boxed?: boolean; busy?: boolean }) {
+  return <div className={cx('flex items-start gap-2', boxed && 'rounded-control border border-line bg-raised px-3 py-2')}><span className="flex h-4.5 w-3 shrink-0 items-center justify-center">{busy ? <Spinner /> : <StatusDot tone={tone} />}</span><Text size="small" tone="soft">{children}</Text></div>;
 }
 
 // One step of a guide. The current step is open; a finished one collapses to a line saying what was done; later ones wait.

@@ -61,12 +61,35 @@ export function WelcomePage({ me, projects }: { me: Me; projects: ProjectNode[] 
   );
 }
 
+interface Progress { phase: 'cloning' | 'starting' | 'waiting' | 'failed'; detail: string | null; error: string | null; since: number }
+
+// What is happening right now, said out loud, with the steps already done ticked above it and how long the current one has taken.
+function StartingUp({ progress, machine }: { progress: Progress; machine: string }) {
+  const order = ['cloning', 'starting', 'waiting'] as const;
+  const words = { cloning: 'Getting the code', starting: 'Starting the worker', waiting: 'Waiting for the worker to report in' };
+  const done = { cloning: 'Got the code', starting: 'Worker started', waiting: '' };
+  const seconds = Math.max(0, Math.round((Date.now() - progress.since) / 1000));
+  const at = order.indexOf(progress.phase as (typeof order)[number]);
+  return (
+    <div className="flex flex-col gap-1.5">
+      {order.slice(0, at).map(phase => <StatusLine key={phase} tone="working">{done[phase]}</StatusLine>)}
+      <StatusLine tone="attention" busy>{words[order[at]!]} on {machine}{progress.detail ? `: ${progress.detail}` : '…'}{seconds >= 5 ? ` (${seconds} s)` : ''}</StatusLine>
+      {progress.phase === 'waiting' && seconds >= 20 && <Text size="caption" tone="muted">This usually takes a few seconds. If it stays here, the worker may not be able to reach this address from where it runs.</Text>}
+    </div>
+  );
+}
+
 // One step for the code. First the repository; then something has to work on it. On the machine the app runs on that is one
 // button: the app clones the repository and starts the worker. On any other machine it is one short command with a single-use link.
 function CodeStep({ slug, repository, onChanged }: { slug: string; repository: string | null; onChanged(): void }) {
-  const here = useResource<{ available: boolean; running: boolean; engines: string[]; machine: string }>(`/api/projects/${slug}/worker/here`);
+  const here = useResource<{ available: boolean; running: boolean; ready: boolean; progress: Progress | null; engines: string[]; machine: string }>(`/api/projects/${slug}/worker/here`);
   const [mode, setMode] = useState<'here' | 'folder' | 'elsewhere'>('here'), [link, setLink] = useState<string | null>(null), [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({}), [failure, setFailure] = useState<string | null>(null);
+  // While something is under way the app looks again every second, so what it says keeps pace with what is happening.
+  const active = here.data?.progress !== null && here.data?.progress !== undefined && here.data.progress.phase !== 'failed';
+  const [, tick] = useState(0);
+  useEffect(() => { if (!active) return; const timer = setInterval(() => { here.reload(); tick(value => value + 1); }, 1000); return () => clearInterval(timer); }, [active, here.reload]);
+  useEffect(() => { if (here.data?.ready) onChanged(); }, [here.data?.ready]);
   if (!repository) return <ConnectFlow slug={slug} only={['code']} label="Connect a code host" connectedKinds={[]} onDone={onChanged} />;
 
   const fail = (problem: unknown) => { if (problem instanceof ApiError && Object.keys(problem.fields).length) setErrors(problem.fields as Record<string, string>); else setFailure(problem instanceof ApiError ? problem.message : 'That did not work; try again.'); };
@@ -77,7 +100,7 @@ function CodeStep({ slug, repository, onChanged }: { slug: string; repository: s
   return (
     <div className="flex w-full flex-col gap-3">
       <StatusLine tone="working">{repository} is connected.</StatusLine>
-      {here.data?.running ? <StatusLine tone="attention">Starting up on {here.data.machine}…</StatusLine> : (
+      {active && here.data?.progress ? <StartingUp progress={here.data.progress} machine={here.data.machine} /> : (
         <>
           {local && mode === 'here' && <div className="flex flex-wrap items-center gap-3"><Button variant="primary" disabled={busy} onClick={() => { void start(); }}>{busy ? 'Getting the code…' : 'Start working on it here'}</Button><Button variant="ghost" onClick={() => setMode('folder')}>I already have it in a folder</Button><Button variant="ghost" onClick={() => setMode('elsewhere')}>Use another machine</Button></div>}
           {local && mode === 'folder' && (
@@ -95,6 +118,7 @@ function CodeStep({ slug, repository, onChanged }: { slug: string; repository: s
           ))}
         </>
       )}
+      {here.data?.progress?.phase === 'failed' && <StatusLine tone="stop" boxed>{here.data.progress.error}</StatusLine>}
       {failure && <Text size="small" tone="stop">{failure}</Text>}
     </div>
   );
