@@ -46,13 +46,19 @@ export function mountSetupRoutes(app: Hono<any>, deps: Deps) {
   app.get('/api/projects/:slug/integrations/catalog', async c => {
     const { project } = await deps.projectFor(c, 'project.read');
     const connections = await integrations.connections(project.id);
-    // The repository is known from the connection made in the app, or from the manifest a checkout registered with `up`.
+    // What is known about a product comes from every connection of that product and from the project's own manifest
+    // (what a checkout registered with `up`, or what another entry of the product wrote there). The newest connection wins.
     const row = await context.storage.db.selectFrom('projects').select('manifest').where('id', '=', project.id).executeTakeFirst();
-    const manifest = row ? JSON.parse(row.manifest) as { scm?: { kind?: string }; delivery?: { repository?: string; baseBranch?: string } } : {};
+    const manifest = row ? JSON.parse(row.manifest) as { scm?: { kind?: string }; delivery?: { repository?: string; baseBranch?: string }; tracker?: Record<string, unknown> & { kind?: string } } : {};
+    const productOf = (kind: string | undefined, target: SetupEntry['target']) => CATALOG.find(item => item.target === target && (item.adapterKind ?? item.kind) === kind)?.product;
+    const known = (product: string): Record<string, unknown> => ({
+      ...(productOf(manifest.tracker?.kind, 'tracker') === product ? manifest.tracker : {}),
+      ...(productOf(manifest.scm?.kind, 'scm') === product ? { repository: manifest.delivery?.repository, baseBranch: manifest.delivery?.baseBranch } : {}),
+      ...Object.assign({}, ...connections.filter(item => setupEntry(item.kind)?.product === product).map(item => item.config)),
+    });
     return c.json({ entries: CATALOG.map(entry => {
-      const shared = entry.sharesWith ? connections.find(item => item.kind === entry.sharesWith) : undefined;
-      const registered: Record<string, unknown> = entry.sharesWith && manifest.scm?.kind === entry.sharesWith ? { repository: manifest.delivery?.repository, baseBranch: manifest.delivery?.baseBranch } : {};
-      const prefill = Object.fromEntries(entry.fields.flatMap(field => { const value = shared?.config[field.key] ?? registered[field.key]; return typeof value === 'string' && value ? [[field.key, value]] : []; }));
+      const pool = entry.product ? known(entry.product) : {};
+      const prefill = Object.fromEntries(entry.fields.flatMap(field => { const value = pool[field.key]; return typeof value === 'string' && value ? [[field.key, value]] : []; }));
       return { ...described(entry), prefill };
     }) });
   });
@@ -88,4 +94,24 @@ export function mountSetupRoutes(app: Hono<any>, deps: Deps) {
     });
     return c.json({ ok: true });
   });
+
+  // A project registered from a checkout names its code host and tracker in its manifest. They are shown as connections too,
+  // so the app tells the same story whichever way the project was set up. Nothing a person connected by hand is replaced.
+  async function adoptManifest(projectId: string, by: string | null) {
+    const row = await context.storage.db.selectFrom('projects').select('manifest').where('id', '=', projectId).executeTakeFirst();
+    const manifest = row ? JSON.parse(row.manifest) as { scm?: { kind?: string }; delivery?: { repository?: string; baseBranch?: string }; tracker?: Record<string, unknown> & { kind?: string } } : {};
+    const existing = await integrations.connections(projectId);
+    const has = (target: string) => existing.some(item => item.projectScoped && item.config.target === target);
+    const adopt = async (entry: SetupEntry | undefined, values: Values) => {
+      if (!entry || has(entry.target)) return;
+      const found = entry.credential?.runsOn === 'coordinator' ? credentialOf(entry) : null;
+      await integrations.replace(by, projectId, entry.target, { kind: entry.kind, name: entry.title, category: entry.category, mode: entry.mode, credentialRef: entry.credential?.variable ?? null, config: { ...values, target: entry.target },
+        waiting: entry.credential?.runsOn === 'coordinator' ? (found ? `Signed in through ${found.source}` : `Waiting for ${entry.credential.variable} on the coordinator`) : entry.credential ? `Each worker signs in with its own ${entry.credential.label}` : null,
+        connected: entry.credential?.runsOn !== 'coordinator' || found !== null });
+    };
+    const strings = (input: Record<string, unknown>) => Object.fromEntries(Object.entries(input).filter((pair): pair is [string, string] => typeof pair[1] === 'string' && pair[0] !== 'kind'));
+    if (manifest.scm?.kind && manifest.delivery?.repository) await adopt(CATALOG.find(item => item.target === 'scm' && (item.adapterKind ?? item.kind) === manifest.scm!.kind), strings({ repository: manifest.delivery.repository, baseBranch: manifest.delivery.baseBranch }));
+    if (manifest.tracker?.kind) await adopt(CATALOG.find(item => item.target === 'tracker' && (item.adapterKind ?? item.kind) === manifest.tracker!.kind), strings(manifest.tracker));
+  }
+  return { adoptManifest };
 }

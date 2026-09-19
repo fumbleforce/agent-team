@@ -17,8 +17,8 @@ export interface SetupEntry {
   credential: { variable: string; alternatives?: string[]; label: string; runsOn: 'coordinator' | 'workers' } | null;
   // Where the settings go: a plain connection, or the project's tracker or code host.
   target: 'connection' | 'tracker' | 'scm';
-  // Another entry of the same product. What was entered for it is offered here too, so nobody types the same repository twice.
-  sharesWith?: string;
+  // Entries of one product (its code host and its issues, say) share what was entered: a value known for one is never asked for by another.
+  product?: string;
   // A way to find the credential on this machine besides the variable: an existing login, say. Returns the token or null.
   findCredential?(env: NodeJS.ProcessEnv): { token: string; source: string } | null;
   // The adapter's own kind when it differs from the entry's (one product can serve as code host and as tracker).
@@ -33,21 +33,21 @@ const BASE: SetupField = { key: 'baseBranch', label: 'Main branch', placeholder:
 
 export const CATALOG: SetupEntry[] = [
   {
-    kind: 'github', title: 'GitHub', category: 'code', target: 'scm', mode: 'read and write',
+    kind: 'github', product: 'github', title: 'GitHub', category: 'code', target: 'scm', mode: 'read and write',
     summary: 'Where the code lives. The team opens draft pull requests here and merges them when checks and reviews pass.',
     does: ['Pushes each task\'s branch and opens a draft pull request', 'Reads check results and reviews before merging', 'Never force-pushes; merging needs your authorization in the repository\'s .agent-team.json'],
     steps: ['On GitHub open Settings → Developer settings → Personal access tokens → Fine-grained tokens, choose Generate new token and under "Repository access" choose "Only select repositories" with this repository.', 'Under repository permissions give it Contents: read and write, Pull requests: read and write, Commit statuses: read.', 'Fine-grained tokens have no permission for check runs (the results of GitHub Actions). If check results cannot be read on a private repository, sign in with "gh auth login" on the worker instead, or use a classic token with the "repo" scope.', 'On every worker machine set GH_TOKEN to that token (or run "gh auth login" there), then restart the worker.'],
     fields: [REPOSITORY, BASE], credential: { variable: 'GH_TOKEN', label: 'GitHub token', runsOn: 'workers' },
   },
   {
-    kind: 'gitlab', title: 'GitLab', category: 'code', target: 'scm', mode: 'read and write',
+    kind: 'gitlab', product: 'gitlab', title: 'GitLab', category: 'code', target: 'scm', mode: 'read and write',
     summary: 'Where the code lives. The team opens draft merge requests here and merges them when pipelines and approvals pass.',
     does: ['Pushes each task\'s branch and opens a draft merge request', 'Reads pipeline results and approvals before merging', 'Never force-pushes; merging needs your authorization in the repository\'s .agent-team.json'],
     steps: ['In GitLab open the project → Settings → Access tokens, choose Add new token and select the Developer role (Maintainer if only maintainers may merge). On GitLab.com project access tokens need a Premium or Ultimate subscription; a personal access token works the same way.', 'Give it the scopes api and write_repository, then choose Create project access token and copy the token (it starts with glpat-).', 'On every worker machine set GITLAB_TOKEN to that token (and GITLAB_HOST to your server\'s hostname, such as gitlab.example.com, if you self-host), then restart the worker.'],
     fields: [{ ...REPOSITORY, label: 'Project path', placeholder: 'group/project' }, BASE], credential: { variable: 'GITLAB_TOKEN', label: 'GitLab token', runsOn: 'workers' },
   },
   {
-    kind: 'github-issues', adapterKind: 'github', sharesWith: 'github', title: 'GitHub Issues', category: 'issue-boards', target: 'tracker', mode: 'two-way',
+    kind: 'github-issues', adapterKind: 'github', product: 'github', title: 'GitHub Issues', category: 'issue-boards', target: 'tracker', mode: 'two-way',
     findCredential: env => { const found = githubCredential(env); return found ? { token: found.token, source: found.source === 'cli' ? 'the GitHub command-line login on this machine' : 'a variable on this machine' } : null; },
     summary: 'Use a repository\'s issues as the task board. Issues appear as tasks within a minute.',
     does: ['Every issue becomes a task; closed issues move to Done', 'Labels "agent:in-progress" and "agent:in-review" move a card between columns'],

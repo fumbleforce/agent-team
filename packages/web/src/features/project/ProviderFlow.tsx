@@ -20,8 +20,11 @@ export function ProviderFlow({ open, kind, providers, onOpenChange, onDone }: { 
   const catalog = useResource<{ entries: CatalogEntry[] }>('/api/providers/catalog');
   const [errors, setErrors] = useState<Record<string, string>>({}), [failure, setFailure] = useState<string | null>(null), [busy, setBusy] = useState(false);
   const entry = catalog.data?.entries.find(item => item.kind === kind) ?? null;
+  const [details, setDetails] = useState(false);
+  // Ready on a worker, nothing required left empty, and not an edit of something already added: one confirmation is enough.
+  const settled = entry !== null && !details && entry.readiness.state === 'ready' && entry.providerId === null && entry.fields.every(field => !field.required || Boolean(field.suggested));
   const existing = entry ? providers.find(provider => provider.catalog === entry.kind) ?? null : null;
-  const pick = (next: string | null) => { setErrors({}); setFailure(null); onOpenChange(true, next); };
+  const pick = (next: string | null) => { setErrors({}); setFailure(null); setDetails(false); onOpenChange(true, next); };
   const current = (field: ProviderField): string => {
     if (!existing) return field.suggested ?? '';
     const values: Record<string, string> = { name: existing.name, models: existing.models.join('\n'), concurrency: String(existing.limits.concurrency ?? ''), windowTokens: String(existing.limits.windowTokens ?? ''), windowHours: String(existing.limits.windowHours ?? '') };
@@ -65,10 +68,12 @@ export function ProviderFlow({ open, kind, providers, onOpenChange, onDone }: { 
             <SectionLabel aside={<Chip tone={entry.billing === 'metered' ? 'attention' : 'neutral'}>{BILLING[entry.billing]}</Chip>}>What choosing it means</SectionLabel>
             {entry.does.map(line => <Text key={line} size="small" tone="soft">· {line}</Text>)}
           </section>
-          <section className="flex flex-col gap-2"><SectionLabel>On each worker machine</SectionLabel><Steps items={entry.steps} /></section>
-          <StatusLine boxed tone={READY_TONE[entry.readiness.state]}>{entry.readiness.message}</StatusLine>
-          {entry.credential && <StatusLine boxed tone="off">{entry.credential.variable ? `The ${entry.credential.label} lives on the worker machines as ${entry.credential.variable}; it is never entered here.` : `The ${entry.credential.label} stays on the worker machines; it is never entered here.`}</StatusLine>}
-          <section className="flex flex-col gap-3">
+          {/* A worker that already has the tool and its sign-in needs none of the instructions, and every field has a working default. */}
+          <StatusLine boxed tone={READY_TONE[entry.readiness.state]}>{entry.readiness.message}{settled ? ' Nothing else to set up.' : ''}</StatusLine>
+          {settled && <div><Button variant="ghost" onClick={() => setDetails(true)}>Choose the models and limits myself</Button></div>}
+          {!settled && <section className="flex flex-col gap-2"><SectionLabel>On each worker machine</SectionLabel><Steps items={entry.steps} /></section>}
+          {!settled && entry.credential && <StatusLine boxed tone="off">{entry.credential.variable ? `The ${entry.credential.label} lives on the worker machines as ${entry.credential.variable}; it is never entered here.` : `The ${entry.credential.label} stays on the worker machines; it is never entered here.`}</StatusLine>}
+          <section className={settled ? 'hidden' : 'flex flex-col gap-3'}>
             {entry.fields.map(field => (
               <Field key={field.key} label={field.required ? field.label : `${field.label} (optional)`} help={field.help} error={errors[field.key]}>
                 {field.input === 'lines' ? <Textarea name={field.key} rows={4} defaultValue={current(field)} placeholder={field.placeholder} spellCheck={false} /> : <Input name={field.key} defaultValue={current(field)} placeholder={field.placeholder} inputMode={field.input === 'number' ? 'numeric' : undefined} />}

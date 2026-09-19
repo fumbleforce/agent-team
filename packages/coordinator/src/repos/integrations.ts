@@ -36,14 +36,15 @@ export function createIntegrations(context: Context, turns: Turns) {
     },
 
     // Guided setup: a project has one tracker and one code host, and one connection per name, so setting one up again replaces it.
-    async replace(userId: string, projectId: string, exclusive: string | null, input: { kind: string; name: string; category: string; mode: string; credentialRef: string | null; config: Record<string, string>; waiting: string | null; connected: boolean }) {
+    async replace(userId: string | null, projectId: string, exclusive: string | null, input: { kind: string; name: string; category: string; mode: string; credentialRef: string | null; config: Record<string, string>; waiting: string | null; connected: boolean }) {
       const id = newId(now());
       const published = await storage.transaction(async tx => {
         const existing = await tx.selectFrom('connections').select(['id', 'kind', 'name', 'config']).where('project_id', '=', projectId).execute();
         const stale = existing.filter(row => (exclusive ? (JSON.parse(row.config) as { target?: string }).target === exclusive : row.kind === input.kind && row.name === input.name)).map(row => row.id);
         if (stale.length) await tx.deleteFrom('connections').where('id', 'in', stale).execute();
         await tx.insertInto('connections').values({ id, project_id: projectId, kind: input.kind, name: input.name, category: input.category, mode: input.mode, config: JSON.stringify(input.config), status: input.connected ? 'connected' : 'warning', status_detail: input.waiting, credential_ref: input.credentialRef, last_sync_at: null, created_at: now() }).execute();
-        return events.append(tx, [{ type: 'connection.added', category: 'audit', actorKind: 'user', userId, projectId, payload: { kind: input.kind, name: input.name } }]);
+        // Without a person behind it (a checkout registering itself), the platform is the actor.
+        return events.append(tx, [{ type: 'connection.added', category: 'audit', actorKind: userId ? 'user' : 'system', ...(userId ? { userId } : {}), projectId, payload: { kind: input.kind, name: input.name } }]);
       });
       events.published(published);
       return id;

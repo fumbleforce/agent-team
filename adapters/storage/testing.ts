@@ -1,3 +1,4 @@
+import { createServer, type AddressInfo } from 'node:net';
 import type { StorageConfig } from './contract.ts';
 
 // A fresh in-process Postgres on a local socket, so the postgres adapter is exercised by the ordinary test run
@@ -10,7 +11,8 @@ export async function postgresForTests(options: { vector?: boolean } = {}): Prom
   const extension = options.vector ? await import(carrier).then(module => module.vector as never, () => null) : null;
   const db = await PGlite.create(extension ? { extensions: { vector: extension } } : {});
   if (extension) await db.exec('create extension if not exists vector');
-  const port = 20000 + Math.floor(Math.random() * 20000);
+  // A port the system hands out, so test files running side by side never pick the same one.
+  const port = await new Promise<number>((resolve, reject) => { const probe = createServer(); probe.on('error', reject); probe.listen(0, '127.0.0.1', () => { const { port: free } = probe.address() as AddressInfo; probe.close(() => resolve(free)); }); });
   const server = new PGLiteSocketServer({ db, port, host: '127.0.0.1' });
   await server.start();
   return { available: { vector: Boolean(extension) }, config: { kind: 'postgres', url: `postgres://postgres@127.0.0.1:${port}/postgres`, poolSize: 1 }, stop: async () => { await server.stop(); await db.close(); } };

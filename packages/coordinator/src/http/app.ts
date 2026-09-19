@@ -96,10 +96,13 @@ export function createApp(context: Context) {
   app.get('/health', c => c.json({ ok: true }));
   // A worker started by hand asks which project a name stands for.
   app.get('/machine/projects/:slug', async c => { await machine(c); const row = await context.storage.db.selectFrom('projects').select(['id', 'name']).where('slug', '=', c.req.param('slug')).executeTakeFirst(); if (!row) throw new HttpError(404, 'not_found', 'No such project'); return c.json(row); });
+  // Assigned further down, where the guided setup is mounted; routes only run after that.
+  let setup: ReturnType<typeof mountSetupRoutes>;
   app.post('/machine/projects', async c => {
     await machine(c);
     const id = await workspace.registerProject(await body(c, RegisterProjectBody));
     await retro.ensureSchedule(id);
+    await setup.adoptManifest(id, null);
     return c.json({ id });
   });
   app.post('/machine/setup-link', async c => { await machine(c); return c.json({ path: await accounts.setupLink() }); });
@@ -407,7 +410,7 @@ export function createApp(context: Context) {
     configuring: async c => ({ project: (await projectFor(c as Hc<Env>, 'project.configure')).project, viewer: (c as Hc<Env>).get('viewer') }) });
   process.once('exit', () => workerSetup.stop());
   mountOnboardingRoutes(app, { context, canAdmin: c => can((c as Hc<Env>).get('viewer'), 'org.members'), userId: c => (c as Hc<Env>).get('viewer').userId });
-  mountSetupRoutes(app, { context, integrations, projectFor: (c, action) => projectFor(c as Hc<Env>, action), body: (c, schema) => body(c as Hc<Env>, schema), userId: c => (c as Hc<Env>).get('viewer').userId });
+  setup = mountSetupRoutes(app, { context, integrations, projectFor: (c, action) => projectFor(c as Hc<Env>, action), body: (c, schema) => body(c as Hc<Env>, schema), userId: c => (c as Hc<Env>).get('viewer').userId });
   // What the installed adapters offer, so the app never has to name a provider itself.
   app.get('/api/adapters', c => c.json({ scm: SCM_KINDS, trackers: TRACKER_KINDS }));
   // A project made in the app. The manifest a checkout commits later (through `up`) replaces what is entered here.
