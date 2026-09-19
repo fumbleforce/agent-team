@@ -15,8 +15,10 @@ export function mountOnboardingRoutes(app: Hono<any>, deps: { context: Context; 
     const project = projects.find(row => row.slug === wanted) ?? projects.find(row => row.parent_id === null) ?? null;
     const manifest = project ? JSON.parse(project.manifest) as { scm?: { kind?: string }; delivery?: { repository?: string }; tracker?: { kind?: string } } : {};
     const providers = await db.selectFrom('providers').select(['name']).execute();
-    const workers = (await db.selectFrom('workers').select(['name', 'projects', 'providers', 'last_seen_at']).where('last_seen_at', '>', context.now() - FRESH_MS).execute())
-      .filter(worker => project && (JSON.parse(worker.projects) as string[]).includes(project.id));
+    // A step that was done stays done: a worker that has worked on the project counts even while it is away. Whether one is reporting
+    // right now is said in the detail, not by taking the tick back.
+    const everWorked = (await db.selectFrom('workers').select(['name', 'projects', 'providers', 'last_seen_at']).execute()).filter(worker => project && (JSON.parse(worker.projects) as string[]).includes(project.id));
+    const workers = everWorked.filter(worker => Number(worker.last_seen_at) > context.now() - FRESH_MS);
     const engines = [...new Set(workers.flatMap(worker => ((JSON.parse(worker.providers) as { engines?: string[] }).engines ?? [])))];
     const tasks = project ? await db.selectFrom('tasks').select(eb => eb.fn.countAll<number>().as('n')).where('project_id', 'in', [project.id, ...projects.filter(row => row.parent_id === project.id).map(row => row.id)]).executeTakeFirstOrThrow() : { n: 0 };
     const people = await db.selectFrom('users').select(eb => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow();
@@ -25,7 +27,7 @@ export function mountOnboardingRoutes(app: Hono<any>, deps: { context: Context; 
     const steps: OnboardingStep[] = [
       { key: 'project', optional: false, done: Boolean(project), detail: project?.name ?? null },
       // One step for the code: it is connected, and a worker on some machine has it and reports in.
-      { key: 'code', optional: false, done: Boolean(manifest.scm?.kind && manifest.delivery?.repository) && workers.length > 0, detail: manifest.delivery?.repository ? `${manifest.delivery.repository}${workers.length ? `, worked on from ${workers.map(worker => worker.name).join(', ')}` : ''}` : null },
+      { key: 'code', optional: false, done: Boolean(manifest.scm?.kind && manifest.delivery?.repository) && everWorked.length > 0, detail: manifest.delivery?.repository ? `${manifest.delivery.repository}${workers.length ? `, worked on from ${workers.map(worker => worker.name.split('.')[0]).join(', ')}` : everWorked.length ? ', no worker running right now' : ''}` : null },
       { key: 'board', optional: true, done: Boolean(manifest.tracker?.kind), detail: null },
       { key: 'provider', optional: false, done: providers.length > 0, detail: providers.map(row => row.name).join(', ') || null },
       { key: 'worker', optional: true, done: workers.length > 0, detail: workers.length ? `${workers.map(worker => worker.name).join(', ')}${engines.length ? ` can run ${engines.join(', ')}` : ''}` : null },

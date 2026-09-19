@@ -19,3 +19,7 @@ export const ENTRYPOINTS = {
   worker: `packages/worker/src/main${SOURCE_EXT}`,
 } as const;
 export const DEFAULT_PORT = 4310;
+
+// A worker's identity: the machine plus what it works for. Two workers on one machine (one per project) must not share a name,
+// or each would overwrite what the other told the coordinator it serves.
+export const workerIdFor = (hostname: string, project: string): string => `${hostname.replace(/[^\w.-]/g, '-').slice(0, 60)}.${project.replace(/[^\w.-]/g, '-').slice(0, 60)}`;

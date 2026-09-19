@@ -3,7 +3,7 @@ import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { configDir, DEFAULT_PORT, ENTRYPOINTS, packageRoot } from '@agent-team/protocol';
+import { configDir, DEFAULT_PORT, ENTRYPOINTS, packageRoot, workerIdFor } from '@agent-team/protocol';
 
 export interface LocalOptions { projectId: string; checkout: string; engine: string; port?: number; env?: NodeJS.ProcessEnv }
 
@@ -23,7 +23,7 @@ export function writeLocalConfigs(options: LocalOptions) {
   return {
     dir, url, machineToken,
     coordinator: write('coordinator.json', { host: '127.0.0.1', port, storage: { kind: 'sqlite', path: path.join(data, 'coordinator.sqlite') } }),
-    worker: write('worker.json', { coordinatorUrl: url, workerId: os.hostname().slice(0, 32), stateDir: path.join(data, 'worker'), engine: options.engine, projects: { [options.projectId]: options.checkout } }),
+    worker: write('worker.json', { coordinatorUrl: url, workerId: workerIdFor(os.hostname(), options.projectId), stateDir: path.join(data, 'worker'), engine: options.engine, projects: { [options.projectId]: options.checkout } }),
     envFile: write('service.env', `AGENT_TEAM_TOKEN=${machineToken}\nAGENT_TEAM_URL=${url}\n`),
   };
 }

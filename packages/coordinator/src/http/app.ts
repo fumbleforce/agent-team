@@ -109,10 +109,17 @@ export function createApp(context: Context) {
 
   // Worker routes: machine token plus, per turn, the lease. A lost lease answers 409 and the worker stops.
   app.use('/worker/*', async (c, next) => { await machine(c); await next(); });
+  const servedBy = new Map<string, Map<string, number>>();
   app.post('/worker/claim', async c => {
     const claim = await body(c, ClaimBody);
     // Every poll records the worker as seen, with what it serves: the Team page and the launcher read it.
-    const seen = { name: claim.workerId, lanes: JSON.stringify(claim.free), projects: JSON.stringify(claim.projects), last_seen_at: context.now(), ...(claim.ready ? { providers: JSON.stringify(claim.ready) } : {}), ...(claim.isolation ? { isolation: claim.isolation } : {}) };
+    // Two processes may still report under one name (configurations written before workers were named per project). What the name
+    // serves is then everything reported under it in the last minutes, so they add to each other instead of overwriting each other.
+    const reported = servedBy.get(claim.workerId) ?? new Map<string, number>();
+    for (const projectId of claim.projects) reported.set(projectId, context.now());
+    for (const [projectId, at] of reported) if (at < context.now() - 3 * 60_000) reported.delete(projectId);
+    servedBy.set(claim.workerId, reported);
+    const seen = { name: claim.workerId, lanes: JSON.stringify(claim.free), projects: JSON.stringify([...reported.keys()]), last_seen_at: context.now(), ...(claim.ready ? { providers: JSON.stringify(claim.ready) } : {}), ...(claim.isolation ? { isolation: claim.isolation } : {}) };
     await context.storage.db.insertInto('workers').values({ id: claim.workerId, isolation: 'isolated', providers: '[]', ...seen }).onConflict(oc => oc.column('id').doUpdateSet(seen)).execute();
     return c.json({ turn: await turns.claim(claim) });
   });
