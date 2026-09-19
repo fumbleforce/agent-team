@@ -1,8 +1,9 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { BOARD_COLUMNS, newId, packageRoot, type BoardColumn, type MessageKind, type TaskState } from '@agent-team/protocol';
+import { BOARD_COLUMNS, newId, packageRoot, type BoardColumn, type MessageKind, type MessageView, type TaskState } from '@agent-team/protocol';
 import { notFound, type Context } from '../context.ts';
 import { canSeeProject, type Viewer } from '../auth/rbac.ts';
+import { indexMessage } from '../knowledge/indexing.ts';
 
 interface Blueprint { slug: string; name: string; seats: { name: string; title: string; isPm?: boolean; roles: string[]; persona: string }[] }
 const defaultTeam = (): Blueprint => JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'default-team.json'), 'utf8'));
@@ -128,13 +129,14 @@ export function createWorkspace(context: Context) {
 
     async messages(threadId: string, options: { after?: number; limit: number }) {
       const rows = await db.selectFrom('messages').selectAll().where('thread_id', '=', threadId).where('seq', '>', options.after ?? 0).orderBy('seq').limit(options.limit).execute();
-      return rows.map(row => ({ id: row.id, seq: Number(row.seq), authorKind: row.author_kind, authorId: row.author_id, kind: row.kind, body: row.body, payload: JSON.parse(row.payload), createdAt: Number(row.created_at) }));
+      return rows.map((row): MessageView => ({ id: row.id, seq: Number(row.seq), authorKind: row.author_kind as MessageView['authorKind'], authorId: row.author_id, kind: row.kind, body: row.body, payload: JSON.parse(row.payload), createdAt: Number(row.created_at) }));
     },
 
     async postMessage(author: { kind: 'user' | 'agent' | 'system'; id: string | null }, thread: { id: string; project_id: string | null }, input: { body: string; kind: MessageKind; payload?: Record<string, unknown> }) {
       const id = newId(now());
       const published = await storage.transaction(async tx => {
         await tx.insertInto('messages').values({ id, thread_id: thread.id, author_kind: author.kind, author_id: author.id, kind: input.kind, body: input.body, payload: JSON.stringify(input.payload ?? {}), created_at: now() }).execute();
+        if (author.kind !== 'system') await indexMessage(storage, tx, { id, threadId: thread.id, body: input.body });
         return events.append(tx, [{ type: 'message.posted', actorKind: author.kind, userId: author.kind === 'user' ? author.id : null, agentId: author.kind === 'agent' ? author.id : null, projectId: thread.project_id, threadId: thread.id, payload: { messageId: id, kind: input.kind } }]);
       });
       events.published(published);

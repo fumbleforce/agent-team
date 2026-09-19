@@ -1,0 +1,95 @@
+{
+  "/projects/group%2Fsub%2Fproject/merge_requests/42/approvals": {
+    "approved": true,
+    "approvals_required": 1,
+    "approvals_left": 0,
+    "approved_by": [
+      {
+        "user": {
+          "username": "ana"
+        }
+      }
+    ]
+  },
+  "/projects/group%2Fsub%2Fproject/merge_requests/42": {
+    "iid": 42,
+    "state": "opened",
+    "source_branch": "feature/pay",
+    "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "head_pipeline": {
+      "id": 77,
+      "status": "failed"
+    }
+  },
+  "/projects/group%2Fsub%2Fproject/pipelines?ref=feature%2Fpay&per_page=20": [
+    {
+      "id": 78,
+      "status": "running",
+      "sha": "dddddddddddddddddddddddddddddddddddddddd"
+    },
+    {
+      "id": 77,
+      "status": "failed",
+      "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ],
+  "/projects/group%2Fsub%2Fproject/pipelines/77/test_report": {
+    "total_time": 1.5,
+    "total_count": 3,
+    "success_count": 1,
+    "failed_count": 1,
+    "skipped_count": 1,
+    "error_count": 0,
+    "test_suites": [
+      {
+        "name": "e2e",
+        "total_time": 1.5,
+        "total_count": 3,
+        "success_count": 1,
+        "failed_count": 1,
+        "skipped_count": 1,
+        "error_count": 0,
+        "test_cases": [
+          {
+            "status": "success",
+            "name": "adds to cart",
+            "classname": "checkout.spec",
+            "execution_time": 0.5
+          },
+          {
+            "status": "failed",
+            "name": "pays with card",
+            "classname": "checkout.spec",
+            "execution_time": 1,
+            "system_output": "Expected 200, got 500"
+          },
+          {
+            "status": "skipped",
+            "name": "pays with invoice",
+            "classname": "checkout.spec",
+            "execution_time": 0
+          }
+        ]
+      },
+      {
+        "name": "lint",
+        "total_count": 0,
+        "test_cases": []
+      }
+    ]
+  },
+  "/projects/group%2Fsub%2Fproject/environments?states=available&per_page=100": [
+    {
+      "id": 1,
+      "name": "preview",
+      "external_url": "https://preview.example.com",
+      "state": "available"
+    },
+    {
+      "id": 2,
+      "name": "internal",
+      "external_url": null,
+      "state": "available"
+    }
+  ]
+}

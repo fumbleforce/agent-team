@@ -62,7 +62,7 @@ test('proposal, parallel feedback, one revision, decision with dissent addressed
   const kinds = (await db.selectFrom('messages').select('kind').where('thread_id', '=', threadId).orderBy('seq', 'desc').limit(6).execute()).map(row => row.kind).reverse();
   assert.deepEqual(kinds, ['proposal', 'feedback', 'feedback', 'feedback', 'revision', 'decision']);
   assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'in_progress');
-  assert.equal((await db.selectFrom('decisions').select('needs_human').executeTakeFirstOrThrow()).needs_human, false);
+  assert.equal((await db.selectFrom('decisions').select('needs_human').where('deliberation_id', '=', opened.deliberationId).executeTakeFirstOrThrow()).needs_human, false);
   await storage.close();
 });
 
@@ -92,7 +92,7 @@ test('escalation lands with the owner instead of releasing the task', async () =
   const opened = await deliberation.propose(turn('Bram'), threadId, proposal);
   for (const name of ['Ada', 'Cleo', 'Finn']) await deliberation.feedback(turn(name), opened.deliberationId, block('for'));
   await deliberation.conclude(turn('Maren'), opened.deliberationId, { outcome: 'escalate', decision: 'This changes the milestone; the owner decides.', dissent: [] });
-  assert.equal((await db.selectFrom('decisions').select('needs_human').executeTakeFirstOrThrow()).needs_human, true);
+  assert.equal((await db.selectFrom('decisions').select('needs_human').where('deliberation_id', '=', opened.deliberationId).executeTakeFirstOrThrow()).needs_human, true);
   assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'awaiting_decision');
   await storage.close();
 });

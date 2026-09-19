@@ -1,5 +1,6 @@
 import { newId } from '@agent-team/protocol';
 import type { Context } from '../context.ts';
+import { indexMessage } from '../knowledge/indexing.ts';
 
 type Post = (url: string, init: { method: 'POST'; headers: Record<string, string>; body: string }) => Promise<{ ok: boolean; json(): Promise<unknown> }>;
 
@@ -58,6 +59,7 @@ export function createSlackInbound(context: Context, options: { env?: NodeJS.Pro
     const id = newId(context.now());
     const published = await context.storage.transaction(async tx => {
       await tx.insertInto('messages').values({ id, thread_id: thread.id, author_kind: 'user', author_id: null, kind: 'note', body: event.text!.slice(0, 8000), payload: JSON.stringify({ origin: 'slack', slackUser: event.user ?? null }), created_at: context.now() }).execute();
+      await indexMessage(context.storage, tx, { id, threadId: thread.id, body: event.text!.slice(0, 8000) });
       return context.events.append(tx, [{ type: 'message.posted', actorKind: 'user', projectId: thread.project_id, threadId: thread.id, payload: { messageId: id, kind: 'note', origin: 'slack' } }]);
     });
     context.events.published(published);

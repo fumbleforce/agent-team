@@ -12,8 +12,10 @@ export function packageRoot(): string {
   return path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 }
 
+// Sources run as `.ts` in a checkout and as the built `.js` in the published package, where the root is its `dist` folder.
+export const SOURCE_EXT = path.extname(fileURLToPath(import.meta.url)) === '.js' ? '.js' : '.ts';
 export const ENTRYPOINTS = {
-  coordinator: 'packages/coordinator/src/main.ts',
-  worker: 'packages/worker/src/main.ts',
+  coordinator: `packages/coordinator/src/main${SOURCE_EXT}`,
+  worker: `packages/worker/src/main${SOURCE_EXT}`,
 } as const;
 export const DEFAULT_PORT = 4310;

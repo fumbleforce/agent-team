@@ -20,15 +20,19 @@ import * as orgAuth from '../migrations/0016_org_auth.ts';
 import * as agentSessions from '../migrations/0017_sessions.ts';
 import * as gaps from '../migrations/0019_gaps.ts';
 import * as artifacts from '../migrations/0020_artifacts.ts';
+import * as sync from '../migrations/0021_sync.ts';
+import * as search from '../migrations/0022_search.ts';
+import * as costs from '../migrations/0023_costs.ts';
+import * as runtimeLimits from '../migrations/0024_runtime_limits.ts';
 
 type ContextMigration = { up(db: Kysely<unknown>, context: MigrationContext): Promise<void> };
-const MIGRATIONS: Record<string, ContextMigration> = { '0001_init': init, '0002_runtime': runtime, '0003_costs_knowledge': knowledge, '0004_deliberation': deliberation, '0005_delivery': delivery, '0006_checks': checks, '0007_proposals': proposals, '0008_issues': issues, '0009_integrations': integrations, '0010_product': product, '0011_schedules': schedules, '0012_embeddings': embeddings, '0013_snapshots': snapshots, '0014_mentions': mentions, '0015_rules': rules, '0016_org_auth': orgAuth, '0017_sessions': agentSessions, '0019_gaps': gaps, '0020_artifacts': artifacts };
+const MIGRATIONS: Record<string, ContextMigration> = { '0001_init': init, '0002_runtime': runtime, '0003_costs_knowledge': knowledge, '0004_deliberation': deliberation, '0005_delivery': delivery, '0006_checks': checks, '0007_proposals': proposals, '0008_issues': issues, '0009_integrations': integrations, '0010_product': product, '0011_schedules': schedules, '0012_embeddings': embeddings, '0013_snapshots': snapshots, '0014_mentions': mentions, '0015_rules': rules, '0016_org_auth': orgAuth, '0017_sessions': agentSessions, '0019_gaps': gaps, '0020_artifacts': artifacts, '0021_sync': sync, '0022_search': search, '0023_costs': costs, '0024_runtime_limits': runtimeLimits };
 
 // Forward-only, each in its own transaction, recorded in Kysely's migration table.
-export async function runMigrations(db: Kysely<never> | Kysely<any>, context: MigrationContext): Promise<void> {
+export async function runMigrations(db: Kysely<never> | Kysely<any>, context: MigrationContext, upTo?: string): Promise<void> {
   const migrations: Record<string, Migration> = {};
   for (const [name, migration] of Object.entries(MIGRATIONS)) migrations[name] = { up: target => migration.up(target, context) };
   const migrator = new Migrator({ db: db as Kysely<any>, provider: { getMigrations: async () => migrations } });
-  const { error } = await migrator.migrateToLatest();
+  const { error } = await (upTo ? migrator.migrateTo(upTo) : migrator.migrateToLatest());
   if (error) throw error;
 }

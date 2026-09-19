@@ -9,4 +9,5 @@ export { CommandPalette, openPalette, type CommandPaletteProps, type PaletteLink
 export { EntityLink, EmptyState, type EntityKind } from './Links';
 export { DataTable, SettingsBody, SettingsSection, type DataColumn } from './DataTable';
 export { DiffView, OutputView, Disclosure, parseDiff, type DiffFile, type DiffLine } from './DiffView';
-export { ChoiceCard, Steps, StatusLine } from './Setup';
+export { ChoiceCard, Steps, StatusLine, StepCard } from './Setup';
+export { NewProject } from './NewProject';

@@ -1,7 +1,9 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
 import type { Agent, ProjectNode } from '../data/client';
-import { Avatar, Button, cx, Dialog, IconButton, Meter, SectionLabel, Text, type DotTone } from '../ui';
+import { Avatar, Button, Chip, cx, Dialog, IconButton, Meter, SectionLabel, Text, type DotTone } from '../ui';
+import { useStream } from '../data/stream';
+import { useResource } from '../data/useResource';
 import { openPalette } from './CommandPalette';
 import { NewProject } from './NewProject';
 
@@ -42,6 +44,36 @@ function ProjectLink({ project, active, activeSub }: { project: ProjectNode; act
 
 export interface SidebarProps { orgName: string; projects: ProjectNode[]; activeSlug: string | null; roster: Agent[]; teamName: string | null; links: { href: string; label: string; aside?: ReactNode }[] }
 
+// Until the organization is set up (or the guide is hidden), the way back to it and how far along it is.
+function GuideLink() {
+  const [location] = useLocation();
+  const guide = useResource<{ done: number; total: number; complete: boolean; dismissed: boolean }>('/api/onboarding');
+  useStream(event => /^(connection|provider|settings|task|turn)\./.test(event.type), guide.reload);
+  useEffect(() => { window.addEventListener('guide:changed', guide.reload); return () => window.removeEventListener('guide:changed', guide.reload); }, [guide.reload]);
+  useEffect(() => { guide.reload(); }, [location]);
+  if (!guide.data || guide.data.complete || guide.data.dismissed) return null;
+  return (
+    <Link href="/welcome" className={cx('flex flex-col gap-1.5 rounded-control border border-accent px-2.5 py-2 hover:bg-active', location === '/welcome' && 'bg-active')}>
+      <span className="flex items-center gap-2"><Text weight="medium" className="grow">Get started</Text><Text size="caption" tone="muted" mono>{guide.data.done} of {guide.data.total}</Text></span>
+      <Meter thin value={guide.data.done / guide.data.total} tone="working" />
+    </Link>
+  );
+}
+
+// Always in sight: how many things wait for a person, and the way to them.
+function NeedsYouLink() {
+  const [location] = useLocation();
+  const queue = useResource<{ items: unknown[] }>('/api/needs-you');
+  useStream(event => /^(decision|quarantine|delivery|proposal|task|turn)\./.test(event.type), queue.reload);
+  const count = queue.data?.items.length ?? 0;
+  return (
+    <Link href="/needs-you" className={cx('flex items-center gap-2 rounded-control px-2.5 py-2 hover:bg-active', location === '/needs-you' && 'bg-active')}>
+      <Text weight="medium" tone={count ? 'ink' : 'soft'} className="grow">Needs you</Text>
+      {count > 0 && <Chip tone="attention" pill>{count}</Chip>}
+    </Link>
+  );
+}
+
 export function Sidebar({ orgName, projects, activeSlug, roster, teamName, links }: SidebarProps) {
   return (
     <nav aria-label="Projects and team" className="flex w-54 shrink-0 flex-col gap-5 overflow-y-auto border-r border-line bg-rail px-3 py-4">
@@ -49,6 +81,8 @@ export function Sidebar({ orgName, projects, activeSlug, roster, teamName, links
         <span aria-hidden className="size-5.5 rounded-control bg-accent" />
         <span className="flex min-w-0 flex-col"><Text size="body" weight="semibold" truncate>{orgName}</Text><Text size="caption" tone="muted">organization</Text></span>
       </div>
+      <GuideLink />
+      <NeedsYouLink />
       <div className="flex flex-col gap-1">
         <div className="px-1.5 pb-1"><SectionLabel>Projects</SectionLabel></div>
         {projects.map(project => {
@@ -117,7 +151,7 @@ export function PageHeader({ crumbs, title, children }: { crumbs?: Crumb[]; titl
 
 export function RailHeader({ title, note, live }: { title: string; note?: string; live?: boolean }) {
   return (
-    <div className="flex h-22.75 items-end gap-2.5 border-b border-line px-4 pb-2.5">
+    <div className="flex h-11 shrink-0 items-center gap-2.5 border-b border-line px-4">
       <Text weight="semibold">{title}</Text>
       {note && <Text size="caption" tone="muted">{note}</Text>}
       {live && <span className="ml-auto flex items-center gap-1.5"><span aria-hidden className="size-1.5 rounded-pill bg-working" /><Text size="caption" tone="working">live</Text></span>}

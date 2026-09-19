@@ -22,6 +22,8 @@ const worker = createWorker({
   lanes: file.lanes ?? { work: 1, bounded: 1, deliver: 1 }, projects: file.projects,
   ...(file.publish ? { publish: { ...file.publish, exec } } : {}), ...(file.isolation ? { isolation: file.isolation } : {}),
   worktrees: file.worktrees === undefined ? { branchPrefix: 'agents/', base: 'HEAD' } : file.worktrees,
+  // `--once` is how a launched, disposable host runs: the worker then holds itself to the rule for such hosts.
+  ephemeral: process.argv.includes('--once'),
 });
 console.log(`Worker ${file.workerId} serving ${Object.keys(file.projects).length} project(s) with ${file.engine}`);
 for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { worker.stop(); void worker.idle().then(() => process.exit(0)); });
@@ -29,6 +31,10 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { 
 if (process.argv.includes('--once')) {
   const label = process.argv[process.argv.indexOf('--job') + 1] ?? 'one turn', deadline = Date.now() + 10 * 60_000;
   let claimed = false;
+  // A disposable host serves a project only when its committed manifest authorizes publishing and the branch can be pushed.
+  const refusals = Object.values(await worker.refusals());
+  for (const reason of refusals) console.error(reason);
+  if (refusals.length > 0 && refusals.length === Object.keys(file.projects).length) process.exit(3);
   await worker.sweep().catch(() => []);
   while (!claimed && Date.now() < deadline) { claimed = await worker.tick(); if (!claimed) await new Promise(resolve => setTimeout(resolve, 5000)); }
   await worker.idle();

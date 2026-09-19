@@ -24,10 +24,18 @@ export const FinishBody = LeaseBody.extend({
     tokensIn: z.number().int().min(0).optional(), tokensOut: z.number().int().min(0).optional(), costMinor: z.number().int().min(0).optional(),
     // The worker reads it from the worktree; it is what reviewers are asked to look at.
     headSha: z.string().regex(/^[0-9a-f]{40}$/).optional(),
+    // A review turn: the head its own detached worktree was verified to be at before the engine started and after it ended.
+    // An approval recorded in the turn counts only when both are the task's current head.
+    headShaStart: z.string().regex(/^[0-9a-f]{40}$/).optional(), headShaEnd: z.string().regex(/^[0-9a-f]{40}$/).optional(),
     prUrl: z.string().url().max(500).optional(),
     delivery: z.object({ state: z.enum(['merged', 'blocked']), reason: z.string().max(500), mergeAttempted: z.boolean(), mergeCommit: z.string().optional() }).optional(),
   }),
 });
+// Said before and after an operation that writes the primary checkout's shared git state (worktree add, remove, prune, fetch, gc):
+// a lease lost in between leaves the checkout, and not only the task, in an unknown state.
+export const GitAdminBody = LeaseBody.extend({ state: z.enum(['begin', 'end']) });
+// A worker asks which of the tasks it keeps review worktrees for are over, so it can remove them.
+export const TaskStatesBody = z.object({ workerId: WorkerId, projectId: z.string().min(1).max(200), taskKeys: z.array(z.string().min(1).max(200)).max(200) });
 // Posted the moment the engine names its session, so the next turn of the same agent and task can resume it.
 export const SessionBody = LeaseBody.extend({ sessionId: z.string().min(1).max(200), baseSha: z.string().regex(/^[0-9a-f]{40}$/).optional() });
 // Text a trace step carries beside its title: a git diff, run output or think text, already redacted and clipped by the worker.

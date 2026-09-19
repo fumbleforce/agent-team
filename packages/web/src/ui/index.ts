@@ -18,3 +18,4 @@ export { SelectMenu, type SelectOption } from './SelectMenu';
 export { Dialog, type DialogProps } from './Dialog';
 export { Popover } from './Popover';
 export { Tooltip } from './Tooltip';
+export { CodeBlock } from './CodeBlock';

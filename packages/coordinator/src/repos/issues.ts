@@ -5,6 +5,7 @@ import type { z } from 'zod';
 import { newId, type CreateIssueBody } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
+import { indexIssue } from '../knowledge/indexing.ts';
 
 const IMAGE = /^image\/(png|jpeg|webp|gif)$/;
 const MAX_BYTES = 8 * 1024 * 1024;
@@ -43,6 +44,8 @@ export function createIssues(context: Context, blobDir: string) {
         const number = Number(last?.n ?? 0) + 1;
         await tx.insertInto('threads').values({ id: threadId, project_id: projectId, kind: 'issue', subject_type: 'issue', subject_id: id, title: input.title, visibility: 'team', owner_user_id: null, created_at: now() }).execute();
         await tx.insertInto('issues').values({ id, project_id: projectId, number, title: input.title, body: input.body, state: 'open', priority: 'normal', source: agentId ? 'agent' : input.source, owner_agent_id: null, author_user_id: userId, thread_id: threadId, attachment_id: input.attachmentId ?? null, created_at: now(), closed_at: null }).execute();
+        // The first message of the thread is the issue body again, so the issue alone stands for both in search.
+        await indexIssue(storage, tx, { id, projectId, number, title: input.title, body: input.body, threadId });
         await tx.insertInto('messages').values({ id: messageId, thread_id: threadId, author_kind: agentId ? 'agent' : 'user', author_id: agentId ?? userId, kind: 'note', body: input.body, payload: JSON.stringify({ ...(input.attachmentId ? { attachmentId: input.attachmentId } : {}), ...(input.markers.length ? { markers: input.markers } : {}), ...(input.environment ? { environment: input.environment } : {}) }), created_at: now() }).execute();
         return { number, published: await events.append(tx, [{ type: 'issue.created', actorKind: agentId ? 'agent' : 'user', userId, agentId, projectId, threadId, payload: { issueId: id, number } }]) };
       });

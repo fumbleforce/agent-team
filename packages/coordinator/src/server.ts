@@ -16,14 +16,21 @@ import { createVersionedDocs } from './repos/versionedDocs.ts';
 import { readFileSync } from 'node:fs';
 import { createTrackerSync, type TrackerClient } from './sync/tracker.ts';
 import { trackerClient } from '../../../adapters/tracker/index.ts';
+import { createScmSync, type ScmApi } from './sync/scm.ts';
+import { scmApi } from '../../../adapters/scm/index.ts';
+import { createCheckWake } from './checks/wake.ts';
 
+import { backfillSearch } from './knowledge/backfill.ts';
 import { createLaunches, type LauncherFactory } from './runtime/launch.ts';
 export type { LauncherFactory } from './runtime/launch.ts';
 export type TrackerFactory = (kind: string) => Promise<TrackerClient | null>;
 // The tracker clients are adapters; a project without a credential for its tracker is simply not polled.
 const adapterTrackers: TrackerFactory = async kind => trackerClient(kind);
+export type ScmFactory = (kind: string) => Promise<ScmApi | null>;
+// So are the code hosts: review state, test reports and environments are polled only where the host's token is present.
+const adapterScm: ScmFactory = async kind => scmApi(kind);
 
-export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; webRoot?: string | null; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string; /* Where large step artifacts are kept: `{ kind: 'local', dir }` by default, in a folder under the data directory. */ artifacts?: ArtifactsConfig; /* Days a trace outlives its terminal task; 30 by default. */ traceRetentionDays?: number }
+export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; webRoot?: string | null; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; scm?: ScmFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string; /* Where large step artifacts are kept: `{ kind: 'local', dir }` by default, in a folder under the data directory. */ artifacts?: ArtifactsConfig; /* Days a trace outlives its terminal task; 30 by default. */ traceRetentionDays?: number }
 
 export const isLoopback = (host: string): boolean => host === '127.0.0.1' || host === '::1' || host === 'localhost';
 
@@ -52,11 +59,13 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   await createVersionedDocs(context).seed('library_agent', { type: 'library', id: '' }, Object.fromEntries(blueprint.seats.filter(seat => !seat.isPm).map(seat => [seat.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'), { name: seat.name, title: seat.title, persona: seat.persona, roles: seat.roles, summary: '' }])));
   const app = createApp(context);
   // Lease expiry and feedback windows are time-driven; everything else reacts to requests.
-  const turns = createTurns(context), deliberation = createDeliberation(context, turns), retro = createRetro(context, turns), traceStore = createTraceStore(context);
-  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).catch(error => console.error(error)); }, 15_000);
+  const turns = createTurns(context), deliberation = createDeliberation(context, turns), retro = createRetro(context, turns), traceStore = createTraceStore(context), checkWake = createCheckWake(context, turns);
+  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).then(() => checkWake.sweep()).catch(error => console.error(error)); }, 15_000);
   timer.unref();
 
-  const sync = createTrackerSync(context), trackers = config.trackers === undefined ? adapterTrackers : config.trackers;
+  const sync = createTrackerSync(context, turns), trackers = config.trackers === undefined ? adapterTrackers : config.trackers;
+  // A deployment that turns outside polling off for trackers has it off for code hosts too, unless it names a factory.
+  const scmSync = createScmSync(context), hosts = config.scm === undefined ? (config.trackers === null ? null : adapterScm) : config.scm;
   const slack = createSlackMirror(context), drive = createDriveSync(context), gitMirror = config.knowledgeMirror ? createGitMirror(context, config.knowledgeMirror) : null;
   // Outbound mirrors run on a short timer and never stop the coordinator when their other side is down.
   const mirrorTimer = setInterval(() => { void slack.sync().then(() => gitMirror?.sync()).then(() => drive.pull()).then(() => drive.sync()).catch(error => console.error(`Mirror failed: ${(error as Error).message}`)); }, 10_000);
@@ -64,14 +73,20 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   // Inbound chat is optional and never fatal: without its token it simply stays off.
   const closeInbound = await createSlackInbound(context).connect().catch(error => { console.error(`Inbound chat is off: ${(error as Error).message}`); return null; });
   const poll = async () => {
-    if (!trackers) return;
     for (const project of await storage.db.selectFrom('projects').select(['id', 'manifest']).where('status', '=', 'active').execute()) {
-      const kind = (JSON.parse(project.manifest) as { tracker?: { kind?: string } }).tracker?.kind;
-      const client = kind ? await trackers(kind).catch(() => null) : null;
+      const manifest = JSON.parse(project.manifest) as { tracker?: { kind?: string }; scm?: { kind?: string } };
+      const kind = manifest.tracker?.kind;
+      const client = kind && trackers ? await trackers(kind).catch(() => null) : null;
       // One project failing to sync never stops the others, and never takes the coordinator down.
       if (client) await sync.syncProject(project.id, client).catch(error => console.error(`Tracker sync failed for ${project.id}: ${(error as Error).message}`));
+      const host = manifest.scm?.kind && hosts ? await hosts(manifest.scm.kind).catch(() => null) : null;
+      if (host) await scmSync.syncProject(project.id, host).catch(error => console.error(`Code host sync failed for ${project.id}: ${(error as Error).message}`));
     }
+    // A run that failed on a task's branch wakes its author, whether the host, an upload or an agent reported it.
+    await checkWake.sweep().catch(error => console.error(error));
   };
+  // What was written before it became searchable is indexed once, in the background.
+  void backfillSearch(context).catch(error => console.error(`Search backfill failed: ${(error as Error).message}`));
   // Disposable workers are started only when the deployment supplies a launcher factory.
   const launches = config.launchers ? createLaunches(context, config.launchers) : null;
   const launchTimer = setInterval(() => { void launches?.sweep().catch(error => console.error(error)); }, 30_000);

@@ -12,6 +12,7 @@ COPY package.json package-lock.json ./
 COPY packages ./packages
 COPY adapters ./adapters
 COPY blueprints ./blueprints
+COPY bin ./bin
 RUN npm ci --omit=dev
 COPY --from=web /app/packages/web/dist ./packages/web/dist
 CMD ["node", "adapters/hosting/fly/entrypoint.ts"]

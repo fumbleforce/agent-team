@@ -9,3 +9,4 @@ node_modules/
 packages/web/dist/
 test-results/
 playwright-report/
+/dist/

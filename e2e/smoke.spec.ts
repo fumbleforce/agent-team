@@ -295,3 +295,53 @@ test('a project budget is set on the Costs page in the organization currency', a
   await expect(page.getByText(/of €250 this month/)).toBeVisible();
   expect(errors).toEqual([]);
 });
+
+test('the Costs page says which currency it shows and an admin changes it and its rate in plain words', async ({ page }) => {
+  const errors = await enter(page);
+  await page.goto('/costs');
+  await expect(page.getByText(/Costs are shown in EUR\. One US dollar counts as 1 EUR\./)).toBeVisible();
+  await page.getByRole('button', { name: 'Change the currency' }).click();
+  await page.getByLabel('Show costs in').fill('nok');
+  await page.getByLabel(/One US dollar is worth this many NOK/).fill('10.5');
+  await expect(page.getByText(/Changing the currency restates earlier days/)).toBeVisible();
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText(/Costs are shown in NOK\. One US dollar counts as 10\.5 NOK\./)).toBeVisible();
+  // Put back what the other tests expect.
+  await page.getByRole('button', { name: 'Change the currency' }).click();
+  await page.getByLabel('Show costs in').fill('EUR');
+  await page.getByLabel(/One US dollar is worth this many EUR/).fill('1');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText(/Costs are shown in EUR/)).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('harness health shows the cases on the base branch, what is quarantined as flaky, and what changed between runs', async ({ page }) => {
+  const errors = await enter(page);
+  const upload = (cases: string) => page.request.post('/api/projects/checkout-v2/checks/unit?branch=main', { headers: { 'content-type': 'application/xml' }, data: `<testsuite>${cases}</testsuite>` });
+  expect((await upload('<testcase name="totals" time="1.5"/><testcase name="coupon race" time="0.5"/>')).ok()).toBe(true);
+  expect((await upload('<testcase name="totals" time="1.5"/><testcase name="coupon race"><skipped message="quarantined: flaky"/></testcase><testcase name="tax" time="2"/>')).ok()).toBe(true);
+  await page.goto(`${PROJECT}/tests`);
+  await expect(page.getByText('Harness health', { exact: true })).toBeVisible();
+  await expect(page.getByText('Cases on main')).toBeVisible();
+  await expect(page.getByText('Quarantined as flaky', { exact: true })).toBeVisible();
+  await expect(page.getByText(/1 case added, now 3 · quarantined as flaky: coupon race/)).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('what needs a person is one click away, and a decision is recorded in their own words', async ({ page }, info) => {
+  const errors = await enter(page);
+  await page.goto(`${PROJECT}/tasks`);
+  const link = page.getByRole('navigation').first().getByRole('link', { name: /needs you/i });
+  await expect(link).toContainText(/[1-9]/);
+  await link.click();
+  await expect(page).toHaveURL(/\/needs-you$/);
+  const card = page.locator('main').getByText(/Keep the Thursday deploy/).locator('xpath=ancestor::*[.//button][1]');
+  await page.screenshot({ path: info.outputPath('needs-you.png') });
+  await expect(card.getByRole('button', { name: 'Record the decision' })).toBeDisabled();
+  await card.getByRole('textbox').fill('Test first and ship Friday.');
+  await card.getByRole('button', { name: 'Record the decision' }).click();
+  await expect(page.getByText(/Keep the Thursday deploy/)).toHaveCount(0);
+  await page.goto(`${PROJECT}/tasks`);
+  await expect(page.getByText('Test first and ship Friday.')).toBeVisible();
+  expect(errors).toEqual([]);
+});

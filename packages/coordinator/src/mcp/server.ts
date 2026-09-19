@@ -16,6 +16,7 @@ import { createCosts } from '../costs/costs.ts';
 import { createActions } from './actions.ts';
 import { createProposals } from '../runtime/proposals.ts';
 import { HttpError } from '../context.ts';
+import { ideationOf } from '../sync/tracker.ts';
 
 interface Turn { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; grants: string }
 class ToolError extends Error {}
@@ -136,8 +137,9 @@ export function createMcp(context: Context, deps: McpDeps) {
     'knowledge.propose_memory': async (turn, input) => ({ memoryId: await knowledge.fileMemory({ scope: (await scopesOf(turn))[0]!, agentId: turn.agent_id, ...input }) }),
     'proposal.create': async (turn, input) => proposals.create(turn, input),
     'proposal.vote': async (turn, input) => proposals.vote(turn, input.proposalId, input.vote),
-    'test.report': async (turn, input) => checks.record({ projectId: turn.project_id, suite: input.suite, kind: input.kind, branch: input.branch, sha: input.sha ?? null, source: 'agent', report: { passed: input.passed, failed: input.failed, skipped: input.skipped, total: input.passed + input.failed + input.skipped, durationMs: input.durationMs, failing: input.failing.map(item => ({ name: item.name, status: 'failed' as const, message: item.message ?? null })) } }),
-    'task.review': async (turn, input) => reviews.record(turn, input),
+    'test.report': async (turn, input) => checks.record({ projectId: turn.project_id, suite: input.suite, kind: input.kind, branch: input.branch, sha: input.sha ?? null, source: 'agent', report: { passed: input.passed, failed: input.failed, skipped: input.skipped, total: input.passed + input.failed + input.skipped, durationMs: input.durationMs, failing: input.failing.map(item => ({ name: item.name, status: 'failed' as const, message: item.message ?? null })), quarantined: input.quarantined.map(name => ({ name, status: 'skipped' as const, message: null })) } }),
+    // From an agent's turn a verdict is pending until the worker reports the head it verified.
+    'task.review': async (turn, input) => reviews.record(turn, input, { verification: 'worker' }),
     'deliberation.propose': async (turn, input) => { const { threadId, ...proposal } = input; await threadInProject(turn, threadId); return deliberation.propose(turn, threadId, proposal); },
     'deliberation.feedback': async (turn, input) => { await deliberation.feedback(turn, input.deliberationId, input.block); return RECORDED; },
     'deliberation.stand': async (turn, input) => { await deliberation.stand(turn, input.deliberationId, input.reason); return RECORDED; },
@@ -148,6 +150,16 @@ export function createMcp(context: Context, deps: McpDeps) {
       const item = await db.selectFrom('work_items').select('thread_id').where('id', '=', turn.work_item_id).executeTakeFirst();
       if (!item?.thread_id) throw new ToolError('This turn has no retro thread');
       return actions.retro(turn, (await threadInProject(turn, item.thread_id)).id, input);
+    },
+    // Ideas are recorded here and published by the next tracker poll, which knows the backlog cap and what already exists.
+    'ideas.propose': async (turn, input) => {
+      const config = ideationOf(JSON.parse((await db.selectFrom('projects').select('manifest').where('id', '=', turn.project_id).executeTakeFirstOrThrow()).manifest) as { ideation?: unknown });
+      if (!config) throw new ToolError('Ideation is not enabled for this project');
+      if (input.proposals.length > config.batchSize) throw new ToolError(`At most ${config.batchSize} ideas per turn`);
+      if (new Set(input.proposals.map(proposal => proposal.title.normalize('NFKC').toLowerCase())).size !== input.proposals.length) throw new ToolError('Two ideas share a title');
+      const published = await storage.transaction(tx => events.append(tx, [{ type: 'ideation.proposed', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, turnId: turn.id, payload: { proposals: input.proposals } }]));
+      events.published(published);
+      return { recorded: input.proposals.length };
     },
     'task.claim': async (turn, input) => actions.claim(turn, input.taskId),
     'task.handoff': async (turn, input) => actions.handoff(turn, input),

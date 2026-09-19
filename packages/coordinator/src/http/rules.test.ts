@@ -45,7 +45,7 @@ test('budgets are set, listed and removed; the export is CSV of the period for v
     assert.match(seen.headers.get('content-type') ?? '', /^text\/csv/);
     assert.match(seen.headers.get('content-disposition') ?? '', /attachment; filename="costs-/);
     const lines = seen.text.trim().split('\r\n');
-    assert.deepEqual([lines.length, lines[0], lines[1]!.split(',').slice(1)], [2, 'at,project,agent,provider,billing_kind,tokens_in,tokens_out,amount_minor,currency,turn_id', ['shop', '', '', 'metered', '1200', '300', '42', 'EUR', '']]);
+    assert.deepEqual([lines.length, lines[0], lines[1]!.split(',').slice(1)], [2, 'at,project,agent,provider,billing_kind,tokens_in,tokens_out,amount_minor,currency,usd_minor,rate,turn_id', ['shop', '', '', 'metered', '1200', '300', '42', 'EUR', '0', '1', '']]);
     assert.equal((await call('/api/costs/export.csv', { cookie })).text.trim().split('\r\n').length, 3);
     assert.equal((await call('/api/costs/export.csv?from=2001-01-01&to=2001-01-31', { cookie })).text.trim().split('\r\n').length, 1);
     assert.equal((await call('/api/costs/export.csv?from=yesterday', { cookie })).status, 400);

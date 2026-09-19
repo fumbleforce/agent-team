@@ -1,5 +1,5 @@
 import { newId } from '@agent-team/protocol';
-import type { Tx } from '@agent-team/storage';
+import { portableVectors, type Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 
 export interface Scope { type: 'org' | 'team' | 'project' | 'subproject'; id: string }
@@ -8,7 +8,8 @@ const PATH = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)*\.md$/;
 const tokens = (text: string) => Math.ceil(text.length / 4);
 
 export interface Embedder { model: string; embed(text: string): Promise<number[]> }
-const cosine = (a: number[], b: number[]) => { let dot = 0, na = 0, nb = 0; for (let i = 0; i < Math.min(a.length, b.length); i++) { dot += a[i]! * b[i]!; na += a[i]! ** 2; nb += b[i]! ** 2; } return na && nb ? dot / Math.sqrt(na * nb) : 0; };
+// What counts as near in meaning: cosine similarity, 0 to 1.
+const SIMILARITY_FLOOR = 0.6;
 
 // Embeddings from any endpoint that speaks the common local-model API; without one, search is lexical only.
 export function httpEmbedder(url: string, model: string): Embedder {
@@ -19,16 +20,16 @@ export function createKnowledge(context: Context, embedder: Embedder | null = nu
   const { storage, events, now } = context;
   const db = storage.db;
 
-  const index = (tx: Tx, doc: { type: string; id: string; scope: Scope; title: string; body: string }) =>
-    tx.insertInto('search_docs').values({ doc_type: doc.type, doc_id: doc.id, scope_type: doc.scope.type, scope_id: doc.scope.id, title: doc.title, body: doc.body })
-      .onConflict(oc => oc.columns(['doc_type', 'doc_id']).doUpdateSet({ title: doc.title, body: doc.body })).execute();
+  // Search and vectors are the storage adapter's: a native index where the dialect has one, the portable table where it has none.
+  const vectors = storage.vectors ?? portableVectors(db);
+  const index = (tx: Tx, doc: { type: string; id: string; scope: Scope; title: string; body: string }) => storage.search.index(doc, tx);
 
   // Best effort and outside the write transaction: a slow or absent model never blocks or fails a save.
   async function embedDoc(type: string, id: string, title: string, body: string) {
     if (!embedder) return;
     const vector = await embedder.embed(`${title}
 ${body}`).catch(() => []);
-    if (vector.length) await db.insertInto('embeddings').values({ doc_type: type, doc_id: id, model: embedder.model, vector: JSON.stringify(vector) }).onConflict(oc => oc.columns(['doc_type', 'doc_id']).doUpdateSet({ model: embedder.model, vector: JSON.stringify(vector) })).execute();
+    if (vector.length) await vectors.store({ type, id }, embedder.model, vector);
   }
 
   // Sibling revisions take numbers too, so the next number comes from the revisions, not from the page's current one.
@@ -115,23 +116,15 @@ ${body}`).catch(() => []);
       return page;
     },
 
-    // Every term must occur; ranking prefers title hits. Dialects may replace this with a native index.
+    // Every term must start a word of the title or body; title hits rank first. Pages, memories, messages and issues of the given scopes.
     async search(scopes: Scope[], query: string, limit = 10) {
-      const terms = query.toLowerCase().split(/\s+/).filter(term => term.length > 1).slice(0, 6);
-      if (scopes.length === 0 || (terms.length === 0 && !embedder)) return [];
-      let q = db.selectFrom('search_docs').selectAll().where(eb => eb.or(scopes.map(scope => eb.and([eb('scope_type', '=', scope.type), eb('scope_id', '=', scope.id)]))));
-      for (const term of terms) q = q.where(eb => eb.or([eb(eb.fn('lower', ['title']), 'like', `%${term}%`), eb(eb.fn('lower', ['body']), 'like', `%${term}%`)]));
-      const rows = await q.limit(200).execute();
-      const score = (row: { title: string }) => terms.filter(term => row.title.toLowerCase().includes(term)).length;
-      const lexical = rows.sort((a, b) => score(b) - score(a)).slice(0, limit);
-      const hit = (row: (typeof rows)[number]) => ({ type: row.doc_type, id: row.doc_id, title: row.title, excerpt: row.body.slice(0, 240) });
-      if (!embedder || lexical.length >= limit) return lexical.map(hit);
+      const lexical = await storage.search.query(query, scopes, limit);
+      if (!embedder || scopes.length === 0 || lexical.length >= limit) return lexical;
       // Meaning fills what the words missed: the nearest documents of the same scopes, above a similarity floor.
       const target = await embedder.embed(query).catch(() => []);
-      if (target.length === 0) return lexical.map(hit);
-      const scoped = await db.selectFrom('search_docs').innerJoin('embeddings', join => join.onRef('embeddings.doc_type', '=', 'search_docs.doc_type').onRef('embeddings.doc_id', '=', 'search_docs.doc_id')).selectAll('search_docs').select('embeddings.vector').where(eb => eb.or(scopes.map(scope => eb.and([eb('search_docs.scope_type', '=', scope.type), eb('search_docs.scope_id', '=', scope.id)])))).limit(2000).execute();
-      const near = scoped.filter(row => !lexical.some(item => item.doc_id === row.doc_id)).map(row => ({ row, similarity: cosine(target, JSON.parse(row.vector) as number[]) })).filter(item => item.similarity >= 0.6).sort((a, b) => b.similarity - a.similarity);
-      return [...lexical, ...near.slice(0, limit - lexical.length).map(item => item.row)].map(hit);
+      if (target.length === 0) return lexical;
+      const near = (await vectors.nearest(target, embedder.model, scopes, limit, SIMILARITY_FLOOR)).filter(item => !lexical.some(hit => hit.type === item.type && hit.id === item.id));
+      return [...lexical, ...near.slice(0, limit - lexical.length).map(({ similarity: _similarity, ...hit }) => hit)];
     },
 
     // What a turn starts with: confirmed memories by hits and recency, cut at the token cap; injected ids are counted as hits.

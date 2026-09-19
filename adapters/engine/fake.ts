@@ -1,8 +1,8 @@
-import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { allowlistedEnvironment, type EngineAdapter } from './contract.ts';
 
-const SCRIPT = path.join(path.dirname(fileURLToPath(import.meta.url)), 'fake-engine.ts');
+// The script beside this file, with this file's extension: `.ts` in a checkout, the built `.js` in the published package.
+const SCRIPT = fileURLToPath(import.meta.url).replace(/fake(\.[jt]s)$/, 'fake-engine$1');
 
 // A scripted engine for tests and the demo: no model, no network. FAKE_SCENARIO selects the behaviour.
 export const fake: EngineAdapter = {

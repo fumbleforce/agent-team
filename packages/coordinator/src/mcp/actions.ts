@@ -2,6 +2,7 @@ import { newId, type ToolInput } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import { HttpError, type Context } from '../context.ts';
 import type { Turns } from '../runtime/turns.ts';
+import { indexMessage } from '../knowledge/indexing.ts';
 
 interface Actor { id: string; agent_id: string; project_id: string; task_id: string | null }
 const refuse = (code: string, message: string) => new HttpError(409, code, message);
@@ -22,6 +23,7 @@ export function createActions(context: Context, turns: Turns) {
   async function post(tx: Tx, threadId: string, agentId: string, kind: string, body: string, payload: Record<string, unknown>) {
     const id = newId(now());
     await tx.insertInto('messages').values({ id, thread_id: threadId, author_kind: 'agent', author_id: agentId, kind, body, payload: JSON.stringify(payload), created_at: now() }).execute();
+    await indexMessage(storage, tx, { id, threadId, body });
     return id;
   }
 

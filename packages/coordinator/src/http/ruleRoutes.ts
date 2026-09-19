@@ -1,5 +1,5 @@
 import type { Context as Hc, Hono } from 'hono';
-import { BudgetBody, RebalanceApplyBody, RuleKind } from '@agent-team/protocol';
+import { BudgetBody, CostCurrency, RebalanceApplyBody, RuleKind } from '@agent-team/protocol';
 import { can, type Action, type Viewer } from '../auth/rbac.ts';
 import type { Costs } from '../costs/costs.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
@@ -66,6 +66,15 @@ export function registerRuleRoutes(app: Hono<Env>, context: Context, deps: { wor
     await budgetGate(c, scope, scopeId);
     await costs.deleteBudget(scope, scopeId);
     return c.json({ ok: true });
+  });
+
+  // The currency costs are shown in and its rate against the US dollar, which is what engines report in.
+  app.get('/api/costs/currency', async c => c.json({ ...await costs.display(), canEdit: can(c.get('viewer'), 'org.members') }));
+  app.on(['PUT', 'POST'], '/api/costs/currency', async c => {
+    allow(c, 'org.members');
+    const input = await parseBody(c, CostCurrency);
+    await costs.setDisplay(c.get('viewer').userId, input);
+    return c.json(input);
   });
 
   // Entries of a period (whole days, UTC) for the projects the viewer can see.

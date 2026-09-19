@@ -57,7 +57,7 @@ function HandoffCard({ slug, handoff, tasks, onChanged }: { slug: string; handof
 }
 
 export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me; projects: ProjectNode[] }) {
-  const view = useResource<{ connections: Connection[]; handoffs: Handoff[] }>(`/api/projects/${slug}/integrations`);
+  const view = useResource<{ connections: Connection[]; handoffs: Handoff[]; sync?: { resource: string; lastOkAt: number | null; error: string | null; failingSince: number | null }[] }>(`/api/projects/${slug}/integrations`);
   useStream(event => event.type.startsWith('handoff.') || event.type.startsWith('connection.'), view.reload);
   // The tasks a handoff can be attached to: everything on the project's board that is not finished.
   const board = useResource<ProjectView>(`/api/projects/${slug}`).data?.board;
@@ -84,6 +84,7 @@ export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me;
               </div>
             </section>
           ))}
+          {view.data?.sync?.map(row => <Text key={row.resource} size="caption" tone="muted">{row.resource}: {row.failingSince ? `failing since ${new Date(row.failingSince).toLocaleString()} (${row.error ?? "unknown"})` : row.lastOkAt ? `last synced ${new Date(row.lastOkAt).toLocaleString()}` : "not synced yet"}</Text>)}
           {groups.length === 0 && <Text tone="muted">Nothing is connected yet. Start with where the code lives and where the tasks come from; chat and documents can follow.</Text>}
         </div>
         <SidePanel label="Handoffs" side="right" wide>

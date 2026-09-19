@@ -1,5 +1,5 @@
 import { useState, type ClipboardEvent, type FormEvent } from 'react';
-import { api, postToThread, uploadImage, type Agent, type Me, type Message as MessageData } from '../../data/client';
+import { api, postToThread, uploadImage, type Agent, type Me, type ThreadMessagesView } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
 import { Attachment, Composer, ListLink, mentionOptions, Message, resolveAuthor, SidePanel, SubHeader } from '../../patterns';
@@ -37,7 +37,7 @@ function RaiseIssue({ slug, onRaised }: { slug: string; onRaised(number: number)
 export function IssuesTab({ slug, number, roster, me, navigate }: { slug: string; number: number | null; roster: Agent[]; me: Me; navigate(to: string): void }) {
   const list = useResource<{ issues: Issue[] }>(`/api/projects/${slug}/issues`);
   const selected = list.data?.issues.find(issue => issue.number === number) ?? null;
-  const thread = useResource<{ messages: MessageData[] }>(selected ? `/api/threads/${selected.thread_id}/messages` : null);
+  const thread = useResource<ThreadMessagesView>(selected ? `/api/threads/${selected.thread_id}/messages` : null);
   useStream(event => event.type.startsWith('issue.'), list.reload);
   useStream(event => event.type === 'message.posted' && event.threadId === selected?.thread_id, thread.reload);
 

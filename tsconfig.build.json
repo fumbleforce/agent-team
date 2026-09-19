@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "rootDir": ".",
+    "outDir": "dist",
+    "rewriteRelativeImportExtensions": true,
+    "declaration": false,
+    "sourceMap": false,
+    "removeComments": false
+  },
+  "include": ["bin/*.ts", "packages/protocol", "packages/coordinator", "packages/worker", "adapters/storage", "adapters/engine/*.ts", "adapters/scm/*.ts", "adapters/artifacts/*.ts", "adapters/launcher/*.ts", "adapters/integration/*.ts", "adapters/tracker/*.ts", "adapters/hosting/*/*.ts"],
+  "exclude": ["**/*.test.ts", "**/*.sim.ts", "**/node_modules", "dist"]
+}

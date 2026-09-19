@@ -1,16 +1,16 @@
 import { useState, type ReactNode } from 'react';
 import { useParams } from 'wouter';
-import { api, ApiError, type Agent } from '../../data/client';
+import { api, ApiError, type Agent, type TeamView } from '../../data/client';
 import { useResource } from '../../data/useResource';
 import { SeatRow, StatusLine } from '../../patterns';
 import { Button, Card, Chip, IconButton, Menu, SectionLabel, Select, StatusDot, Text } from '../../ui';
-import { AgentDialog, type RoleChoice, type Seat } from './AgentDialog';
+import { AgentDialog, type Seat } from './AgentDialog';
 import { BILLING, ProviderFlow, READY_TONE, type Provider } from './ProviderFlow';
 
 export function TeamTab({ roster, teamName, onChanged, children }: { roster: Agent[]; teamName: string | null; onChanged(): void; children?: ReactNode }) {
   const { slug = '' } = useParams<{ slug: string }>();
   const providers = useResource<{ providers: Provider[]; canEdit: boolean }>('/api/providers');
-  const team = useResource<{ seats: Seat[]; roles: RoleChoice[]; canEdit: boolean }>(`/api/projects/${slug}/team`);
+  const team = useResource<TeamView>(`/api/projects/${slug}/team`);
   const [flow, setFlow] = useState<{ open: boolean; kind: string | null }>({ open: false, kind: null });
   const [editor, setEditor] = useState<{ open: boolean; seat: Seat | null }>({ open: false, seat: null });
   const [problem, setProblem] = useState<{ about: 'team' | 'providers'; text: string } | null>(null);

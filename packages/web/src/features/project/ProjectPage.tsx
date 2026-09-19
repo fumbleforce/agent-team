@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import { api, postToThread, uploadImage, type Me, type Message as MessageData, type ProjectNode, type ProjectView } from '../../data/client';
+import { api, postToThread, uploadImage, type Me, type ProjectNode, type ProjectView, type ThreadMessagesView } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
 import { AppShell, BoardColumn, Composer, mentionOptions, Message, PageHeader, RailHeader, resolveAuthor, Sidebar } from '../../patterns';
@@ -25,7 +25,7 @@ const tabsFor = (kind: string) => ['Tasks', 'Issues', 'Product', kind === 'repo'
 const links = (slug: string) => [{ href: '/proposals', label: 'Team proposals' }, { href: '/costs', label: 'Costs' }, { href: `/p/${slug}/integrations`, label: 'Integrations' }, { href: '/roles', label: 'Roles' }, { href: `/settings/project/${slug}`, label: 'Project settings' }];
 
 function Discussion({ threadId, view, me }: { threadId: string; view: ProjectView; me: Me }) {
-  const thread = useResource<{ messages: MessageData[] }>(`/api/threads/${threadId}/messages`);
+  const thread = useResource<ThreadMessagesView>(`/api/threads/${threadId}/messages`);
   useStream(event => event.type === 'message.posted' && event.threadId === threadId, thread.reload);
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { end.current?.scrollIntoView({ block: 'end' }); }, [thread.data?.messages.length]);

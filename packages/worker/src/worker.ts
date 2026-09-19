@@ -10,7 +10,7 @@ import { executeTurn, turnDirectory } from './execute.ts';
 import { clearRun, identifyRun, recordRun, sweepOrphans } from './orphans.ts';
 import { createRedactor } from './redact.ts';
 import { createTracer, type StepArtifact } from './trace.ts';
-import { cappedBy, changedPaths, committedCeiling, ensureWorktree, headSha, worktreeFor } from './worktree.ts';
+import { cappedBy, changedPaths, committedCeiling, ensureReviewWorktree, ensureWorktree, headSha, publishAuthorized, removeReviewWorktrees, reviewedTasks, untouchedOverlays, worktreeFor, type AdminHooks, type ReviewWorktree, type Worktree } from './worktree.ts';
 
 export interface DeliveryFacts { taskKey: string; headSha: string; prUrl: string; manifest: { scm?: { kind?: string }; delivery?: DeliveryConfig }; approvals: Approvals }
 export interface DeliveryResult { state: 'merged' | 'blocked'; reason: string; mergeAttempted: boolean; mergeCommit?: string }
@@ -38,9 +38,23 @@ export interface WorkerConfig {
   isolation?: 'strict' | 'isolated';
   // What this machine can run, sent with every claim so the app can say which providers are ready here. Names only.
   ready?: { engines: string[]; variables: string[] };
+  // A disposable host that is gone after its turn (`--once`): it keeps neither a session nor a worktree, so it serves a project only when
+  // the committed manifest authorizes publishing, runs every turn from its packet and pushes the branch at the end of every turn.
+  ephemeral?: boolean;
 }
-interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
+interface Claimed { review?: { headSha: string; reviewer: string } | null; turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
 interface Lease { workerId: string; leaseToken: string }
+// What one turn shares with its heartbeat: whether it is inside an operation on the checkout's shared git state right now.
+interface TurnState { adminOpen: boolean }
+const TERMINAL = ['done', 'canceled', 'stopped'];
+
+// The worker's side of the rule the launcher applies before it starts a disposable host; the two give the same reasons.
+export function ephemeralRefusal(input: { publishAuthorized: boolean; publish?: { scm?: string; repository?: string; base?: string } | null | undefined; worktrees?: unknown }): string | null {
+  const missing = [...(input.publishAuthorized ? [] : ['the project manifest does not authorize publishing (publishAuthorized)']),
+    ...(input.publish?.scm && input.publish.repository && input.publish.base ? [] : ['no publish target (scm, repository, base) is configured, so the branch cannot be pushed at the end of each turn']),
+    ...(input.worktrees === null ? ['worktrees are turned off, so there is no branch to push'] : [])];
+  return missing.length ? `An ephemeral worker is refused: ${missing.join('; ')}` : null;
+}
 
 class LeaseLost extends Error {}
 
@@ -48,6 +62,37 @@ export function createWorker(config: WorkerConfig) {
   const busy: Record<Lane, number> = { work: 0, bounded: 0, deliver: 0 };
   const running = new Set<Promise<void>>();
   let stopped = false;
+  // Checkouts a lost lease left in the middle of a git-admin operation: nothing more is claimed for them by this process.
+  const unknownCheckouts = new Set<string>();
+  const refused = new Map<string, string>();
+
+  // Which projects this worker may claim for right now.
+  async function servable(): Promise<string[]> {
+    const projects = Object.keys(config.projects).filter(id => !unknownCheckouts.has(id));
+    if (!config.ephemeral) return projects;
+    const allowed: string[] = [];
+    for (const id of projects) {
+      const authorized = config.worktrees ? await publishAuthorized(config.projects[id]!, config.worktrees.base).catch(() => false) : false;
+      const refusal = ephemeralRefusal({ publishAuthorized: authorized, publish: config.publish, worktrees: config.worktrees });
+      if (refusal) refused.set(id, refusal); else { refused.delete(id); allowed.push(id); }
+    }
+    return allowed;
+  }
+
+  // Review worktrees of tasks that are over are removed; the author's worktree and branch are kept.
+  async function cleanReviews(): Promise<string[]> {
+    const removed: string[] = [];
+    if (!config.worktrees) return removed;
+    for (const [projectId, checkout] of Object.entries(config.projects)) {
+      if (unknownCheckouts.has(projectId)) continue;
+      let taskKeys: string[];
+      try { taskKeys = reviewedTasks(checkout); } catch { continue; }
+      if (!taskKeys.length) continue;
+      const { states } = await call<{ states: Record<string, string> }>('/worker/tasks/states', { workerId: config.workerId, projectId, taskKeys: taskKeys.slice(0, 200) });
+      for (const taskKey of taskKeys) if (TERMINAL.includes(states[taskKey] ?? '')) removed.push(...await removeReviewWorktrees(checkout, taskKey));
+    }
+    return removed;
+  }
 
   async function call<T>(route: string, body: unknown): Promise<T> {
     const response = await fetch(config.coordinatorUrl + route, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${config.token}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) });
@@ -93,7 +138,7 @@ export function createWorker(config: WorkerConfig) {
     if (!lost()) await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome });
   }
 
-  async function runEngine(turn: Claimed, lane: Lane, lease: Lease, signal: AbortSignal, lost: () => boolean) {
+  async function runEngine(turn: Claimed, lane: Lane, lease: Lease, signal: AbortSignal, lost: () => boolean, state: TurnState) {
     let pending: TraceStepInput[] = [];
     const flush = async () => { const steps = pending; pending = []; if (steps.length && !lost()) await call(`/worker/turns/${turn.turnId}/steps`, { ...lease, steps }).catch(() => {}); };
     const flusher = setInterval(() => { void flush(); }, 1000);
@@ -105,10 +150,24 @@ export function createWorker(config: WorkerConfig) {
       const platformToken = turnToken(config.token, turn.turnId, turn.leaseToken), env = config.env ?? process.env;
       writeFileSync(tokenFile, platformToken, { mode: 0o600 });
       const checkout = config.projects[turn.projectId] ?? process.cwd();
-      // Writers work in their task's own worktree; bounded turns read the checkout.
-      const worktree = lane === 'work' && turn.taskKey && config.worktrees ? await ensureWorktree({ checkout, taskKey: turn.taskKey, ...config.worktrees }) : null;
-      // The committed ceiling wins even over what the coordinator sent.
-      const grants = cappedBy(turn.grants, config.worktrees ? await committedCeiling(checkout, config.worktrees.base) : null);
+      // Announced to the coordinator on both sides, so a lease lost in between is known to have left the checkout itself unknown.
+      const admin: AdminHooks = {
+        begin: async () => { await call(`/worker/turns/${turn.turnId}/git-admin`, { ...lease, state: 'begin' }); state.adminOpen = true; },
+        end: async () => { await call(`/worker/turns/${turn.turnId}/git-admin`, { ...lease, state: 'end' }); state.adminOpen = false; },
+      };
+      // Writers work in their task's own worktree; a review reads a tree of its own, detached at the head under review, never the author's;
+      // other bounded turns read the checkout. A worktree that cannot be made safely fails the turn: nothing was run, so nothing is uncertain.
+      let worktree: Worktree | null = null, reviewTree: ReviewWorktree | null = null, grants = turn.grants;
+      try {
+        if (lane === 'work' && turn.taskKey && config.worktrees) worktree = await ensureWorktree({ checkout, taskKey: turn.taskKey, ...config.worktrees, admin });
+        else if (turn.kind === 'review' && turn.taskKey && turn.review && config.worktrees) reviewTree = await ensureReviewWorktree({ checkout, taskKey: turn.taskKey, reviewer: turn.review.reviewer, headSha: turn.review.headSha, projectId: turn.projectId, admin });
+        // The committed ceiling wins even over what the coordinator sent.
+        grants = cappedBy(turn.grants, config.worktrees ? await committedCeiling(checkout, config.worktrees.base) : null);
+      } catch (error) {
+        if (error instanceof LeaseLost || lost()) throw error;
+        await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'failed', stopReason: 'worktree-refused', summary: `The worktree could not be prepared safely; nothing was run. ${(error as Error).message}`.slice(0, 500) } });
+        return;
+      }
       const adapter = (turn.engine ? config.engines?.[turn.engine] : undefined) ?? config.engine;
       const toolProfile = lane === 'work' && grants.codeWrite !== 'none' ? 'write' : 'read-only';
       // Anything short of an unrestricted writer is a restriction someone has to hold the engine to.
@@ -127,11 +186,12 @@ export function createWorker(config: WorkerConfig) {
       let streamBytes = 0, streamCut = false;
       const keepLine = (line: string) => { const clean = redact(line); streamBytes += Buffer.byteLength(clean) + 1; if (streamBytes <= STEP_ARTIFACT_LIMITS.stream) stream.push(clean); else streamCut = true; };
       // Only an engine that can resume gets the session and the delta; every other one starts from the packet, which carries the same history.
-      const resume = turn.resume && adapter.capabilities.resume === 'id' ? turn.resume : null;
+      // A disposable host has no session to come back to: every turn there starts from its packet.
+      const resume = turn.resume && adapter.capabilities.resume === 'id' && !config.ephemeral ? turn.resume : null;
       const moved = resume?.baseSha && worktree && resume.baseSha !== worktree.baseCommit ? `\n\n# The base moved\nThe base branch was at ${resume.baseSha.slice(0, 10)} when this session last ran and is at ${worktree.baseCommit.slice(0, 10)} now. Bring your branch up to date before you continue.` : '';
       const result = await executeTurn({
         adapter, turnDir, env, timeoutMs: config.timeoutMs ?? 45 * 60_000, signal,
-        spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
+        spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? reviewTree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
         onSteps: steps => tracer.steps(steps),
         onLine: keepLine,
         // What a crash leaves behind is found by the next start of this worker.
@@ -145,7 +205,9 @@ export function createWorker(config: WorkerConfig) {
       await flush();
       const summary = result.summary ? redact(result.summary) : null;
       // The diff gate: whatever tool made a change, a path outside the write scope means nothing is published or reviewed.
-      const violations = worktree ? outsideWriteScope(grants, await changedPaths(worktree.path, worktree.baseCommit)) : [];
+      // Overlays the turn left as they were written are setup, not the agent's change.
+      const setup = worktree ? await untouchedOverlays(worktree.path) : [];
+      const violations = worktree ? outsideWriteScope(grants, (await changedPaths(worktree.path, worktree.baseCommit)).filter(file => !setup.includes(file))) : [];
       if (violations.length) {
         if (!lost()) await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'failed', stopReason: 'write-scope', summary: `Changed outside the write scope: ${violations.slice(0, 20).join(', ')}`, tokensIn: result.tokensIn, tokensOut: result.tokensOut, costMinor: Math.round(result.costUsd * 100) } });
         return;
@@ -156,8 +218,20 @@ export function createWorker(config: WorkerConfig) {
         ? await publishChange(config.publish.scm, { worktree: worktree.path, repository: config.publish.repository, branch: worktree.branch, base: config.publish.base, title, body: summary ?? '' }, config.publish.exec)
           .catch((error: Error) => { console.error(`Publish failed: ${error.message}`); return null; })
         : null;
+      // On a disposable host whatever is not pushed is gone with the host, so the branch is pushed however the turn ended, never with force.
+      let unpushed: string | null = null;
+      if (config.ephemeral && worktree && config.publish && !published) {
+        const target = config.publish;
+        unpushed = await target.exec('git', ['-C', worktree.path, 'push', '--set-upstream', 'origin', `${worktree.branch}:${worktree.branch}`], { cwd: worktree.path }).then(() => null, (error: Error) => error.message);
+      }
+      if (unpushed !== null) {
+        if (!lost()) await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'failed', stopReason: 'push-failed', summary: `The branch could not be pushed from a disposable host, so this turn's work is not kept: ${redact(unpushed)}`.slice(0, 500), tokensIn: result.tokensIn, tokensOut: result.tokensOut, costMinor: Math.round(result.costUsd * 100) } });
+        return;
+      }
       // With the lease gone the coordinator has already marked the turn uncertain; nothing more may be reported.
       if (!lost()) await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: {
+        // The head the review worktree was verified at before the engine ran, and where it is now: a verdict counts only if both are the task's head.
+        ...(reviewTree ? { headShaStart: reviewTree.headSha, headShaEnd: await headSha(reviewTree.path) } : {}),
         state: result.state, stopReason: result.stopReason, ...(summary ? { summary } : {}), tokensIn: result.tokensIn, tokensOut: result.tokensOut, costMinor: Math.round(result.costUsd * 100),
         ...(worktree ? { headSha: await headSha(worktree.path) } : {}), ...(published ? { prUrl: published.url } : {}),
       } });
@@ -168,12 +242,20 @@ export function createWorker(config: WorkerConfig) {
     const lease: Lease = { workerId: config.workerId, leaseToken: turn.leaseToken };
     const abort = new AbortController();
     let leaseLost = false;
+    const state: TurnState = { adminOpen: false };
+    // A lease lost while the checkout's shared git state was being changed leaves the checkout unknown: this process claims nothing more for it.
+    const unknown = () => { if (state.adminOpen) unknownCheckouts.add(turn.projectId); };
     // Fail-stop: a heartbeat that cannot be confirmed ends the process, because ownership is then unknown.
-    const heartbeat = setInterval(() => { call(`/worker/turns/${turn.turnId}/heartbeat`, lease).catch(() => { leaseLost = true; abort.abort(); }); }, turn.leaseMs / 3);
+    const heartbeat = setInterval(() => { call(`/worker/turns/${turn.turnId}/heartbeat`, lease).catch(() => { leaseLost = true; unknown(); abort.abort(); }); }, turn.leaseMs / 3);
     try {
       if (turn.kind === 'deliver') await runDelivery(turn, lease);
       else if (turn.kind === 'capture') await runCapture(turn, lease, () => leaseLost);
-      else await runEngine(turn, lane, lease, abort.signal, () => leaseLost);
+      else await runEngine(turn, lane, lease, abort.signal, () => leaseLost, state);
+      // A merged task is over: its review worktrees go.
+      if (turn.kind === 'deliver') await cleanReviews().catch(() => []);
+    } catch (error) {
+      if (error instanceof LeaseLost) unknown();
+      throw error;
     } finally { clearInterval(heartbeat); busy[lane]--; }
   }
 
@@ -181,7 +263,9 @@ export function createWorker(config: WorkerConfig) {
     // Claims one turn if a lane is free; returns whether anything was claimed.
     async tick(): Promise<boolean> {
       const free = Object.fromEntries((Object.keys(busy) as Lane[]).map(lane => [lane, config.lanes[lane] - busy[lane]]));
-      const { turn } = await call<{ turn: Claimed | null }>('/worker/claim', { workerId: config.workerId, free, projects: Object.keys(config.projects), isolation: config.isolation ?? 'isolated', ...(config.ready ? { ready: config.ready } : {}) });
+      const projects = await servable();
+      if (projects.length === 0) return false;
+      const { turn } = await call<{ turn: Claimed | null }>('/worker/claim', { workerId: config.workerId, free, projects, isolation: config.isolation ?? 'isolated', ...(config.ready ? { ready: config.ready } : {}) });
       if (!turn) return false;
       const lane: Lane = turn.kind === 'work' ? 'work' : turn.kind === 'deliver' || turn.kind === 'publish' ? 'deliver' : 'bounded';
       busy[lane]++;
@@ -194,6 +278,10 @@ export function createWorker(config: WorkerConfig) {
     sweep: () => sweepOrphans(config.stateDir, record => call(`/worker/turns/${record.turnId}/orphaned`, { workerId: config.workerId, leaseToken: record.leaseToken })),
     async loop() { await this.sweep().catch(() => []); while (!stopped) { if (!await this.tick().catch(() => false)) await new Promise(resolve => setTimeout(resolve, config.pollMs ?? 2000)); } },
     idle: () => Promise.all([...running]).then(() => undefined),
+    cleanReviews,
+    // Why this worker serves nothing for a project, by project: a disposable host whose repository does not authorize publishing.
+    refusals: async () => { await servable(); return Object.fromEntries(refused); },
+    quarantinedCheckouts: () => [...unknownCheckouts],
     stop() { stopped = true; },
   };
 }

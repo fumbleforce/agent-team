@@ -10,12 +10,14 @@ export const DEMO_LOGIN = { email: 'demo@example.com', password: 'demo-password-
 // The sample organization drawn on the design boards, so screens can be built and reviewed against them.
 // A deployment holds one organization, so the boards' second one, Nordlys Studio, is here as a project that is not
 // software: documents instead of a repository, checks instead of tests, a tab of its own and its own connections.
-export async function seedDemo(context: Context): Promise<void> {
+// `empty` stops after the organization and its owner: what a person sees right after their own first sign-in.
+export async function seedDemo(context: Context, options: { empty?: boolean } = {}): Promise<void> {
   const db = context.storage.db;
   const at = context.now();
   const userId = newId();
   await db.insertInto('org').values({ id: newId(), name: 'Acme', accent: 'amber', currency: 'EUR', settings: '{}', created_at: at }).execute();
   await db.insertInto('users').values({ id: userId, email: DEMO_LOGIN.email, name: 'Jorgen F', password_hash: await hashPassword(DEMO_LOGIN.password), org_role: 'owner', status: 'active', created_at: at, last_login_at: null }).execute();
+  if (options.empty) return;
 
   const teams = { product: newId(), mobile: newId(), studio: newId(), desk: newId(), nordlys: newId() };
   await db.insertInto('teams').values([
@@ -68,6 +70,11 @@ export async function seedDemo(context: Context): Promise<void> {
     say(maren, 19, 'decision', 'Ship it as revised: key on mount, 8 s timeout re-enable. Cleo owns the hang test (CK-30). The press animation is polish, not 2.14 — moved to backlog.'),
     say(finn, 20, 'note', 'Deploy window opens 16:00. Secrets rotated; ping me if you want the load test pulled forward.'),
   ]).execute();
+
+  // One call the team may not make alone, so the queue for a person is never empty in the demo.
+  const escalation = say(maren, 20, 'decision', 'Finn wants the load test pulled forward, which moves the 2.14 deploy window by a day. That is outside what we may decide: keep Thursday and test after, or test first and ship Friday?');
+  await db.insertInto('messages').values(escalation).execute();
+  await db.insertInto('decisions').values({ id: newId(), project_id: checkout.id, thread_id: threadId, message_id: escalation.id, deliberation_id: null, kind: 'direction', outcome: 'escalated', summary: 'Keep the Thursday deploy and load-test after, or test first and ship Friday? Moving the window is outside the team’s bounds.', needs_human: true, resolved_by_user: null, resolved_at: null, created_at: at }).execute();
 
   const knowledge = createKnowledge(context);
   const scope = { type: 'subproject' as const, id: checkout.id };

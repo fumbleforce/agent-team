@@ -6,6 +6,9 @@
   "bin": {
     "agent-team": "bin/agent-team.ts"
   },
+  "files": [
+    "dist"
+  ],
   "description": "Provider-neutral agent teams: one coordinator on one port, workers that run one engine session per agent, and adapters for engines, source hosts, trackers, storage and hosting",
   "engines": {
     "node": ">=24"
@@ -17,6 +20,10 @@
     "lint": "node scripts/lint-neutral.ts && node scripts/lint-ui.ts && node scripts/lint-sql.ts",
     "check": "npm run typecheck && npm run biome && npm run lint && npm run test:web",
     "build:web": "npm run build -w @agent-team/web",
+    "build:dist": "node scripts/build-dist.ts",
+    "prepack": "npm run build:web && node scripts/build-dist.ts",
+    "postpack": "node scripts/build-dist.ts --restore",
+    "test:pack": "node scripts/test-pack.ts",
     "coordinator": "node packages/coordinator/src/main.ts",
     "worker": "node packages/worker/src/main.ts",
     "up": "node bin/agent-team.ts up",
@@ -35,6 +42,7 @@
     "@hono/node-server": "^2.1.1",
     "hono": "^4.13.8",
     "kysely": "^0.29.6",
+    "openid-client": "^6.8.8",
     "zod": "^4.6.5"
   },
   "devDependencies": {

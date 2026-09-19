@@ -20,6 +20,8 @@ To run a team on a checkout of your own:
 node bin/agent-team.ts up /path/to/checkout --engine claude
 ```
 
+The first time you sign in, the app opens on a guide that takes you through it step by step: create a project, connect where the code lives and your task board, choose how the models are paid for, and start a worker on the machine that has the checkout (the guide writes the exact `agent-team work …` command and makes its token). Anything that later needs a person — a decision outside the team's bounds, work whose outcome is unknown, a merge that was cut off — waits under **Needs you**.
+
 You can also create a project in the app (the button under the project list) and connect its code host, task board, chat and documents from its Integrations page, which walks through each product's setup.
 
 `up` starts the coordinator and one worker on this machine, registers the checkout as a project with the default team, and prints a one-time link for creating the owner account. Everything is served from `http://127.0.0.1:4310`.

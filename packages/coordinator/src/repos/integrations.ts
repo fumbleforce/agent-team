@@ -2,6 +2,7 @@ import { z } from 'zod';
 import { newId } from '@agent-team/protocol';
 import { HttpError, notFound, type Context } from '../context.ts';
 import type { Turns } from '../runtime/turns.ts';
+import { indexMessage } from '../knowledge/indexing.ts';
 
 export const CATEGORIES = ['issue-boards', 'code', 'comms', 'storage', 'ai-workspaces', 'media', 'business', 'other'] as const;
 export const ConnectionBody = z.object({
@@ -107,7 +108,9 @@ export function createIntegrations(context: Context, turns: Turns) {
       if (!discussionThreadId) throw new HttpError(409, 'handoff', 'The project has no discussion to hand it to');
       const published = await storage.transaction(async tx => {
         await tx.updateTable('handoffs').set({ state: 'handed', target_type: 'team', target_id: null }).where('id', '=', handoffId).execute();
-        await tx.insertInto('messages').values({ id: newId(now()), thread_id: discussionThreadId, author_kind: 'user', author_id: userId, kind: 'handoff', body: `Handoff from ${handoff.source}: ${handoff.title}\n\n${handoff.summary}`, payload: JSON.stringify({ handoffId, ...(handoff.attachment_id ? { attachmentId: handoff.attachment_id } : {}) }), created_at: now() }).execute();
+        const messageId = newId(now()), text = `Handoff from ${handoff.source}: ${handoff.title}\n\n${handoff.summary}`;
+        await tx.insertInto('messages').values({ id: messageId, thread_id: discussionThreadId, author_kind: 'user', author_id: userId, kind: 'handoff', body: text, payload: JSON.stringify({ handoffId, ...(handoff.attachment_id ? { attachmentId: handoff.attachment_id } : {}) }), created_at: now() }).execute();
+        await indexMessage(storage, tx, { id: messageId, threadId: discussionThreadId, body: text });
         return events.append(tx, [{ type: 'message.posted', actorKind: 'user', userId, projectId: handoff.project_id, threadId: discussionThreadId, payload: { kind: 'handoff' } }, { type: 'handoff.handed', actorKind: 'user', userId, projectId: handoff.project_id, payload: { handoffId } }]);
       });
       events.published(published);

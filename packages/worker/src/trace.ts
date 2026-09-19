@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process';
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import { lstatSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { promisify } from 'node:util';
 import { STEP_ARTIFACT_LIMITS, type StepArtifactKind, type TraceStepInput } from '@agent-team/protocol';
@@ -77,9 +77,10 @@ export function createTracer(options: { worktree: string | null; turnDir: string
   }
 
   // Screenshots the engine's browser tool left in the turn directory: one step and one image each, oldest first.
+  // Looked at, never followed: a link the engine left there would otherwise upload whatever it points to.
   async function screenshots(dir: string) {
-    if (!existsSync(dir)) return;
-    const files = readdirSync(dir).filter(name => IMAGES[path.extname(name).toLowerCase()]).map(name => ({ name, file: path.join(dir, name) })).map(entry => ({ ...entry, stat: statSync(entry.file) }))
+    if (!lstatSync(dir, { throwIfNoEntry: false })?.isDirectory()) return;
+    const files = readdirSync(dir).filter(name => IMAGES[path.extname(name).toLowerCase()]).map(name => ({ name, file: path.join(dir, name) })).map(entry => ({ ...entry, stat: lstatSync(entry.file) }))
       .filter(entry => entry.stat.isFile() && entry.stat.size > 0 && entry.stat.size <= STEP_ARTIFACT_LIMITS.image).sort((a, b) => a.stat.mtimeMs - b.stat.mtimeMs || a.name.localeCompare(b.name)).slice(0, MAX_SCREENSHOTS);
     for (const entry of files) {
       const seq = append({ kind: 'read', title: redact(`Screenshot ${entry.name}`), detail: `${Math.ceil(entry.stat.size / 1024)} KB`, status: 'ok' });

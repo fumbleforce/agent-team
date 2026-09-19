@@ -34,7 +34,7 @@ export interface EventsTable { seq: Generated<number>; id: string; at: Ms; type:
 export interface AttachmentsTable { id: string; sha256: string; bytes: number; mime: string; name: string; storage_kind: string; storage_key: string; created_by: string | null; created_at: Ms }
 export interface LinksTable { from_type: string; from_id: string; to_type: string; to_id: string; rel: string; created_at: Ms }
 
-export interface Schema extends RuntimeSchema, KnowledgeSchema, DeliberationSchema, DeliverySchema, ChecksSchema, ProposalsSchema, IssuesSchema, IntegrationsSchema, ProductSchema, SchedulesSchema, EmbeddingsSchema, MentionsSchema, SessionsSchema, OrgAuthSchema {
+export interface Schema extends RuntimeSchema, KnowledgeSchema, DeliberationSchema, DeliverySchema, ChecksSchema, ProposalsSchema, IssuesSchema, IntegrationsSchema, ProductSchema, SchedulesSchema, EmbeddingsSchema, MentionsSchema, SessionsSchema, OrgAuthSchema, SyncSchema {
   org: OrgTable; users: UsersTable; identities: IdentitiesTable; sessions: SessionsTable; invites: InvitesTable;
   project_members: ProjectMembersTable; setup_tokens: SetupTokensTable; machine_tokens: MachineTokensTable;
   projects: ProjectsTable; milestones: MilestonesTable;
@@ -49,20 +49,21 @@ export const BOOLEAN_COLUMNS: ReadonlySet<string> = new Set(['is_pm', 'revised',
 
 export interface WorkersTable { id: string; name: string; lanes: Json; isolation: string; providers: Json; projects: Json; last_seen_at: Ms }
 export interface WorkItemsTable { id: string; agent_id: string; project_id: string; kind: string; lane: string; task_id: string | null; thread_id: string | null; priority_class: number; state: string; defer_reason: string | null; not_before: Ms | null; dedupe_key: string | null; cause_event_id: string | null; created_at: Ms }
-export interface TurnsTable { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; lane: string; access: string; state: string; stop_reason: string | null; worker_id: string; lease_token_hash: string; lease_until: Ms; grants: Json; summary: string | null; tokens_in: number; tokens_out: number; cost_minor: number; started_at: Ms; finished_at: Ms | null; provider_id: string | null; model: string | null; session_id: string | null; context_mode: string | null }
+export interface TurnsTable { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; lane: string; access: string; state: string; stop_reason: string | null; worker_id: string; lease_token_hash: string; lease_until: Ms; grants: Json; summary: string | null; tokens_in: number; tokens_out: number; cost_minor: number; started_at: Ms; finished_at: Ms | null; provider_id: string | null; model: string | null; session_id: string | null; context_mode: string | null; git_admin: string | null }
 export interface TraceStepsTable { turn_id: string; seq: number; at: Ms; kind: string; title: string; detail: string | null; status: string; artifact_id: string | null }
 export interface QuarantinesTable { id: string; scope: string; ref_id: string; turn_id: string; reason: string; opened_at: Ms; released_by: string | null; released_at: Ms | null }
 
 export interface RuntimeSchema { workers: WorkersTable; work_items: WorkItemsTable; turns: TurnsTable; trace_steps: TraceStepsTable; quarantines: QuarantinesTable }
 
-export interface CostEntriesTable { id: string; turn_id: string | null; agent_id: string | null; project_id: string; provider_id: string | null; billing_kind: string; tokens_in: number; tokens_out: number; amount_minor: number; currency: string; at: Ms }
+export interface CostEntriesTable { id: string; turn_id: string | null; agent_id: string | null; project_id: string; provider_id: string | null; billing_kind: string; tokens_in: number; tokens_out: number; amount_minor: number; currency: string; rate: Generated<number>; usd_minor: Generated<number>; at: Ms }
 export interface CostDailyTable { day: string; project_id: string; agent_id: string; amount_minor: number; tokens: number }
 export interface BudgetsTable { scope: string; scope_id: string; period: string; amount_minor: number; warned_period: string | null }
 export interface KbPagesTable { id: string; scope_type: string; scope_id: string; path: string; title: string; current_rev: number; archived_at: Ms | null; updated_at: Ms }
 export interface KbRevisionsTable { page_id: string; rev_no: number; body: string; author_kind: string; author_id: string | null; note: string | null; created_at: Ms }
 export interface KbReadsTable { page_id: string; rev_no: number; agent_id: string; turn_id: string | null; at: Ms }
 export interface MemoriesTable { id: string; scope_type: string; scope_id: string; agent_id: string | null; type: string; title: string; body: string; status: string; hits: number; last_hit_at: Ms | null; promoted_page_id: string | null; created_at: Ms }
-export interface SearchDocsTable { doc_type: string; doc_id: string; scope_type: string; scope_id: string; title: string; body: string }
+// Written only through the adapter's SearchPort. `tokens` is what the native index reads; `ref` is where a hit leads.
+export interface SearchDocsTable { doc_type: string; doc_id: string; scope_type: string; scope_id: string; title: string; body: string; ref: string | null; tokens: string }
 
 export interface KnowledgeSchema { cost_entries: CostEntriesTable; cost_daily: CostDailyTable; budgets: BudgetsTable; kb_pages: KbPagesTable; kb_revisions: KbRevisionsTable; kb_reads: KbReadsTable; memories: MemoriesTable; search_docs: SearchDocsTable }
 
@@ -105,6 +106,12 @@ export interface ProductSchema { product_envs: ProductEnvsTable; snapshots: Snap
 export interface SchedulesTable { id: string; project_id: string; kind: string; interval_ms: number; next_at: Ms; last_at: Ms | null }
 
 export interface SchedulesSchema { schedules: SchedulesTable }
+
+// Where a local entity lives in another system, and how far each poll got. `scope_id` is a connection or a project.
+export interface ExternalRefsTable { entity_type: string; entity_id: string; system: string; external_id: string; url: string | null; synced_at: Ms; remote_version: string | null }
+export interface SyncCursorsTable { scope_id: string; resource: string; cursor: string | null; last_ok_at: Ms | null; error: string | null; failing_since: Ms | null }
+
+export interface SyncSchema { external_refs: ExternalRefsTable; sync_cursors: SyncCursorsTable }
 
 export interface EmbeddingsTable { doc_type: string; doc_id: string; model: string; vector: Json }
 

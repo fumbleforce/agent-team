@@ -2,6 +2,7 @@ import { newId, type MentionExpects, type MentionTarget } from '@agent-team/prot
 import type { Tx } from '@agent-team/storage';
 import { HttpError, type Context } from '../context.ts';
 import type { Turns } from './turns.ts';
+import { indexMessage } from '../knowledge/indexing.ts';
 
 export const MAX_MENTION_DEPTH = 2;
 export const MAX_WAKES_PER_HOUR = 2;
@@ -52,6 +53,7 @@ export function createMentions(context: Context, turns: Turns) {
       const messageId = 'id' in input.message ? input.message.id : newId(now());
       if ('body' in input.message) {
         await tx.insertInto('messages').values({ id: messageId, thread_id: input.threadId, author_kind: input.author.kind, author_id: input.author.id, kind: 'question', body: input.message.body, payload: JSON.stringify({ mentions: input.targets, expects: input.expects }), created_at: now() }).execute();
+        await indexMessage(storage, tx, { id: messageId, threadId: input.threadId, body: input.message.body });
         drafts.push({ type: 'message.posted', actorKind: input.author.kind, userId: input.author.kind === 'user' ? input.author.id : null, agentId: input.author.kind === 'agent' ? input.author.id : null, projectId: input.projectId, threadId: input.threadId, payload: { messageId, kind: 'question' } });
       }
       const planned = new Map<string, number>();

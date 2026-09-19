@@ -4,7 +4,7 @@ import { Hono, type Context as Hc } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
-import { AcceptInviteBody, CaptureBody, InviteBody, LoginBody, newId, ProductEnvBody, PostMessageBody, SetupBody, TaskState, type StoredEvent } from '@agent-team/protocol';
+import { AcceptInviteBody, CaptureBody, InviteBody, LoginBody, newId, ProductEnvBody, PostMessageBody, SetupBody, TaskState, type ProjectView, type StoredEvent, type ThreadMessagesView } from '@agent-team/protocol';
 import { createAccounts } from '../auth/accounts.ts';
 import { createOidc } from '../auth/oidc.ts';
 import { can, canSeeProject, type Action, type Viewer } from '../auth/rbac.ts';
@@ -14,6 +14,8 @@ import { registerOrgRoutes } from './orgRoutes.ts';
 import { registerRuleRoutes } from './ruleRoutes.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
 import { mountSetupRoutes } from './setupRoutes.ts';
+import { mountOnboardingRoutes } from './onboardingRoutes.ts';
+import { createNeedsYou, type NeedsYouKind } from '../runtime/needsYou.ts';
 import { mountProviderRoutes } from './providerSetupRoutes.ts';
 import { SCM_KINDS } from '../../../../adapters/scm/index.ts';
 import { TRACKER_KINDS } from '../../../../adapters/tracker/index.ts';
@@ -27,6 +29,7 @@ import { createMentions } from '../runtime/mentions.ts';
 import { createKnowledge, httpEmbedder, type Scope } from '../knowledge/knowledge.ts';
 import { createCosts } from '../costs/costs.ts';
 import { createChecks } from '../checks/checks.ts';
+import { createCursors } from '../sync/cursors.ts';
 import { createProposals } from '../runtime/proposals.ts';
 import { createIssues } from '../repos/issues.ts';
 import { createCaptures } from '../runtime/captures.ts';
@@ -34,7 +37,7 @@ import { createSessions } from '../runtime/sessions.ts';
 import { createTraceStore } from '../runtime/traceStore.ts';
 import { createVersionedDocs } from '../repos/versionedDocs.ts';
 import { AttachHandoffBody, ConnectionBody, createIntegrations, HandoffBody, HandoffResultBody } from '../repos/integrations.ts';
-import { ClaimBody, FinishBody, LeaseBody, SessionBody, StepArtifactKind, STREAM_ARTIFACT_SEQ, CreateIssueBody, MemoryActionBody, RegisterProjectBody, CreateProjectBody, SeatProviderBody, StepsBody, WritePageBody } from '@agent-team/protocol';
+import { ClaimBody, FinishBody, GitAdminBody, LeaseBody, TaskStatesBody, SessionBody, StepArtifactKind, STREAM_ARTIFACT_SEQ, CreateIssueBody, MemoryActionBody, RegisterProjectBody, CreateProjectBody, SeatProviderBody, StepsBody, WritePageBody } from '@agent-team/protocol';
 
 type Env = { Variables: { viewer: Viewer } };
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.json': 'application/json', '.png': 'image/png' };
@@ -86,6 +89,8 @@ export function createApp(context: Context) {
   });
 
   app.get('/health', c => c.json({ ok: true }));
+  // A worker started by hand asks which project a name stands for.
+  app.get('/machine/projects/:slug', async c => { await machine(c); const row = await context.storage.db.selectFrom('projects').select(['id', 'name']).where('slug', '=', c.req.param('slug')).executeTakeFirst(); if (!row) throw new HttpError(404, 'not_found', 'No such project'); return c.json(row); });
   app.post('/machine/projects', async c => {
     await machine(c);
     const id = await workspace.registerProject(await body(c, RegisterProjectBody));
@@ -104,6 +109,13 @@ export function createApp(context: Context) {
     return c.json({ turn: await turns.claim(claim) });
   });
   app.post('/worker/turns/:id/heartbeat', async c => { const lease = await body(c, LeaseBody); await turns.heartbeat(c.req.param('id'), lease.workerId, lease.leaseToken); return c.json({ ok: true }); });
+  app.post('/worker/turns/:id/git-admin', async c => { const input = await body(c, GitAdminBody); await turns.gitAdmin(c.req.param('id'), input.workerId, input.leaseToken, input.state); return c.json({ ok: true }); });
+  // Which of the tasks a worker keeps review worktrees for are over: keys and states only, for the project the worker serves.
+  app.post('/worker/tasks/states', async c => {
+    const input = await body(c, TaskStatesBody);
+    const rows = input.taskKeys.length ? await context.storage.db.selectFrom('tasks').select(['key', 'state']).where('project_id', '=', input.projectId).where('key', 'in', input.taskKeys).execute() : [];
+    return c.json({ states: Object.fromEntries(rows.map(row => [row.key, row.state])) });
+  });
   app.post('/worker/turns/:id/steps', async c => { const input = await body(c, StepsBody); await turns.steps(c.req.param('id'), input.workerId, input.leaseToken, input.steps); return c.json({ ok: true }); });
   app.post('/worker/turns/:id/delivery', async c => {
     const lease = await body(c, LeaseBody);
@@ -141,6 +153,8 @@ export function createApp(context: Context) {
   app.post('/worker/turns/:id/finish', async c => { const input = await body(c, FinishBody); const finished = await turns.finish(c.req.param('id'), input.workerId, input.leaseToken, input.outcome);
     // A work turn that reported ready_for_review hands its head to the reviewers.
     if (finished.reviewTaskId && input.outcome.headSha) await reviews.request(finished.reviewTaskId, input.outcome.headSha);
+    // A verdict recorded in this turn counts only now, and only if the head the worker verified is the task's head.
+    await reviews.verify(c.req.param('id'), { start: input.outcome.headShaStart, end: input.outcome.headShaEnd });
     return c.json({ ok: true });
   });
 
@@ -214,7 +228,7 @@ export function createApp(context: Context) {
       board: await workspace.board(project.id),
       discussionThreadId: discussion?.id ?? null,
       seq: await context.events.head(),
-    });
+    } satisfies ProjectView);
   });
   app.post('/api/tasks/:id/state', async c => {
     const task = await context.storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['projects.id', 'projects.parent_id']).where('tasks.id', '=', c.req.param('id')).executeTakeFirst();
@@ -246,7 +260,7 @@ export function createApp(context: Context) {
   };
   app.get('/api/threads/:id/messages', async c => {
     const thread = await threadFor(c, 'project.read');
-    return c.json({ ...await (async () => { const page = pageOf(c), rows = await workspace.messages(thread.id, { after: page.after ?? 0, limit: page.limit + 1 }); return { messages: rows.slice(0, page.limit), next: rows.length > page.limit ? rows[page.limit - 1]!.seq : null }; })(), seq: await context.events.head() });
+    return c.json({ ...await (async () => { const page = pageOf(c), rows = await workspace.messages(thread.id, { after: page.after ?? 0, limit: page.limit + 1 }); return { messages: rows.slice(0, page.limit), next: rows.length > page.limit ? rows[page.limit - 1]!.seq : null }; })(), seq: await context.events.head() } satisfies ThreadMessagesView);
   });
   app.post('/api/threads/:id/messages', async c => {
     const thread = await threadFor(c, 'project.contribute');
@@ -313,18 +327,26 @@ export function createApp(context: Context) {
     return c.json({ lanes, busy: lanes.filter(lane => lane.now.length > 0).length, seq: await context.events.head() });
   });
 
-  // What reaches a human: escalated decisions, quarantines and blocked tasks of the projects they can see.
+  // What reaches a human, in one queue, limited to the projects they can see. Settling anything in it needs the right to decide for that project.
+  const needsYou = createNeedsYou(context, turns);
+  const rootOf = async (projectId: string) => { const row = await context.storage.db.selectFrom('projects').select(['id', 'parent_id']).where('id', '=', projectId).executeTakeFirst(); return row?.parent_id ?? projectId; };
   app.get('/api/needs-you', async c => {
-    const viewer = c.get('viewer');
-    const db = context.storage.db;
-    const decisions = await db.selectFrom('decisions').select(['id', 'project_id', 'thread_id', 'summary', 'created_at']).where('needs_human', '=', true).where('resolved_at', 'is', null).execute();
-    const blocked = await db.selectFrom('tasks').select(['id', 'project_id', 'key', 'title', 'state', 'blocked_reason']).where('state', 'in', ['blocked', 'quarantined']).execute();
-    const roots = new Map((await db.selectFrom('projects').select(['id', 'parent_id']).execute()).map(row => [row.id, row.parent_id ?? row.id]));
-    const visible = <T extends { project_id: string }>(rows: T[]) => rows.filter(row => canSeeProject(viewer, roots.get(row.project_id) ?? row.project_id));
-    return c.json({ decisions: visible(decisions), tasks: visible(blocked) });
+    const viewer = c.get('viewer'), items = [];
+    for (const item of await needsYou.list()) if (canSeeProject(viewer, await rootOf(item.projectId))) items.push({ ...item, canDecide: can(viewer, 'project.decide', await rootOf(item.projectId)) });
+    return c.json({ items });
   });
+  const deciding = async (c: Hc<Env>, kind: NeedsYouKind) => {
+    const projectId = await needsYou.projectOf(kind, c.req.param('id') ?? '');
+    if (!projectId) throw new HttpError(404, 'not_found', 'That is already settled');
+    allow(c, 'project.decide', await rootOf(projectId));
+    return c.get('viewer').userId;
+  };
+  app.post('/api/decisions/:id/resolve', async c => { const userId = await deciding(c, 'decision'); const input = await body(c, z.object({ answer: z.string().trim().min(1).max(4000) })); await needsYou.resolveDecision(userId, c.req.param('id')!, input.answer); return c.json({ ok: true }); });
+  app.post('/api/quarantines/:id/release', async c => { const userId = await deciding(c, 'quarantine'); const input = await body(c, z.object({ resolution: z.enum(['continue', 'stop']), note: z.string().trim().min(1).max(1000) })); await needsYou.releaseQuarantine(userId, c.req.param('id')!, input.resolution, input.note); return c.json({ ok: true }); });
+  app.post('/api/deliveries/:id/reconcile', async c => { const userId = await deciding(c, 'delivery'); const input = await body(c, z.object({ merged: z.boolean() })); await needsYou.reconcileDelivery(userId, c.req.param('id')!, input.merged); return c.json({ ok: true }); });
 
   app.get('/api/projects/:slug/checks', async c => { const { project } = await projectFor(c, 'project.read'); return c.json(await checks.matrix(project.id)); });
+  app.get('/api/projects/:slug/checks/health', async c => { const { project } = await projectFor(c, 'project.read'); return c.json(await checks.health(project.id)); });
   // A JUnit report uploaded by a person or a pipeline step; the body is the XML itself.
   app.post('/api/projects/:slug/checks/:suite', async c => {
     const { project } = await projectFor(c, 'project.contribute');
@@ -377,6 +399,7 @@ export function createApp(context: Context) {
     return c.json(await captures.request(c.get('viewer').userId, project, await workspace.pm(project.id), c.req.param('envId'), input.viewport));
   });
 
+  mountOnboardingRoutes(app, { context, canAdmin: c => can((c as Hc<Env>).get('viewer'), 'org.members'), userId: c => (c as Hc<Env>).get('viewer').userId });
   mountSetupRoutes(app, { context, integrations, projectFor: (c, action) => projectFor(c as Hc<Env>, action), body: (c, schema) => body(c as Hc<Env>, schema), userId: c => (c as Hc<Env>).get('viewer').userId });
   // What the installed adapters offer, so the app never has to name a provider itself.
   app.get('/api/adapters', c => c.json({ scm: SCM_KINDS, trackers: TRACKER_KINDS }));
@@ -398,7 +421,7 @@ export function createApp(context: Context) {
     return c.json({ id, slug });
   });
   app.post('/api/projects/:slug/integrations/:id/remove', async c => { const { project } = await projectFor(c, 'project.configure'); await integrations.disconnect(c.get('viewer').userId, project.id, c.req.param('id')); return c.json({ ok: true }); });
-  app.get('/api/projects/:slug/integrations', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ connections: await integrations.connections(project.id), handoffs: await integrations.handoffs(project.id) }); });
+  app.get('/api/projects/:slug/integrations', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ connections: await integrations.connections(project.id), handoffs: await integrations.handoffs(project.id), sync: await createCursors(context).status(project.id) }); });
   app.post('/api/projects/:slug/integrations', async c => { const { project } = await projectFor(c, 'project.configure'); return c.json({ id: await integrations.connect(c.get('viewer').userId, project.id, await body(c, ConnectionBody)) }); });
   app.post('/api/projects/:slug/handoffs', async c => { const { project } = await projectFor(c, 'project.contribute'); return c.json({ id: await integrations.receive(c.get('viewer').userId, project.id, await body(c, HandoffBody)) }); });
   app.post('/api/projects/:slug/handoffs/:id/hand', async c => {

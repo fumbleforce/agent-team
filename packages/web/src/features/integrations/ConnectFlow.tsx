@@ -11,7 +11,8 @@ export const CATEGORY: Record<string, string> = { code: 'Code', 'issue-boards': 
 
 // Pick what to connect, follow its steps, check that it works, connect. Secrets are never typed here:
 // each entry says which variable to set and on which machine, and the check tells whether it is there.
-export function ConnectFlow({ slug, connectedKinds, onDone }: { slug: string; connectedKinds: string[]; onDone(): void }) {
+// `only` narrows the choice to some categories and `label` names the button, so a guide can ask for one thing at a time.
+export function ConnectFlow({ slug, connectedKinds, onDone, only, label = '+ Connect something' }: { slug: string; connectedKinds: string[]; onDone(): void; only?: string[]; label?: string }) {
   const catalog = useResource<{ entries: CatalogEntry[] }>('/api/integrations/catalog');
   const [open, setOpen] = useState(false), [entry, setEntry] = useState<CatalogEntry | null>(null);
   const [errors, setErrors] = useState<Record<string, string>>({}), [check, setCheck] = useState<{ ok: boolean; message: string } | null>(null), [busy, setBusy] = useState(false);
@@ -31,9 +32,9 @@ export function ConnectFlow({ slug, connectedKinds, onDone }: { slug: string; co
     } finally { setBusy(false); }
   }
 
-  const groups = Object.keys(CATEGORY).map(key => ({ key, items: catalog.data?.entries.filter(item => item.category === key) ?? [] })).filter(group => group.items.length);
+  const groups = Object.keys(CATEGORY).filter(key => !only || only.includes(key)).map(key => ({ key, items: catalog.data?.entries.filter(item => item.category === key) ?? [] })).filter(group => group.items.length);
   return (
-    <Dialog open={open} onOpenChange={next => { setOpen(next); if (!next) pick(null); }} title={entry ? `Connect ${entry.title}` : 'Connect something'} description={entry ? entry.summary : 'Pick what this project should work with. Each one walks you through its setup.'} trigger={<Button variant="primary">+ Connect something</Button>}
+    <Dialog open={open} onOpenChange={next => { setOpen(next); if (!next) pick(null); }} title={entry ? `Connect ${entry.title}` : 'Connect something'} description={entry ? entry.summary : 'Pick what this project should work with. Each one walks you through its setup.'} trigger={<Button variant="primary">{label}</Button>}
       footer={entry && (
         <div className="flex grow items-center gap-2">
           <Button variant="ghost" onClick={() => pick(null)}>← Back</Button>

@@ -11,15 +11,17 @@ import { LibraryPage } from './features/org/LibraryPage';
 import { ProjectSettingsPage } from './features/settings/ProjectSettingsPage';
 import { AuthPage, MembersPage } from './features/settings/SettingsPages';
 import { ProposalsPage } from './features/proposals/ProposalsPage';
+import { NeedsYouPage } from './features/needs/NeedsYouPage';
+import { WelcomePage } from './features/welcome/WelcomePage';
 import { startStream } from './data/stream';
 import { useResource } from './data/useResource';
 import { Gallery } from './dev/Gallery';
 import { ProjectPage } from './features/project/ProjectPage';
 import { InvitePage, LoginPage, SetupPage } from './features/session/SessionPages';
-import { CenteredPanel, CommandPalette } from './patterns';
+import { CommandPalette } from './patterns';
 import './tokens.css';
 
-const SCREENS = [{ href: '/org', label: 'Organization' }, { href: '/roles', label: 'Roles' }, { href: '/proposals', label: 'Team proposals' }, { href: '/costs', label: 'Costs' }, { href: '/settings/members', label: 'Members', note: 'settings' }, { href: '/settings/auth', label: 'Sign-in', note: 'settings' }, { href: '/audit', label: 'Audit log' }];
+const SCREENS = [{ href: '/welcome', label: 'Get started' }, { href: '/needs-you', label: 'Needs you' }, { href: '/org', label: 'Organization' }, { href: '/roles', label: 'Roles' }, { href: '/proposals', label: 'Team proposals' }, { href: '/costs', label: 'Costs' }, { href: '/settings/members', label: 'Members', note: 'settings' }, { href: '/settings/auth', label: 'Sign-in', note: 'settings' }, { href: '/audit', label: 'Audit log' }];
 const PROJECT_TABS = ['Tasks', 'Issues', 'Product', 'Tests', 'Workload', 'Knowledge', 'Team', 'Integrations'];
 
 // Ctrl or Cmd + K. Pages and project screens are those of the project in the address bar.
@@ -56,13 +58,15 @@ function Signed() {
       <Route path="/roles/:slug">{params => <RolesPage slug={params.slug} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/roles"><RolesPage slug={null} me={me.data} projects={tree.data.projects} /></Route>
       <Route path="/library"><LibraryPage me={me.data} projects={tree.data.projects} /></Route>
+      <Route path="/welcome"><WelcomePage me={me.data} projects={tree.data.projects} /></Route>
+      <Route path="/needs-you"><NeedsYouPage me={me.data} projects={tree.data.projects} /></Route>
       <Route path="/costs"><CostsPage me={me.data} projects={tree.data.projects} agents={agents.data?.agents ?? []} /></Route>
       <Route path="/proposals/:id">{params => <ProposalsPage id={params.id} me={me.data!} projects={tree.data!.projects} agents={agents.data?.agents ?? []} />}</Route>
       <Route path="/proposals"><ProposalsPage id={null} me={me.data} projects={tree.data.projects} agents={agents.data?.agents ?? []} /></Route>
       <Route path="/agents/:id">{params => <AgentPage id={params.id} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/p/:slug/:tab">{params => <ProjectPage slug={params.slug} tab={params.tab} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/p/:slug">{params => <Redirect to={`/p/${params.slug}/tasks`} />}</Route>
-      <Route>{home ? <Redirect to={home} /> : <CenteredPanel title="No projects yet" note="Run agent-team up in a checkout to register the first project." >{null}</CenteredPanel>}</Route>
+      <Route>{home ? <Redirect to={home} /> : <Redirect to="/welcome" />}</Route>
     </Switch>
     </>
   );

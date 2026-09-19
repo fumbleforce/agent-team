@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { Chip, cx, StatusDot, Text, type DotTone } from '../ui';
+import { Chip, cx, Icon, StatusDot, Text, type DotTone } from '../ui';
 
 // A large, clickable choice: what a person picks from when setting something up.
 export function ChoiceCard({ title, note, aside, onClick }: { title: string; note: string; aside?: ReactNode; onClick(): void }) {
@@ -19,4 +19,22 @@ export function Steps({ items }: { items: string[] }) {
 // One line of state with a dot: ready, waiting, or failed.
 export function StatusLine({ tone, children, boxed }: { tone: DotTone; children: ReactNode; boxed?: boolean }) {
   return <div className={cx('flex items-start gap-2', boxed && 'rounded-control border border-line bg-raised px-3 py-2')}><span className="pt-1"><StatusDot tone={tone} /></span><Text size="small" tone="soft">{children}</Text></div>;
+}
+
+// One step of a guide. The current step is open; a finished one collapses to a line saying what was done; later ones wait.
+export function StepCard({ number, title, note, state, optional, locked, children }: { number: number; title: string; note: string; state: 'done' | 'current' | 'later'; optional: boolean; locked?: boolean; children: ReactNode }) {
+  const open = !locked && state !== 'done' && (state === 'current' || optional);
+  return (
+    <section aria-label={title} className={cx('flex gap-3 rounded-card border px-4 py-3.5', state === 'current' ? 'border-accent bg-card' : 'border-line bg-raised', locked && 'opacity-60')}>
+      <span className={cx('flex size-6 shrink-0 items-center justify-center rounded-pill text-caption font-semibold', state === 'done' ? 'bg-working-wash text-working-ink' : state === 'current' ? 'bg-accent text-on-accent' : 'bg-active text-ink-muted')}>{state === 'done' ? <Icon name="check" /> : number}</span>
+      <div className="flex min-w-0 grow flex-col gap-2.5">
+        <div className="flex flex-col gap-1">
+          <span className="flex items-center gap-2"><Text weight="semibold" tone={state === 'later' ? 'soft' : 'ink'}>{title}</Text>{optional && state !== 'done' && <Chip>Optional</Chip>}</span>
+          <Text size="small" tone="muted">{note}</Text>
+        </div>
+        {open && <div className="flex flex-col items-start gap-3">{children}</div>}
+        {!open && !locked && state === 'later' && <details className="group"><summary className="cursor-pointer list-none text-small text-accent">Do this now</summary><div className="flex flex-col items-start gap-3 pt-2.5">{children}</div></details>}
+      </div>
+    </section>
+  );
 }

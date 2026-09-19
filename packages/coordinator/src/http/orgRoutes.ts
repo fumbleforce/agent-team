@@ -1,5 +1,5 @@
 import type { Context as Hc, Hono } from 'hono';
-import { AgentBody, AgentPatch, AuthSettingsBody, FromTemplateBody, HireBody, MachineTokenBody, MilestoneBody, MilestonePatch, ProjectLinkBody, ProjectMemberBody, ProjectStatusBody, SaveTemplateBody, SeatLoanBody, TeamOrderBody, UserPatch, VersionedDocBody, type StoredEvent } from '@agent-team/protocol';
+import { AgentBody, AgentPatch, AuthSettingsBody, FromTemplateBody, HireBody, MachineTokenBody, MilestoneBody, MilestonePatch, ProjectLinkBody, ProjectMemberBody, ProjectStatusBody, SaveTemplateBody, SeatLoanBody, TeamOrderBody, UserPatch, VersionedDocBody, type StoredEvent, type TeamView } from '@agent-team/protocol';
 import type { MachineTokens } from '../auth/machineTokens.ts';
 import { createMembers } from '../auth/members.ts';
 import { OidcSettings } from '../auth/oidc.ts';
@@ -190,7 +190,7 @@ export function registerOrgRoutes(app: Hono<Env>, context: Context, deps: { work
   const roleLibrary = async () => (await docs.list('role', LIBRARY)).map(role => ({ slug: role.slug, summary: String((role.doc as { summary?: unknown }).summary ?? '') }));
   app.get('/api/projects/:slug/team', async c => {
     const project = await projectFor(c, 'project.read'), team = await org.team(project.id);
-    return c.json({ seats: team.seats, roles: await roleLibrary(), canEdit: can(c.get('viewer'), 'project.configure', team.rootId) });
+    return c.json({ seats: team.seats, roles: await roleLibrary(), canEdit: can(c.get('viewer'), 'project.configure', team.rootId) } satisfies TeamView);
   });
   app.post('/api/projects/:slug/team/agents', async c => {
     const project = await projectFor(c, 'project.configure');

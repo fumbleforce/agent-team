@@ -1,11 +1,11 @@
 import { useState } from 'react';
-import { api, ApiError } from '../../data/client';
+import { api, ApiError, type RoleChoiceView, type SeatView } from '../../data/client';
 import { StatusLine } from '../../patterns';
 import { Button, Checkbox, Dialog, Field, Input, SectionLabel, Select, Text, Textarea } from '../../ui';
 import type { Provider } from './ProviderFlow';
 
-export interface Seat { id: string; name: string; title: string; persona: string; status: string; providerId: string | null; model: string | null; isPm: boolean; roles: string[] }
-export interface RoleChoice { slug: string; summary: string }
+export type Seat = SeatView;
+export type RoleChoice = RoleChoiceView;
 export const roleName = (slug: string) => slug.length <= 2 ? slug.toUpperCase() : slug.charAt(0).toUpperCase() + slug.slice(1).replaceAll('-', ' ');
 
 // One seat on the team, made or changed by hand: who the agent is, what it may do (its roles), and what it runs on.

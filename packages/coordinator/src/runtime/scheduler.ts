@@ -5,6 +5,12 @@ const BOUNDED: readonly TurnKind[] = ['capture', 'review', 'feedback', 'revise',
 // 1 reply to a human, 2 unblock others, 3 owed feedback, 4 continue, 5 new work, 6 upkeep.
 const CLASS: Record<TurnKind, number> = { reply: 1, conclude: 2, revise: 2, review: 3, feedback: 3, triage: 3, work: 5, publish: 4, deliver: 4, retro: 6, ideate: 6, capture: 4 };
 export const AGING_MS = 30 * 60_000, AGING_FLOOR = 2, WORKER_FRESH_MS = 3 * 60_000;
+export const DEFAULT_MAX_WRITERS = 1, MAX_WRITERS_LIMIT = 16;
+// Raised only explicitly, in the ceiling of the project's manifest; anything else is one writer at a time.
+export function maxWritersOf(manifest: unknown): number {
+  const value = (manifest as { ceiling?: { maxConcurrentWriters?: unknown } } | null)?.ceiling?.maxConcurrentWriters;
+  return typeof value === 'number' && Number.isInteger(value) && value >= 1 ? Math.min(value, MAX_WRITERS_LIMIT) : DEFAULT_MAX_WRITERS;
+}
 
 export const laneOf = (kind: TurnKind): Lane => (kind === 'deliver' || kind === 'publish' ? 'deliver' : BOUNDED.includes(kind) ? 'bounded' : 'work');
 export const accessOf = (kind: TurnKind) => (kind === 'work' || kind === 'publish' || kind === 'deliver' ? 'write' : kind === 'feedback' || kind === 'conclude' || kind === 'revise' || kind === 'capture' ? 'none' : 'read');
@@ -16,7 +22,9 @@ export interface SnapAgent { status: string; providerId: string | null; model: s
 export interface SnapTask { state: string; tags: string[]; quarantined: boolean; writerRunning: boolean; holder: string | null; sticky: RouteChoice | null }
 export interface SnapProvider { id: string; name: string; status: string; models: string[]; limitedUntil: number | null; running: number; maxConcurrent: number | null; windowPct: number | null }
 // budgetPct is the fullest budget that covers the project; budget names it; warned says it already warned this period.
-export interface SnapProject { status: string; budgetPct: number | null; budget: { scope: string; scopeId: string } | null; warned: boolean; deliveryBusy: boolean }
+// writersRunning counts the project's running work turns against maxWriters (default 1): worktrees do not isolate ports, databases or containers.
+// checkoutQuarantined: the claiming worker's checkout of the project was left in an unknown state by a lost git-admin operation.
+export interface SnapProject { status: string; budgetPct: number | null; budget: { scope: string; scopeId: string } | null; warned: boolean; deliveryBusy: boolean; writersRunning?: number; maxWriters?: number; checkoutQuarantined?: boolean }
 export interface ClaimDraft { workerId: string; free: { readonly [L in Lane]?: number | undefined }; projects: readonly string[] }
 export interface Snapshot { now: number; items: TurnDraft[]; agents: Record<string, SnapAgent>; tasks: Record<string, SnapTask>; providers: Record<string, SnapProvider>; projects: Record<string, SnapProject>; running: { agentId: string; lane: Lane }[]; rules: Rules; claim?: ClaimDraft }
 
@@ -50,6 +58,9 @@ export function gate(item: TurnDraft, snapshot: Snapshot): Gate {
   if (item.kind === 'work' && task && BLOCKED.includes(task.state)) return refuse('task-blocked');
   if (snapshot.running.some(turn => turn.agentId === item.agentId && turn.lane === item.lane)) return refuse('lane-busy');
   if (accessOf(item.kind) === 'write' && task?.writerRunning) return refuse('writer-busy');
+  // Deliveries have their own queue; every other writer shares the project's ports, databases and containers.
+  const home = snapshot.projects[item.projectId];
+  if (accessOf(item.kind) === 'write' && item.kind !== 'deliver' && (home?.writersRunning ?? 0) >= (home?.maxWriters ?? DEFAULT_MAX_WRITERS)) return refuse('writers-busy');
   if (item.kind === 'deliver' && snapshot.projects[item.projectId]?.deliveryBusy) return refuse('delivery-busy');
   const verdict = evaluate(item, snapshot);
   if (!verdict.allow || !verdict.route) return refuse(verdict.deferReason ?? 'deferred', verdict.notices);
@@ -61,6 +72,8 @@ export function gate(item: TurnDraft, snapshot: Snapshot): Gate {
     if (provider.windowPct !== null && provider.windowPct >= 100) return refuse('provider-window', verdict.notices);
   }
   // A write turn goes to the worker that holds the task's worktree while that worker is alive.
+  // Anything that needs the repository waits while this worker's checkout of it is in an unknown state.
+  if (snapshot.claim && accessOf(item.kind) !== 'none' && home?.checkoutQuarantined) return refuse('checkout-quarantined', verdict.notices);
   if (snapshot.claim && accessOf(item.kind) === 'write' && task?.holder && task.holder !== snapshot.claim.workerId) return refuse('no-worktree-holder', verdict.notices);
   return { ok: true, route: verdict.route, notices: verdict.notices };
 }

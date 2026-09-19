@@ -1,0 +1,8 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<testsuites>
+  <testsuite name="e2e" tests="3" failures="1" skipped="1" time="1.5">
+    <testcase classname="checkout.spec" name="adds to cart" time="0.5"/>
+    <testcase classname="checkout.spec" name="pays with card" time="1"><failure message="Expected 200, got 500">at checkout.spec.ts:41</failure></testcase>
+    <testcase classname="checkout.spec" name="pays with invoice" time="0"><skipped/></testcase>
+  </testsuite>
+</testsuites>

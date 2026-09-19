@@ -8,6 +8,11 @@ const Words = (max: number) => z.string().min(1).max(max * 8);
 const ALL: readonly TurnKind[] = ['work', 'review', 'feedback', 'revise', 'conclude', 'triage', 'reply', 'retro', 'ideate'];
 const Recorded = z.object({ recorded: z.literal(true) });
 
+// One idea for the backlog, in the shape the owner reads it in the tracker.
+export const IdeaProposal = z.object({ title: z.string().trim().min(1).max(160), problem: z.string().trim().min(1).max(800), benefit: z.string().trim().min(1).max(600), scope: z.string().trim().min(1).max(1200),
+  successCriteria: z.array(z.string().trim().min(1).max(400)).min(1).max(6), effort: z.enum(['S', 'M', 'L']), evidence: z.array(z.string().trim().min(1).max(400)).min(1).max(6), whyNow: z.string().trim().min(1).max(600) });
+export type IdeaProposal = z.infer<typeof IdeaProposal>;
+
 // Who a mention is for, and whether it asks for the one reply it may get or only informs.
 export const MentionTarget = z.object({ type: z.enum(['agent', 'role', 'team', 'user']), id: z.string().min(1).max(80) });
 export type MentionTarget = z.infer<typeof MentionTarget>;
@@ -58,9 +63,9 @@ export const TOOLS = {
     permission: null, turnKinds: ['work'], mutating: true, rateClass: 'write',
   }),
   'knowledge.search': tool({
-    description: 'Search the knowledge pages and memories of this project before asking a teammate or guessing.',
+    description: 'Search the knowledge pages, memories, discussion messages and issues of this project before asking a teammate or guessing. Every word must match; a word matches from its start. A message or issue hit carries its thread in `ref`.',
     input: z.object({ query: z.string().min(2).max(200) }),
-    output: z.array(z.object({ type: z.string(), id: z.string(), title: z.string(), excerpt: z.string() })),
+    output: z.array(z.object({ type: z.string(), id: z.string(), title: z.string(), excerpt: z.string(), ref: z.string().nullable().optional() })),
     permission: null, turnKinds: ALL, mutating: false, rateClass: 'read',
   }),
   'knowledge.read': tool({
@@ -88,8 +93,8 @@ export const TOOLS = {
     permission: null, turnKinds: ALL, mutating: true, rateClass: 'few',
   }),
   'test.report': tool({
-    description: 'Report a test or check run you executed: counts and the failing cases. Non-software checks use the same shape.',
-    input: z.object({ suite: z.string().min(1).max(60), kind: z.enum(['test', 'check']).default('test'), branch: z.string().min(1).max(200), sha: z.string().regex(/^[0-9a-f]{40}$/).optional(), passed: z.number().int().min(0), failed: z.number().int().min(0), skipped: z.number().int().min(0).default(0), durationMs: z.number().int().min(0).default(0), failing: z.array(z.object({ name: z.string().min(1).max(300), message: z.string().max(1000).optional() })).max(50).default([]) }),
+    description: 'Report a test or check run you executed: counts, the failing cases, and the names of cases skipped because they are quarantined as flaky. Non-software checks use the same shape.',
+    input: z.object({ suite: z.string().min(1).max(60), kind: z.enum(['test', 'check']).default('test'), branch: z.string().min(1).max(200), sha: z.string().regex(/^[0-9a-f]{40}$/).optional(), passed: z.number().int().min(0), failed: z.number().int().min(0), skipped: z.number().int().min(0).default(0), durationMs: z.number().int().min(0).default(0), failing: z.array(z.object({ name: z.string().min(1).max(300), message: z.string().max(1000).optional() })).max(50).default([]), quarantined: z.array(z.string().min(1).max(300)).max(200).default([]) }),
     output: z.object({ id: z.string(), status: z.string() }),
     permission: null, turnKinds: ['work', 'review'], mutating: true, rateClass: 'write',
   }),
@@ -146,6 +151,12 @@ export const TOOLS = {
     input: z.object({ wentWell: z.string().min(1).max(300), problems: z.array(z.object({ problem: z.string().min(1).max(240), evidence: z.string().min(1).max(240), suggestion: z.string().min(1).max(240) })).max(3).default([]) }),
     output: z.object({ messageId: z.string() }),
     permission: null, turnKinds: ['retro'], mutating: true, rateClass: 'once',
+  }),
+  'ideas.propose': tool({
+    description: 'Your ideas for what the team should build next, once per ideation turn. Each becomes an issue in the tracker that waits for the owner: nothing is built before the owner approves it.',
+    input: z.object({ proposals: z.array(IdeaProposal).min(1).max(10) }),
+    output: z.object({ recorded: z.number().int() }),
+    permission: null, turnKinds: ['ideate'], mutating: true, rateClass: 'rare',
   }),
   'task.claim': tool({
     description: 'Take an unassigned backlog task of this project. The claim is atomic: if a teammate got there first it is refused.',

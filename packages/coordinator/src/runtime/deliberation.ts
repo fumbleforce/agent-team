@@ -4,6 +4,7 @@ import type { Revision } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import { HttpError, type Context } from '../context.ts';
 import type { Turns } from './turns.ts';
+import { indexMessage } from '../knowledge/indexing.ts';
 
 const conflict = (message: string) => new HttpError(409, 'deliberation', message);
 
@@ -15,6 +16,7 @@ export function createDeliberation(context: Context, turns: Turns) {
   async function post(tx: Tx, threadId: string, agentId: string, kind: MessageKind, body: string, payload: Record<string, unknown>) {
     const id = newId(now());
     await tx.insertInto('messages').values({ id, thread_id: threadId, author_kind: 'agent', author_id: agentId, kind, body, payload: JSON.stringify(payload), created_at: now() }).execute();
+    await indexMessage(storage, tx, { id, threadId, body });
     return id;
   }
 

@@ -1,5 +1,6 @@
 import type { ScmProvider } from './contract.ts';
 import { SCM_GATES } from './gates.ts';
+import { SCM_APIS, type ScmApi, type ScmApiOptions } from './api.ts';
 
 const number = (url: string) => /\/(\d+)\/?$/.exec(url)?.[1] ?? '';
 const gitlabHost = (env: Record<string, string | undefined>) => env.GITLAB_HOST ? `https://${env.GITLAB_HOST.replace(/^https?:\/\//, '')}` : 'https://gitlab.com';
@@ -14,6 +15,7 @@ const github: ScmProvider = {
   linkText: url => github.isChangeUrl(url) ? `#${number(url)}` : url.replace(/^https:\/\/github\.com\//, ''),
   commitUrl: (repository, sha) => `https://github.com/${repository}/commit/${sha}`,
   auth: (exec, cwd) => exec('gh', ['auth', 'status'], { cwd }),
+  api: options => SCM_APIS.github!(options ?? {}),
 };
 
 const gitlab: ScmProvider = {
@@ -26,6 +28,7 @@ const gitlab: ScmProvider = {
   linkText: url => gitlab.isChangeUrl(url) ? `!${number(url)}` : url.replace(/^https:\/\/[^/]+\//, ''),
   commitUrl: (repository, sha, env = process.env) => `${gitlabHost(env)}/${repository}/-/commit/${sha}`,
   auth: (exec, cwd) => exec('glab', ['auth', 'status'], { cwd }),
+  api: options => SCM_APIS.gitlab!(options ?? {}),
 };
 
 const ADAPTERS: Record<string, ScmProvider> = { github, gitlab };
@@ -42,4 +45,9 @@ export function scmAdapter(kind: string = DEFAULT_SCM): ScmProvider {
 export function linkText(url: string): string {
   const adapter = Object.values(ADAPTERS).find(candidate => candidate.isChangeUrl(url));
   return adapter ? adapter.linkText(url) : url.replace(/^https:\/\//, '');
+}
+
+// The polling client for a project's host, or null when the kind is unknown or its token is absent.
+export function scmApi(kind: string, options: ScmApiOptions = {}): ScmApi | null {
+  return Object.hasOwn(ADAPTERS, kind) ? ADAPTERS[kind]!.api(options) : null;
 }

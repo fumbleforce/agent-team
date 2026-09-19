@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { TurnKind } from './enums.ts';
 
 // Why a queued item did not start the last time the scheduler looked at it. The Workload page shows it verbatim.
-export const DeferReason = z.enum(['agent-paused', 'task-blocked', 'task-closed', 'task-quarantined', 'writer-busy', 'lane-busy', 'delivery-busy', 'provider-unavailable', 'provider-limited', 'provider-busy', 'provider-window', 'over-cap', 'over-budget', 'project-paused', 'no-worktree-holder', 'no-request', 'deferred']);
+export const DeferReason = z.enum(['agent-paused', 'task-blocked', 'task-closed', 'task-quarantined', 'checkout-quarantined', 'writer-busy', 'writers-busy', 'lane-busy', 'delivery-busy', 'provider-unavailable', 'provider-limited', 'provider-busy', 'provider-window', 'over-cap', 'over-budget', 'project-paused', 'no-worktree-holder', 'no-request', 'deferred']);
 export type DeferReason = z.infer<typeof DeferReason>;
 
 const Percent = z.number().int().min(1).max(100);

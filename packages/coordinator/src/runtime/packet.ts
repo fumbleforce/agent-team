@@ -1,5 +1,6 @@
 import type { TurnKind } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
+import { failingChecks } from '../checks/wake.ts';
 
 export interface Packet { system: string; prompt: string }
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
@@ -13,7 +14,7 @@ const TASK_RULES: Record<TurnKind, string> = {
   reply: 'Answer the message below in the thread with discussion.post. Be factual and brief.',
   review: 'Review the task below at its current head. Report findings precisely.',
   retro: 'The weekly retro is open in the thread below, with the figures of this week. Post one note with discussion.post: what went well in a line, and at most three problems with their evidence and a suggestion. If you are the PM, read the notes already there and turn at most three of them into team proposals with proposal.create.',
-  ideate: 'Propose at most three substantial next pieces of work with problem, benefit and scope.',
+  ideate: 'The backlog has room. Propose at most three substantial next pieces of work by calling ideas.propose once: each with its problem, benefit, scope, success criteria, size, evidence and why now. Do not repeat what is listed below. Each idea becomes an issue that waits for the owner; nothing is built before the owner approves it.',
   publish: '', deliver: '', capture: '',
 };
 
@@ -46,6 +47,8 @@ export async function buildResumeDelta(tx: Tx, turn: { agentId: string; projectI
   const mentions = await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select(['messages.author_kind', 'messages.body']).where('threads.project_id', '=', turn.projectId).where('threads.visibility', '=', 'team')
     .where('messages.created_at', '>', turn.since).where('messages.body', 'like', `%@${agent.name}%`).where(eb => eb.or([eb('messages.author_id', 'is', null), eb('messages.author_id', '!=', turn.agentId)])).orderBy('messages.created_at').limit(8).execute();
   if (mentions.length) parts.push(`# Mentions of you\n${mentions.map(row => `- ${row.author_kind}: ${clip(row.body, 400)}`).join('\n')}`);
+  const failing = await failingChecks(tx, turn.taskId);
+  if (failing) parts.push(failing);
   if (parts.length === (turn.noReport ? 1 : 0)) parts.push('Nothing changed on the platform since your last turn on this task.');
   return [`You are continuing your own session on this task. ${REPORT}`, ...parts].join('\n\n');
 }
@@ -63,6 +66,8 @@ export async function buildResumePacket(tx: Tx, turn: { agentId: string; project
   if (decisions.length) parts.push(`# Decisions, latest last\n${decisions.reverse().map(row => `- ${row.outcome}: ${clip(row.summary, 400)}`).join('\n')}`);
   const earlier = await tx.selectFrom('turns').select(['summary', 'state']).where('task_id', '=', turn.taskId).where('agent_id', '=', turn.agentId).where('summary', 'is not', null).orderBy('started_at', 'desc').limit(12).execute();
   if (earlier.length) parts.push(`# Your own summaries of earlier turns, latest last\n${earlier.reverse().map(row => `- (${row.state}) ${clip(row.summary ?? '', 600)}`).join('\n')}`);
+  const failing = await failingChecks(tx, turn.taskId);
+  if (failing) parts.push(failing);
   parts.push(`# Git state last reported\n- task state: ${task.state}\n- branch: ${task.branch ?? '(the worktree branch)'}\n- head: ${task.head_sha ?? '(none reported)'}\n- change: ${task.pr_url ?? '(not published)'}`);
   // A finding is open while the latest review of its kind did not pass.
   const reviews = await tx.selectFrom('approvals').select(['kind', 'verdict', 'summary', 'findings', 'head_sha']).where('task_id', '=', turn.taskId).orderBy('created_at', 'desc').limit(12).execute();
@@ -82,7 +87,13 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
     const handed = await handedOver(tx, turn.taskId);
     if (handed) parts.push(handed);
     const earlier = await tx.selectFrom('turns').select(['summary']).where('task_id', '=', turn.taskId).where('agent_id', '=', turn.agentId).where('summary', 'is not', null).orderBy('started_at', 'desc').limit(3).execute();
+    const failing = await failingChecks(tx, turn.taskId);
+    if (failing) parts.push(failing);
     if (earlier.length) parts.push(`# Your earlier turns on this task\n${earlier.reverse().map(row => `- ${clip(row.summary ?? '', 400)}`).join('\n')}`);
+  }
+  if (turn.kind === 'ideate') {
+    const known = await tx.selectFrom('tasks').select(['key', 'title', 'state']).where('project_id', '=', turn.projectId).orderBy('updated_at', 'desc').limit(60).execute();
+    if (known.length) parts.push(`# Already on the board\n${known.map(task => `- ${task.key} (${task.state}): ${clip(task.title, 120)}`).join('\n')}`);
   }
   const open = await tx.selectFrom('deliberations').selectAll().where('project_id', '=', turn.projectId).where('state', 'in', ['open', 'revising', 'deciding'])
     .where(eb => eb.or([eb('proposer_agent_id', '=', turn.agentId), eb('decider_agent_id', '=', turn.agentId), eb.exists(eb.selectFrom('deliberation_participants').select('agent_id').whereRef('deliberation_id', '=', 'deliberations.id').where('agent_id', '=', turn.agentId))]))

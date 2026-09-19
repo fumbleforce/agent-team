@@ -1,7 +1,8 @@
 import type { StorageAdapter, StorageConfig } from './contract.ts';
 import { createSqliteAdapter } from './sqlite/adapter.ts';
 
-export type { Db, Tx, StorageAdapter, StorageConfig, EventBusPort } from './contract.ts';
+export type { Db, Tx, StorageAdapter, StorageConfig, EventBusPort, SearchDoc, SearchHit, SearchPort, SearchScope, VectorPort } from './contract.ts';
+export { portableVectors } from './shared/search.ts';
 export type { Schema } from './schema.ts';
 
 export const STORAGE_KINDS = ['sqlite', 'postgres'] as const;

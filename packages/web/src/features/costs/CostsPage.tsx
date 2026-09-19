@@ -1,11 +1,9 @@
 import { useState } from 'react';
-import { api, type Agent, type ApiError, type Me, type ProjectNode } from '../../data/client';
+import { api, type Agent, type ApiError, type CostCurrency, type CostsSummaryView, type CostTotal, type Me, type ProjectNode } from '../../data/client';
 import { useResource } from '../../data/useResource';
 import { AppShell, BarRow, PageHeader, Sidebar } from '../../patterns';
 import { Button, Card, Checkbox, ColumnChart, Field, Input, LinkButton, Meter, SectionLabel, Select, StatTile, Text } from '../../ui';
 
-interface Total { id: string; amountMinor: number; tokens: number }
-interface Summary { totalMinor: number; budgetMinor: number | null; daily: Total[]; byAgent: Total[]; byProject: Total[] }
 interface CostRules { dailyCap: { enabled: boolean; fallbackProvider: string | null }; budgetWarn: { enabled: boolean; percent: number }; windowPause: { enabled: boolean; percent: number } }
 interface Route { id: string; enabled: boolean; kinds: string[]; tags: string[]; provider: string; model: string | null }
 interface RoutingRules { routes: Route[] }
@@ -92,17 +90,44 @@ function ProjectBudgets({ projects, budgets, spent, money, currency, canEdit, on
   );
 }
 
+// The currency costs are shown in. Engines report US dollars, so the organization says what one dollar is worth in its own money.
+function CurrencyCard({ shown, canEdit, onSave }: { shown: CostCurrency; canEdit: boolean; onSave(input: CostCurrency): Promise<unknown> }) {
+  const [editing, setEditing] = useState(false), [currency, setCurrency] = useState(shown.currency), [rate, setRate] = useState(String(shown.rate)), [problem, setProblem] = useState<string | null>(null);
+  const code = currency.trim().toUpperCase(), worth = Number(rate);
+  const save = () => onSave({ currency: code, rate: worth }).then(() => { setEditing(false); setProblem(null); }, (error: ApiError) => setProblem(error.message));
+  return (
+    <Card className="flex flex-col gap-2.5">
+      <SectionLabel>Currency</SectionLabel>
+      <Text size="caption" tone="muted">Providers bill in US dollars, and that is what every turn reports. This page shows costs in your own currency, using the rate you set here. Each cost keeps the rate it was recorded at, so a new rate only applies to turns from now on. Turns on a subscription or a local model cost nothing extra and are recorded at zero; their tokens still count toward the provider’s usage window.</Text>
+      {editing ? (
+        <form className="flex flex-wrap items-start gap-2.5" onSubmit={event => { event.preventDefault(); void save(); }}>
+          <Field label="Show costs in" help="The three-letter code of the currency, such as EUR, USD or NOK."><Input value={currency} maxLength={3} required autoFocus onChange={event => setCurrency(event.target.value)} /></Field>
+          <Field label={`One US dollar is worth this many ${code || 'of it'}`} help="For example 0.92 for euros. Use 1 if your currency is the US dollar."><Input type="number" min={0} step="any" required value={rate} onChange={event => setRate(event.target.value)} /></Field>
+          <div className="flex gap-2 pt-6"><Button type="submit" variant="primary" disabled={code.length !== 3 || !(worth > 0)}>Save</Button><Button onClick={() => { setEditing(false); setProblem(null); }}>Cancel</Button></div>
+          {code !== shown.currency && code.length === 3 && <Text size="caption" tone="muted" className="basis-full">Changing the currency restates earlier days at this rate so the page never adds two currencies together. Budgets keep the numbers you typed, so check them afterwards.</Text>}
+          {problem && <Text size="caption" tone="stop" className="basis-full">{problem}</Text>}
+        </form>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <Text size="small">{shown.currency === 'USD' && shown.rate === 1 ? 'Costs are shown in US dollars, as reported.' : `Costs are shown in ${shown.currency}. One US dollar counts as ${shown.rate} ${shown.currency}.`}</Text>
+          {canEdit && <Button size="sm" variant="ghost" onClick={() => { setCurrency(shown.currency); setRate(String(shown.rate)); setEditing(true); }}>Change the currency</Button>}
+        </div>
+      )}
+    </Card>
+  );
+}
+
 const compact = (tokens: number) => (tokens >= 1e6 ? `${(tokens / 1e6).toFixed(1)}M` : tokens >= 1e3 ? `${Math.round(tokens / 1e3)}k` : String(tokens));
 
 export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectNode[]; agents: Agent[] }) {
-  const summary = useResource<Summary>('/api/costs');
+  const summary = useResource<CostsSummaryView>('/api/costs');
   const costRules = useResource<RulesDoc<CostRules>>('/api/rules/cost_rules'), routing = useResource<RulesDoc<RoutingRules>>('/api/rules/routing_rules');
   const providers = useResource<{ providers: ProviderRow[] }>('/api/providers'), budgets = useResource<{ budgets: Budget[] }>('/api/budgets');
   const [budget, setBudget] = useState<string | null>(null), [problem, setProblem] = useState<string | null>(null);
-  const money = (minor: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: me.org?.currency ?? 'EUR', maximumFractionDigits: minor >= 10000 ? 0 : 2 }).format(minor / 100);
+  const money = (minor: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: summary.data?.currency ?? me.org?.currency ?? 'EUR', maximumFractionDigits: minor >= 10000 ? 0 : 2 }).format(minor / 100);
   const names = new Map<string, string>(projects.flatMap(project => [[project.id, project.name] as const, ...project.subprojects.map(sub => [sub.id, sub.name] as const)]));
   const data = summary.data, rules = costRules.data;
-  const top = (rows: Total[]) => Math.max(1, ...rows.map(row => row.amountMinor));
+  const top = (rows: CostTotal[]) => Math.max(1, ...rows.map(row => row.amountMinor));
   const admin = me.user.orgRole === 'owner' || me.user.orgRole === 'admin';
 
   // Every change is one save against the version last read; a lost race reloads and says so.
@@ -111,6 +136,7 @@ export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectN
   const saveCost = (change: Partial<CostRules>) => { if (rules) void save('cost_rules', rules, { ...rules.doc, ...change }, costRules.reload); };
   const saveBudget = () => api('/api/budgets', { scope: 'org', amountMinor: budget === null || budget.trim() === '' ? null : Math.round(Number(budget) * 100) })
     .then(() => { setBudget(null); setProblem(null); summary.reload(); }, (error: ApiError) => setProblem(error.message));
+  const saveCurrency = (input: CostCurrency) => api('/api/costs/currency', input).then(() => summary.reload());
   const saveProjectBudget = (scopeId: string, amountMinor: number | null) => { void api('/api/budgets', { scope: 'project', scopeId, amountMinor }).then(() => { setProblem(null); budgets.reload(); }, (error: ApiError) => setProblem(error.message)); };
   const spentBy = (project: ProjectNode) => { const ids = [project.id, ...project.subprojects.map(sub => sub.id)]; return data?.byProject.filter(row => ids.includes(row.id)).reduce((sum, row) => sum + row.amountMinor, 0) ?? 0; };
 
@@ -132,7 +158,7 @@ export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectN
                 ? <div><Button size="sm" variant="ghost" onClick={() => setBudget(data.budgetMinor === null ? '' : String(data.budgetMinor / 100))}>{data.budgetMinor === null ? 'Set a monthly budget' : 'Edit budget'}</Button></div>
                 : (
                   <form className="flex items-end gap-2" onSubmit={event => { event.preventDefault(); void saveBudget(); }}>
-                    <Field label={`Monthly budget in ${me.org?.currency ?? 'EUR'}; empty for none`}><Input type="number" min={0} step="0.01" value={budget} onChange={event => setBudget(event.target.value)} autoFocus /></Field>
+                    <Field label={`Monthly budget in ${data.currency}; empty for none`}><Input type="number" min={0} step="0.01" value={budget} onChange={event => setBudget(event.target.value)} autoFocus /></Field>
                     <Button type="submit" variant="primary">Save</Button>
                     <Button onClick={() => setBudget(null)}>Cancel</Button>
                   </form>
@@ -166,7 +192,8 @@ export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectN
               {routing.data && <RoutingEditor routes={routing.data.doc.routes} providers={providers.data?.providers ?? []} canEdit={admin} onSave={routes => { const current = routing.data; if (current) void save('routing_rules', current, { routes }, routing.reload); }} />}
             </Card>
           )}
-          <ProjectBudgets projects={projects} budgets={budgets.data?.budgets ?? []} spent={spentBy} money={money} currency={me.org?.currency ?? 'EUR'} canEdit={admin} onSave={saveProjectBudget} />
+          <CurrencyCard shown={data} canEdit={admin} onSave={saveCurrency} />
+          <ProjectBudgets projects={projects} budgets={budgets.data?.budgets ?? []} spent={spentBy} money={money} currency={data?.currency ?? 'EUR'} canEdit={admin} onSave={saveProjectBudget} />
           <div className="grid min-h-0 grow grid-cols-1 gap-3 xl:grid-cols-3">
             <Card className="flex flex-col gap-2.5">
               <SectionLabel>Spend per day</SectionLabel>

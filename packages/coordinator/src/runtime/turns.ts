@@ -8,7 +8,7 @@ import { buildPacket, type Packet } from './packet.ts';
 import { createSessions, type Resume } from './sessions.ts';
 import { DEFAULT_RULES, type Notice } from './rules.ts';
 import * as scheduler from './scheduler.ts';
-import { accessOf, laneOf, WORKER_FRESH_MS, type ClaimDraft, type Snapshot } from './scheduler.ts';
+import { accessOf, laneOf, maxWritersOf, WORKER_FRESH_MS, type ClaimDraft, type Snapshot } from './scheduler.ts';
 
 import { effectiveProjects } from '../repos/org.ts';
 export const LEASE_MS = 90_000;
@@ -18,7 +18,9 @@ const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const RATE_LIMITED = /rate-limit|usage-limit/;
 
 export type ClaimRequest = z.infer<typeof ClaimBody>;
-export interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; threadId: string | null; packet: Packet; resume: Resume | null; grants: PermissionGrant; engine: string | null; model: string | null; capture: { url: string; viewport: Viewport } | null }
+export interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; threadId: string | null; packet: Packet; resume: Resume | null; grants: PermissionGrant; engine: string | null; model: string | null; capture: { url: string; viewport: Viewport } | null; /* A review turn: the head to look at, and which kind of reviewer looks, which names its detached worktree. */ review: { headSha: string; reviewer: string } | null }
+// The checkout a quarantine names is one worker's copy of one project.
+export const checkoutRef = (workerId: string, projectId: string) => `${workerId}:${projectId}`;
 export type Outcome = z.infer<typeof FinishBody>['outcome'];
 
 export function createTurns(context: Context) {
@@ -36,6 +38,10 @@ export function createTurns(context: Context) {
       await tx.updateTable('work_items').set({ state: 'expired' }).where('id', '=', turn.work_item_id).execute();
       if (turn.kind === 'deliver' && turn.task_id) await tx.updateTable('merge_queue').set({ state: 'uncertain', reason: 'Lease expired during delivery; reconcile against the change before anything else merges', finished_at: now() }).where('task_id', '=', turn.task_id).where('state', 'in', ['queued', 'running']).execute();
       if (turn.kind === 'capture') await tx.updateTable('snapshots').set({ state: 'failed', error: 'The worker stopped answering during the capture' }).where('work_item_id', '=', turn.work_item_id).where('state', '=', 'requested').execute();
+      // A verdict whose turn never reported the head it verified is never counted.
+      if (turn.kind === 'review') await tx.updateTable('approvals').set({ state: 'stale' }).where('turn_id', '=', turn.id).where('state', '=', 'pending-verification').execute();
+      // Lost while it changed the checkout's shared git state: the checkout itself is unknown, whatever kind of turn it was.
+      if (turn.git_admin) await tx.insertInto('quarantines').values({ id: newId(now()), scope: 'checkout', ref_id: checkoutRef(turn.worker_id, turn.project_id), turn_id: turn.id, reason: 'Lease expired during a git-admin operation; inspect the primary checkout on this worker before releasing', opened_at: now(), released_by: null, released_at: null }).execute();
       if (turn.access === 'write' && turn.task_id) {
         await tx.insertInto('quarantines').values({ id: newId(now()), scope: 'task', ref_id: turn.task_id, turn_id: turn.id, reason: 'Lease expired; inspect the worktree before releasing', opened_at: now(), released_by: null, released_at: null }).execute();
         await tx.updateTable('tasks').set({ state: 'quarantined', updated_at: now() }).where('id', '=', turn.task_id).execute();
@@ -72,7 +78,7 @@ export function createTurns(context: Context) {
     for (const agent of await tx.selectFrom('agents').select(['id', 'status', 'provider_id', 'model', 'daily_cap_minor']).where('id', 'in', agentIds).execute())
       snapshot.agents[agent.id] = { status: agent.status, providerId: agent.provider_id, model: agent.model, dailyCapMinor: agent.daily_cap_minor, spentTodayMinor: spent.get(agent.id) ?? 0, lastStartedAt: last.get(agent.id) ?? 0 };
 
-    const running = await tx.selectFrom('turns').innerJoin('agents', 'agents.id', 'turns.agent_id').select(['turns.agent_id', 'turns.lane', 'turns.task_id', 'turns.access', 'turns.provider_id', 'agents.provider_id as seat_provider_id']).where('turns.state', '=', 'running').execute();
+    const running = await tx.selectFrom('turns').innerJoin('agents', 'agents.id', 'turns.agent_id').select(['turns.agent_id', 'turns.lane', 'turns.task_id', 'turns.access', 'turns.kind', 'turns.project_id', 'turns.provider_id', 'agents.provider_id as seat_provider_id']).where('turns.state', '=', 'running').execute();
     snapshot.running = running.map(turn => ({ agentId: turn.agent_id, lane: turn.lane as Lane }));
 
     if (taskIds.length) {
@@ -100,7 +106,8 @@ export function createTurns(context: Context) {
     const budgets = await tx.selectFrom('budgets').selectAll().where('period', '=', 'month').execute();
     const monthly = budgets.length ? await tx.selectFrom('cost_daily').innerJoin('projects', 'projects.id', 'cost_daily.project_id').select(['cost_daily.project_id', 'projects.parent_id']).select(eb => eb.fn.sum<number>('cost_daily.amount_minor').as('total')).where('cost_daily.day', '>=', `${month}-01`).where('cost_daily.day', '<=', `${month}-31`).groupBy(['cost_daily.project_id', 'projects.parent_id']).execute() : [];
     const busyDelivery = new Set((await tx.selectFrom('merge_queue').select('project_id').where('project_id', 'in', projectIds).where('state', 'in', ['running', 'uncertain']).execute()).map(row => row.project_id));
-    for (const project of await tx.selectFrom('projects').select(['id', 'parent_id', 'status']).where('id', 'in', projectIds).execute()) {
+    const unknownCheckouts = new Set((await tx.selectFrom('quarantines').select('ref_id').where('scope', '=', 'checkout').where('ref_id', 'in', projectIds.map(id => checkoutRef(claim.workerId, id))).where('released_at', 'is', null).execute()).map(row => row.ref_id));
+    for (const project of await tx.selectFrom('projects').select(['id', 'parent_id', 'status', 'manifest']).where('id', 'in', projectIds).execute()) {
       let governing: { pct: number; budget: (typeof budgets)[number] } | null = null;
       for (const budget of budgets) {
         if (budget.scope === 'project' ? budget.scope_id !== project.id && budget.scope_id !== project.parent_id : budget.scope !== 'org') continue;
@@ -108,7 +115,7 @@ export function createTurns(context: Context) {
         const pct = budget.amount_minor > 0 ? total / budget.amount_minor * 100 : 100;
         if (!governing || pct > governing.pct) governing = { pct, budget };
       }
-      snapshot.projects[project.id] = { status: project.status, budgetPct: governing?.pct ?? null, budget: governing ? { scope: governing.budget.scope, scopeId: governing.budget.scope_id } : null, warned: governing?.budget.warned_period === month, deliveryBusy: busyDelivery.has(project.id) };
+      snapshot.projects[project.id] = { status: project.status, budgetPct: governing?.pct ?? null, budget: governing ? { scope: governing.budget.scope, scopeId: governing.budget.scope_id } : null, warned: governing?.budget.warned_period === month, deliveryBusy: busyDelivery.has(project.id), writersRunning: running.filter(turn => turn.project_id === project.id && turn.access === 'write' && turn.kind !== 'deliver').length, maxWriters: maxWritersOf(JSON.parse(project.manifest)), checkoutQuarantined: unknownCheckouts.has(checkoutRef(claim.workerId, project.id)) };
     }
 
     const docs = await tx.selectFrom('versioned_docs').select(['kind', 'doc']).where('kind', 'in', ['cost_rules', 'routing_rules']).where('scope_type', '=', RULES_SCOPE.type).where('scope_id', '=', RULES_SCOPE.id).where('slug', '=', RULES_SLUG).execute();
@@ -178,6 +185,7 @@ export function createTurns(context: Context) {
     // One transaction: expire, gate, pick, insert the turn, lease the item.
     async claim(request: ClaimRequest): Promise<Claimed | null> {
       const result = await storage.transaction(async tx => {
+        await storage.claimLock(tx);
         const expired = [...await expire(tx)];
         const lanes = (Object.entries(request.free) as [Lane, number | undefined][]).filter(([, free]) => (free ?? 0) > 0).map(([lane]) => lane);
         if (lanes.length === 0 || request.projects.length === 0) return { expired, claimed: null };
@@ -205,15 +213,17 @@ export function createTurns(context: Context) {
           const grants = await grantsFor(tx, item.agentId, item.projectId);
           // Provider and model come from the agent unless a rule routed the turn elsewhere; the route is frozen on the turn.
           const engine = route.providerId ? (await tx.selectFrom('providers').select('engine').where('id', '=', route.providerId).executeTakeFirst())?.engine ?? null : null;
-          const row = await tx.selectFrom('work_items').select('thread_id').where('id', '=', item.id).executeTakeFirstOrThrow();
-          const taskKey = item.taskId ? (await tx.selectFrom('tasks').select('key').where('id', '=', item.taskId).executeTakeFirst())?.key ?? null : null;
+          const row = await tx.selectFrom('work_items').select(['thread_id', 'dedupe_key']).where('id', '=', item.id).executeTakeFirstOrThrow();
+          const subject = item.taskId ? await tx.selectFrom('tasks').select(['key', 'head_sha']).where('id', '=', item.taskId).executeTakeFirst() : undefined, taskKey = subject?.key ?? null;
+          // `review:<task>:<kind>:<head>` is how a review is asked for; the head itself is read from the task, which is what the verdict is checked against.
+          const review = kind === 'review' && subject?.head_sha ? { headSha: subject.head_sha, reviewer: /^review:[^:]+:([a-z]+):/.exec(row.dedupe_key ?? '')?.[1] ?? 'reviewer' } : null;
           await tx.insertInto('turns').values({ id: turnId, work_item_id: item.id, agent_id: item.agentId, project_id: item.projectId, task_id: item.taskId, kind, lane: item.lane, access, state: 'running', stop_reason: null, worker_id: request.workerId, lease_token_hash: hashToken(leaseToken), lease_until: now() + LEASE_MS, grants: JSON.stringify(grants), summary: null, tokens_in: 0, tokens_out: 0, cost_minor: 0, started_at: now(), finished_at: null, provider_id: route.providerId, model: route.model }).execute();
           await tx.updateTable('work_items').set({ state: 'leased', defer_reason: null }).where('id', '=', item.id).execute();
           if (kind === 'work' && item.taskId) await tx.updateTable('tasks').set({ state: 'in_progress', updated_at: now() }).where('id', '=', item.taskId).where('state', 'in', ['backlog', 'assigned']).execute();
           // A work turn resumes its (agent, task) session or starts a new one; everything else is a fresh packet.
           const session = await sessions.open(tx, { turnId, workItemId: item.id, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, workerId: request.workerId, providerId: route.providerId, model: route.model, engine });
           const started = await events.append(tx, [{ type: 'turn.started', actorKind: 'worker', projectId: item.projectId, agentId: item.agentId, taskId: item.taskId, turnId, payload: { kind, workerId: request.workerId, providerId: route.providerId } }]);
-          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, threadId: row.thread_id, grants, engine, model: route.model, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
+          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, threadId: row.thread_id, grants, engine, model: route.model, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, review, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
         }
       });
       events.published(result.expired);
@@ -224,6 +234,14 @@ export function createTurns(context: Context) {
       await storage.transaction(async tx => {
         await leased(tx, turnId, workerId, leaseToken);
         await tx.updateTable('turns').set({ lease_until: now() + LEASE_MS }).where('id', '=', turnId).execute();
+      });
+    },
+
+    // The worker says when it starts and when it has finished changing a checkout's shared git state; expiry reads the mark.
+    async gitAdmin(turnId: string, workerId: string, leaseToken: string, state: 'begin' | 'end') {
+      await storage.transaction(async tx => {
+        const turn = await leased(tx, turnId, workerId, leaseToken);
+        await tx.updateTable('turns').set({ git_admin: state === 'begin' ? checkoutRef(turn.worker_id, turn.project_id) : null }).where('id', '=', turnId).execute();
       });
     },
 
