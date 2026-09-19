@@ -35,25 +35,26 @@ function Gutter({ value }: { value: number | null }) {
   return <Text size="caption" tone="faint" mono className="w-9 shrink-0 select-none pr-1.5 text-right">{value ?? ''}</Text>;
 }
 
-export function DiffView({ text, truncated }: { text: string; truncated?: boolean }) {
+// `plain` is for readers who are not looking at code: the file header, git's bookkeeping lines and hunk positions are left out, and a gap between two changed places is a thin rule.
+export function DiffView({ text, truncated, plain }: { text: string; truncated?: boolean; plain?: boolean }) {
   const files = parseDiff(text);
   if (files.length === 0) return <Text size="small" tone="muted">No textual changes.</Text>;
   return (
     <div className="flex flex-col gap-2">
       {files.map(file => (
         <div key={file.path} className="overflow-hidden rounded-control border border-line bg-ground">
-          <div className="flex items-center gap-2 border-b border-line bg-raised px-2.5 py-1.5">
+          {!plain && <div className="flex items-center gap-2 border-b border-line bg-raised px-2.5 py-1.5">
             <Text size="small" mono truncate>{file.path}</Text>
             <span className="ml-auto flex shrink-0 items-center gap-1"><Chip tone="working" mono>+{file.added}</Chip><Chip tone="stop" mono>-{file.removed}</Chip></span>
-          </div>
+          </div>}
           <div role="table" aria-label={`Changes to ${file.path}`} className="overflow-x-auto py-1">
-            {file.lines.map((line, index) => (
-              <div role="row" key={index} className={cx('flex min-w-max items-start', ROW[line.kind])}>
+            {file.lines.map((line, index) => (plain && line.kind === 'meta' ? null : plain && line.kind === 'hunk' ? (index > 3 ? <div key={index} className="my-1 border-t border-line" /> : null) : (
+              <div role="row" key={index} className={cx('flex items-start', !plain && 'min-w-max', ROW[line.kind])}>
                 {line.kind === 'hunk' || line.kind === 'meta' ? <span className="w-18 shrink-0" /> : <><Gutter value={line.before} /><Gutter value={line.after} /></>}
                 <Text size="caption" tone={TONE[line.kind]} mono className="w-4 shrink-0 select-none text-center">{SIGN[line.kind]}</Text>
-                <Text size="caption" tone={TONE[line.kind]} mono className="whitespace-pre pr-3">{line.text || ' '}</Text>
+                <Text size="caption" tone={TONE[line.kind]} mono className={cx('pr-3', plain ? 'min-w-0 whitespace-pre-wrap break-words' : 'whitespace-pre')}>{line.text || ' '}</Text>
               </div>
-            ))}
+            )))}
           </div>
         </div>
       ))}

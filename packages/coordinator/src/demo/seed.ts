@@ -1,6 +1,7 @@
 import { newId, type MessageKind, type TaskState } from '@agent-team/protocol';
 import { hashPassword } from '../auth/secrets.ts';
 import type { Context } from '../context.ts';
+import { backfillSearch } from '../knowledge/backfill.ts';
 import { createKnowledge } from '../knowledge/knowledge.ts';
 import { createVersionedDocs } from '../repos/versionedDocs.ts';
 import { createProposals } from '../runtime/proposals.ts';
@@ -118,6 +119,9 @@ export async function seedDemo(context: Context, options: { empty?: boolean; act
       item(cleo, 'review', 'bounded', 'queued', 3, await taskId('CK-28')), item(ada, 'review', 'bounded', 'queued', 3, await taskId('CK-26')),
     ]).execute();
 
+    // Who wears which role, so the roles page and the grants have something real behind them.
+    await db.insertInto('agent_roles').values([[maren, 'pm'], [ada, 'developer'], [bram, 'developer'], [cleo, 'tester'], [finn, 'developer'], [ada, 'reviewer'], [finn, 'reviewer']].map(([agent, role]) => ({ agent_id: (agent as { id: string }).id, role_slug: role as string }))).onConflict(oc => oc.doNothing()).execute();
+
     // Where the product runs, so the product view has something to capture and mark up.
     await db.insertInto('product_envs').values([
       { id: newId(), project_id: checkout.id, name: 'Staging', branch: 'release/2.14', url: 'https://staging.shop.example', source: 'manual', created_at: at, last_status: 'ok', last_latency_ms: 412 },
@@ -133,6 +137,36 @@ export async function seedDemo(context: Context, options: { empty?: boolean; act
     const steps: [string, string, string | null][] = [['think', 'The v2 payload nests the invoice under "invoice"; keep v1 working behind a version check.', null], ['read', 'Read: billing/webhooks.py', null], ['read', 'Grep: invoice_id', null], ['edit', 'Edit: billing/webhooks.py', diff], ['run', 'Bash: pytest billing/tests/test_webhooks.py', '12 passed in 1.84s'], ['think', 'Both payload shapes pass. Reporting and handing to review.', null]];
     await db.insertInto('trace_steps').values(steps.map(([kind, title], seq) => ({ turn_id: turnId, seq, at: at - (13 - seq * 2) * 60_000, kind, title, detail: null, status: 'ok', artifact_id: null }))).execute();
     await db.insertInto('step_artifacts').values(steps.flatMap(([kind, , body], seq) => (body ? [{ turn_id: turnId, seq, kind: kind === 'edit' ? 'diff' : 'output', body, bytes: body.length, truncated: 0, created_at: at, storage_key: null, mime: null }] : []))).execute();
+
+    // Test results, so the Tests tab has a matrix: two suites on the branch changes are delivered to and on the branch of CK-28.
+    // The one failure sits on Bram's branch, which is the fix for the issue above; one flaky case is switched off on purpose.
+    const fixBranch = 'ck-28-double-submit';
+    await db.updateTable('tasks').set({ branch: fixBranch }).where('id', '=', await taskId('CK-28')).execute();
+    await db.insertInto('links').values({ from_type: 'issue', from_id: raised.id, to_type: 'task', to_id: await taskId('CK-28'), rel: 'fixes', created_at: at }).onConflict(oc => oc.doNothing()).execute();
+    const run = (suite: string, branch: string, passed: number, failed: number, skipped: number, seconds: number, minutesAgo: number) =>
+      ({ id: newId(), project_id: checkout.id, suite, kind: 'test', branch, sha: null, status: failed ? 'failed' : 'passed', passed, failed, skipped, total: passed + failed + skipped, duration_ms: seconds * 1000, source: 'scm', created_at: at - minutesAgo * 60_000 });
+    const browserOnMain = run('Browser tests', 'main', 46, 0, 1, 412, 95), browserOnFix = run('Browser tests', fixBranch, 46, 1, 1, 431, 18);
+    await db.insertInto('check_runs').values([run('Unit tests', 'main', 212, 0, 0, 38, 96), browserOnMain, run('Unit tests', fixBranch, 214, 0, 0, 39, 19), browserOnFix]).execute();
+    const flaky = { name: 'cart.spec › keeps the cart across a reload', status: 'quarantined', message: 'quarantined: fails about one run in ten on the hosted runner' };
+    await db.insertInto('check_cases').values([
+      { run_id: browserOnFix.id, name: 'pay-button.spec › comes back after a network drop', status: 'failed', message: 'Waited 8 s for the Pay button to be enabled again; it stayed disabled (Safari 18)' },
+      { run_id: browserOnFix.id, ...flaky }, { run_id: browserOnMain.id, ...flaky },
+    ]).execute();
+
+    // Knowledge in use: a page with a history that points at the open decision, agents that read it today,
+    // a memory the team leans on and one nobody has needed for months.
+    const openDecision = await db.selectFrom('decisions').select('id').where('project_id', '=', checkout.id).where('needs_human', '=', true).executeTakeFirstOrThrow();
+    const idempotency = await db.selectFrom('kb_pages').selectAll().where('scope_id', '=', checkout.id).where('path', '=', 'payments/idempotency.md').executeTakeFirstOrThrow();
+    const written = await db.selectFrom('kb_revisions').select('body').where('page_id', '=', idempotency.id).where('rev_no', '=', idempotency.current_rev).executeTakeFirstOrThrow();
+    const NEWLINE = String.fromCharCode(10);
+    await knowledge.write({ kind: 'agent', id: cleo.id }, { scope, path: idempotency.path, title: idempotency.title, note: 'Added what is still open before 2.14', expectedRev: idempotency.current_rev, body: [written.body, '', '## Still open', 'The load test decides whether the key survives 5× peak traffic. When it runs is not ours to decide:', '', `[[decision:${openDecision.id}]]`].join(NEWLINE) });
+    await db.insertInto('kb_reads').values([bram, cleo, finn].map((agent, index) => ({ page_id: idempotency.id, rev_no: idempotency.current_rev + 1, agent_id: agent.id, turn_id: null, at: at - (index + 1) * 50 * 60_000 }))).execute();
+    const DAY = 86_400_000;
+    await db.updateTable('memories').set({ status: 'confirmed', hits: 4, last_hit_at: at - 3 * DAY }).where('scope_id', '=', checkout.id).where('agent_id', '=', bram.id).execute();
+    const old = await knowledge.fileMemory({ scope, agentId: finn.id, type: 'gotcha', title: 'Finn · in the spring', body: 'The old staging cluster needs a manual cache flush after each deploy.' });
+    await db.updateTable('memories').set({ status: 'confirmed', hits: 2, last_hit_at: at - 74 * DAY, created_at: at - 120 * DAY }).where('id', '=', old).execute();
+    // Messages above were written straight to the table; this makes them findable like any posted message.
+    await backfillSearch(context);
   };
   if (options.activity) await seedActivity();
 

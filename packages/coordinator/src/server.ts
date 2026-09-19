@@ -10,6 +10,7 @@ import { createDeliberation } from './runtime/deliberation.ts';
 import { createTurns } from './runtime/turns.ts';
 import { createRetro } from './runtime/retro.ts';
 import { createDriveSync } from './knowledge/driveSync.ts';
+import { createKnowledge } from './knowledge/knowledge.ts';
 import { createGitMirror } from './knowledge/gitMirror.ts';
 import { createSlackInbound, createSlackMirror } from './sync/slack.ts';
 import { createVersionedDocs } from './repos/versionedDocs.ts';
@@ -60,7 +61,8 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const app = createApp(context);
   // Lease expiry and feedback windows are time-driven; everything else reacts to requests.
   const turns = createTurns(context), deliberation = createDeliberation(context, turns), retro = createRetro(context, turns), traceStore = createTraceStore(context), checkWake = createCheckWake(context, turns);
-  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).then(() => checkWake.sweep()).catch(error => console.error(error)); }, 15_000);
+  const memory = createKnowledge(context);
+  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).then(() => checkWake.sweep()).then(() => memory.sweepStale()).catch(error => console.error(error)); }, 15_000);
   timer.unref();
 
   const sync = createTrackerSync(context, turns), trackers = config.trackers === undefined ? adapterTrackers : config.trackers;

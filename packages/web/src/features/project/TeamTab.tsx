@@ -25,7 +25,7 @@ export function TeamTab({ roster, teamName, onChanged, children }: { roster: Age
   return (
     <div className="flex min-h-0 grow flex-col gap-5 overflow-y-auto p-5">
       <section className="flex flex-col gap-2">
-        <SectionLabel aside={<span className="flex items-center gap-3"><Text size="caption" tone="muted">The PM decides ties</Text>{canEdit && <Button size="sm" variant="primary" onClick={() => setEditor({ open: true, seat: null })}>+ Add an agent</Button>}</span>}>{teamName ?? 'Team'} · {roster.length}</SectionLabel>
+        <SectionLabel aside={<span className="flex items-center gap-3">{canEdit && <Button size="sm" variant="primary" onClick={() => setEditor({ open: true, seat: null })}>+ Add an agent</Button>}</span>}>{teamName ?? 'Team'} · {roster.length}</SectionLabel>
         {roster.map((agent, index) => {
           const seat = team.data?.seats.find(item => item.id === agent.id) ?? null, paused = agent.status === 'paused';
           return (
@@ -41,7 +41,7 @@ export function TeamTab({ roster, teamName, onChanged, children }: { roster: Age
                   <IconButton icon="down" label={`Move ${agent.name} down`} disabled={index === roster.length - 1} onClick={() => move(index, 1)} />
                   <Menu align="end" label={agent.name} trigger={<IconButton icon="more" label={`More for ${agent.name}`} hint={false} />} items={[
                     { label: 'Change name, roles and model…', disabled: !seat, onSelect: () => setEditor({ open: true, seat }) },
-                    { label: agent.is_pm ? 'Is the PM' : 'Make the PM…', disabled: agent.is_pm || paused, onSelect: () => { if (window.confirm(`Make ${agent.name} the PM? ${pm ? `${pm.name} stops being the PM: ` : ''}a team has exactly one, and the PM decides ties and hands out work.`)) act(`/api/agents/${agent.id}/pm`, {}); } },
+                    { label: agent.is_pm ? 'Is the PM' : 'Make the PM…', disabled: agent.is_pm || paused, onSelect: () => { if (window.confirm(`Make ${agent.name} the PM? ${pm ? `${pm.name} stops being the PM: ` : ''}A team has exactly one PM.`)) act(`/api/agents/${agent.id}/pm`, {}); } },
                     { label: paused ? 'Resume' : 'Pause', onSelect: () => act(`/api/agents/${agent.id}`, { status: paused ? 'active' : 'paused' }) },
                     'separator',
                     { label: 'Retire…', tone: 'danger', onSelect: () => { if (window.confirm(`Retire ${agent.name}? The seat leaves the team for good; its past work stays in the record.`)) act(`/api/agents/${agent.id}`, { status: 'retired' }); } },
@@ -73,7 +73,6 @@ export function TeamTab({ roster, teamName, onChanged, children }: { roster: Age
         </div>
         {problem?.about === 'providers' && <StatusLine boxed tone="stop">{problem.text}</StatusLine>}
         {list.length === 0 && <Text size="small" tone="muted">No provider yet. Until one is added, every agent runs on whatever its worker machine was set up with.</Text>}
-        <Text size="caption" tone="muted">Any agent can run on any provider. Keys and sign-ins stay on the worker machines; here you only say which models the team may use.</Text>
       </section>
       {children}
       <ProviderFlow open={flow.open} kind={flow.kind} providers={list} onOpenChange={(open, kind) => setFlow(previous => ({ open, kind: kind === undefined ? previous.kind : kind }))} onDone={changed} />

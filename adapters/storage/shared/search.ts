@@ -14,7 +14,14 @@ export const termsOf = (query: string) => [...new Set(words(query).filter(term =
 
 const CANDIDATES = 200;
 const inScopes = (scopes: SearchScope[]) => (eb: ExpressionBuilder<Schema, 'search_docs'>) => eb.or(scopes.map(scope => eb.and([eb('search_docs.scope_type', '=', scope.type), eb('search_docs.scope_id', '=', scope.id)])));
-const hitOf = (row: { doc_type: string; doc_id: string; title: string; body: string; ref: string | null }): SearchHit => ({ type: row.doc_type, id: row.doc_id, title: row.title, excerpt: row.body.slice(0, 240), ref: row.ref });
+// The excerpt is the start of the body, unless the first word that matched sits further in: then it is the text around that word.
+const EXCERPT = 240, LEAD = 80;
+function excerptOf(body: string, terms: string[]): string {
+  const at = terms.map(term => new RegExp(`(?<![\\p{L}\\p{N}])${term}`, 'iu').exec(body)?.index ?? -1).filter(index => index >= 0).sort((a, b) => a - b)[0] ?? 0;
+  if (at < EXCERPT - LEAD) return body.slice(0, EXCERPT);
+  return `…${body.slice(at - LEAD, at - LEAD + EXCERPT)}`;
+}
+const hitOf = (row: { doc_type: string; doc_id: string; title: string; body: string; ref: string | null }, terms: string[] = []): SearchHit => ({ type: row.doc_type, id: row.doc_id, title: row.title, excerpt: excerptOf(row.body, terms), ref: row.ref });
 
 // Title hits first, then the newest document: ids are time-ordered.
 export function rank<T extends { doc_id: string; title: string }>(rows: T[], terms: string[]): T[] {
@@ -39,7 +46,7 @@ export function createSearch(db: Db, matches: (terms: string[]) => RawBuilder<bo
       const terms = termsOf(q);
       if (terms.length === 0 || scopes.length === 0 || limit <= 0) return [];
       const rows = await db.selectFrom('search_docs').select(['doc_type', 'doc_id', 'title', 'body', 'ref']).where(inScopes(scopes)).where(matches(terms)).orderBy('doc_id', 'desc').limit(CANDIDATES).execute();
-      return rank(rows, terms).slice(0, limit).map(hitOf);
+      return rank(rows, terms).slice(0, limit).map(row => hitOf(row, terms));
     },
   };
 }

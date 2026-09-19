@@ -328,6 +328,101 @@ test('harness health shows the cases on the base branch, what is quarantined as 
   expect(errors).toEqual([]);
 });
 
+test('knowledge: search, write a page, edit it past a stale save, read its history, restore a version and review stale memory', async ({ page }) => {
+  const errors = await enter(page);
+  await page.goto(`${PROJECT}/knowledge`);
+  const main = page.locator('article');
+  await page.getByRole('complementary', { name: 'Pages' }).getByRole('link', { name: 'Idempotency in checkout' }).click();
+  await expect(main.getByRole('heading', { name: 'Idempotency in checkout' })).toBeVisible();
+  // The page points at a decision; what is shown is the decision as it stands, with the way to its discussion.
+  await expect(main.getByText(/Keep the Thursday deploy/)).toBeVisible();
+  await expect(main.getByText('Waiting for a person to decide')).toBeVisible();
+  await expect(main.getByText(/read by 3 agents today/)).toBeVisible();
+  await expect(page.getByText(/used 4 times, last 3 days ago/)).toBeVisible();
+  await page.screenshot({ path: 'walk-shots/knowledge-page.png' });
+
+  const search = page.getByRole('searchbox', { name: 'Search knowledge' });
+  await search.fill('safari');
+  await expect(main.getByText('Memories', { exact: true })).toBeVisible();
+  await expect(main.getByText('Issues', { exact: true })).toBeVisible();
+  await page.screenshot({ path: 'walk-shots/knowledge-search.png' });
+  await search.fill('zzzz');
+  await expect(main.getByText(/Nothing found for/)).toBeVisible();
+  await search.fill('webhooks');
+  await main.getByRole('button', { name: /Billing webhooks v2/ }).click();
+  await expect(main.getByRole('heading', { name: 'Billing webhooks v2' })).toBeVisible();
+  await expect(search).toHaveValue('');
+
+  await page.getByRole('button', { name: 'New page' }).click();
+  const stamp = Date.now(), title = `Refund rules ${stamp}`;
+  await main.getByLabel('Title').fill(title);
+  await main.getByLabel('Where it goes').selectOption({ label: 'In a new folder…' });
+  await main.getByLabel('Name of the new folder').fill('Support');
+  await main.getByLabel('What the page says').fill('# Refunds\n\n- Full refund within 14 days.\n- After that, store credit.');
+  await main.getByLabel('Point at a decision').selectOption({ index: 1 });
+  await main.getByRole('radio', { name: 'Preview' }).click();
+  await expect(main.getByRole('heading', { name: 'Refunds' })).toBeVisible();
+  await expect(main.locator('span').getByText(/Keep the Thursday deploy/)).toBeVisible();
+  await page.screenshot({ path: 'walk-shots/knowledge-new.png' });
+  await main.getByRole('button', { name: 'Save page' }).click();
+  await expect(main.getByRole('heading', { name: title })).toBeVisible();
+  await expect(page.getByRole('complementary', { name: 'Pages' }).getByText('▸ Support', { exact: true })).toBeVisible();
+
+  // An edit made while someone else saved is refused, says so, and can still be saved on top.
+  await main.getByRole('button', { name: 'Edit' }).click();
+  await main.getByLabel('What the page says').fill('# Refunds\n\n- Full refund within 30 days.\n- After that, store credit.');
+  await main.getByLabel('What changed').fill('Thirty days, as agreed with support');
+  expect((await page.request.post('/api/projects/checkout-v2/knowledge', { data: { path: `support/refund-rules-${stamp}.md`, title, body: 'Someone else got here first.' } })).ok()).toBe(true);
+  await main.getByRole('button', { name: 'Save changes' }).click();
+  await expect(main.getByText('Someone else changed this page while you were writing')).toBeVisible();
+  await page.screenshot({ path: 'walk-shots/knowledge-stale.png' });
+  await main.getByRole('button', { name: 'Save mine on top' }).click();
+  await expect(main.getByText('Full refund within 30 days.')).toBeVisible();
+  await expect(main.getByText(/Version 3, saved/)).toBeVisible();
+
+  await main.getByRole('button', { name: 'History' }).click();
+  await expect(main.getByRole('button', { name: /Version 3 .* Thirty days, as agreed with support/ })).toBeVisible();
+  await main.getByRole('button', { name: /Version 1 / }).click();
+  await expect(main.getByRole('table', { name: /Changes to support\/refund-rules/ })).toContainText('Full refund within 14 days.');
+  await page.screenshot({ path: 'walk-shots/knowledge-history.png', fullPage: true });
+  await main.getByRole('button', { name: 'Restore this version' }).click();
+  await expect(main.getByRole('button', { name: /Version 4 .* Restored version 1/ })).toBeVisible();
+  await main.getByRole('button', { name: 'Back to the page' }).click();
+  await expect(main.getByText('Full refund within 14 days.')).toBeVisible();
+
+  // Memory nobody has used for two months comes up for review.
+  const rail = page.getByRole('complementary', { name: 'Memory' });
+  await rail.getByRole('radio', { name: /Review stale \(1\)/ }).click();
+  await expect(rail.getByText(/manual cache flush/)).toBeVisible();
+  await page.screenshot({ path: 'walk-shots/knowledge-stale-memory.png' });
+  await rail.getByRole('button', { name: 'Still true' }).click();
+  await expect(rail.getByRole('radio', { name: /Review stale/ })).toHaveCount(0);
+
+  // Knowledge is kept at more than one level.
+  await page.getByRole('radio', { name: 'Acme' }).click();
+  await expect(main.getByText('Nothing written here yet')).toBeVisible();
+  await page.screenshot({ path: 'walk-shots/knowledge-org-empty.png' });
+  expect(errors).toEqual([]);
+});
+
+test('the Tests tab shows the branch matrix with who is on a failure, and says how results arrive when there are none', async ({ page }) => {
+  const errors = await enter(page);
+  await page.goto(`${PROJECT}/tests`);
+  await expect(page.getByText(/pay-button\.spec › comes back after a network drop/)).toBeVisible();
+  await expect(page.getByText(/Bram is on it \(CK-28\)/)).toBeVisible();
+  await expect(page.getByText(/cart\.spec › keeps the cart across a reload/).first()).toBeVisible();
+  await page.screenshot({ path: 'walk-shots/tests-matrix.png', fullPage: true });
+  await page.goto('/p/search-rework/tests');
+  await expect(page.getByText('No test results yet')).toBeVisible();
+  await expect(page.getByText('How results get here')).toBeVisible();
+  await page.screenshot({ path: 'walk-shots/tests-empty.png' });
+  await page.getByLabel('What do these results cover?').fill('Unit tests');
+  await page.getByLabel('Results file').setInputFiles({ name: 'results.xml', mimeType: 'text/xml', buffer: Buffer.from('<testsuite><testcase name="totals" time="1.5"/><testcase name="tax"><failure message="expected 25, got 24"/></testcase></testsuite>') });
+  await page.getByRole('button', { name: 'Upload results' }).click();
+  await expect(page.getByText(/tax — expected 25, got 24/)).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
 test('what needs a person is one click away, and a decision is recorded in their own words', async ({ page }, info) => {
   const errors = await enter(page);
   await page.goto(`${PROJECT}/tasks`);
@@ -343,5 +438,63 @@ test('what needs a person is one click away, and a decision is recorded in their
   await expect(page.getByText(/Keep the Thursday deploy/)).toHaveCount(0);
   await page.goto(`${PROJECT}/tasks`);
   await expect(page.getByText('Test first and ship Friday.')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('single sign-on is set up through a guided flow, checked, shown in sentences and turned off; a token is shown once to copy', async ({ page, baseURL }) => {
+  const errors = await enter(page);
+  await page.goto('/settings/auth');
+  await expect(page.getByText(/After 8 failed sign-ins an account is locked for 15 minutes/)).toBeVisible();
+  await page.getByRole('button', { name: 'Set up single sign-on' }).click();
+  const flow = page.getByRole('dialog');
+  for (const title of ['Google Workspace', 'Microsoft Entra ID', 'Okta', 'Auth0', 'Keycloak', 'Another OpenID Connect provider']) await expect(flow.getByText(title, { exact: true })).toBeVisible();
+  await page.screenshot({ path: 'walk-shots/sso-pick.png' });
+
+  // The product's own words, the address to paste with a copy button, and the secret that is never typed here.
+  await flow.getByText('Microsoft Entra ID', { exact: true }).click();
+  await expect(flow.getByText(`${baseURL}/api/auth/oidc/callback`)).toBeVisible();
+  await expect(flow.getByRole('button', { name: 'Copy' })).toBeVisible();
+  await expect(flow.getByText(/App registrations and choose New registration/)).toBeVisible();
+  await expect(flow.getByText(/AGENT_TEAM_OIDC_SECRET is (not )?set on the coordinator/).first()).toBeVisible();
+  await expect(flow.getByLabel(/secret/i)).toHaveCount(0);
+  await page.screenshot({ path: 'walk-shots/sso-steps.png' });
+  await flow.getByLabel('Directory (tenant) ID').fill('contoso');
+  await flow.getByLabel('Application (client) ID').fill('3fa85f64-5717-4562-b3fc-2c963f66afa6');
+  await flow.getByRole('button', { name: 'Turn on' }).click();
+  await expect(flow.getByText(/Directory \(tenant\) ID does not look right; it should look like/)).toBeVisible();
+
+  // Any other product: this coordinator's own address is not a sign-in service, and the check says so without leaving the machine.
+  await flow.getByRole('button', { name: /Back/ }).click();
+  await flow.getByText('Another OpenID Connect provider', { exact: true }).click();
+  await flow.getByLabel('Issuer address').fill(baseURL!);
+  await flow.getByLabel('Client ID').fill('agent-team');
+  await flow.getByRole('button', { name: 'Test', exact: true }).click();
+  await expect(flow.getByText('That address does not answer as a sign-in service.')).toBeVisible();
+  await flow.getByLabel(/Email domains/).fill('example.com, example.org');
+  await flow.locator('form').evaluate(form => { form.parentElement!.scrollTop = form.parentElement!.scrollHeight; });
+  await page.screenshot({ path: 'walk-shots/sso-check.png' });
+  await flow.getByRole('button', { name: 'Turn on' }).click();
+  await expect(flow).toBeHidden();
+
+  await expect(page.getByText('Anyone with a verified email address at example.com or example.org may sign in.')).toBeVisible();
+  await expect(page.getByText(/joins as a viewer, who can read everything they are given/)).toBeVisible();
+  await page.getByRole('button', { name: 'Test', exact: true }).click();
+  await expect(page.getByText('That address does not answer as a sign-in service.')).toBeVisible();
+  await page.screenshot({ path: 'walk-shots/sso-on.png' });
+  await page.getByRole('button', { name: 'Turn off' }).click();
+  await page.getByRole('dialog').getByRole('button', { name: 'Turn off' }).click();
+  await expect(page.getByRole('button', { name: 'Set up single sign-on' })).toBeVisible();
+
+  // A token for a worker: shown once, in a block with its own copy button.
+  await expect(page.getByText('Tokens for workers and the command line')).toBeVisible();
+  await page.getByLabel('Name').fill('build box');
+  await page.getByRole('button', { name: 'Create token' }).click();
+  await expect(page.getByText(/Copy this token now; it is not shown again/)).toBeVisible();
+  await expect(page.locator('pre')).toHaveText(/\S{20,}/);
+  await expect(page.getByRole('button', { name: 'Copy', exact: true })).toBeVisible();
+  await page.locator('main').getByText(/Copy this token now/).scrollIntoViewIfNeeded();
+  await page.screenshot({ path: 'walk-shots/signin.png' });
+  await page.getByRole('button', { name: 'Done, I copied it' }).click();
+  await expect(page.locator('pre')).toHaveCount(0);
   expect(errors).toEqual([]);
 });

@@ -2,7 +2,7 @@ import type { Context as Hc, Hono } from 'hono';
 import { AgentBody, AgentPatch, AuthSettingsBody, FromTemplateBody, HireBody, MachineTokenBody, MilestoneBody, MilestonePatch, ProjectLinkBody, ProjectMemberBody, ProjectStatusBody, SaveTemplateBody, SeatLoanBody, TeamOrderBody, UserPatch, VersionedDocBody, type StoredEvent, type TeamView } from '@agent-team/protocol';
 import type { MachineTokens } from '../auth/machineTokens.ts';
 import { createMembers } from '../auth/members.ts';
-import { OidcSettings } from '../auth/oidc.ts';
+import { createAuthSettings } from '../auth/authSettings.ts';
 import { can, canSeeProject, type Action, type Viewer } from '../auth/rbac.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
 import { createOrg } from '../repos/org.ts';
@@ -18,7 +18,7 @@ const SETTINGS_SLUG = 'settings';
 export function registerOrgRoutes(app: Hono<Env>, context: Context, deps: { workspace: ReturnType<typeof createWorkspace>; docs: VersionedDocs; machineTokens: MachineTokens }) {
   const { workspace, docs, machineTokens } = deps;
   const db = context.storage.db;
-  const org = createOrg(context), members = createMembers(context);
+  const org = createOrg(context), members = createMembers(context), authSettings = createAuthSettings(context);
   const allow = (c: Hc<Env>, action: Action, projectId?: string) => { if (!can(c.get('viewer'), action, projectId)) throw forbidden(); };
   const me = (c: Hc<Env>) => c.get('viewer').userId;
   const authorName = async (c: Hc<Env>) => (await db.selectFrom('users').select('name').where('id', '=', me(c)).executeTakeFirstOrThrow()).name;
@@ -37,22 +37,9 @@ export function registerOrgRoutes(app: Hono<Env>, context: Context, deps: { work
   // How people sign in. Admins read it; only the owner changes it. The trusted header is deployment configuration and is shown, never set, here.
   app.get('/api/settings/auth', async c => {
     allow(c, 'org.members');
-    const settings = JSON.parse((await db.selectFrom('org').select('settings').executeTakeFirst())?.settings ?? '{}') as { oidc?: unknown };
-    const oidc = OidcSettings.safeParse(settings.oidc);
-    return c.json({ oidc: oidc.success ? oidc.data : null, password: { minimumLength: 12 }, trustedHeader: { enabled: context.trustedHeader !== null, header: context.trustedHeader }, secureCookies: context.secureCookies, canEdit: can(c.get('viewer'), 'org.settings') });
+    return c.json({ oidc: await authSettings.oidc(), password: { minimumLength: 12 }, trustedHeader: { enabled: context.trustedHeader !== null, header: context.trustedHeader }, secureCookies: context.secureCookies, canEdit: can(c.get('viewer'), 'org.settings') });
   });
-  app.post('/api/settings/auth', async c => {
-    allow(c, 'org.settings');
-    const input = await parseBody(c, AuthSettingsBody);
-    const published = await context.storage.transaction(async tx => {
-      const row = await tx.selectFrom('org').select(['id', 'settings']).executeTakeFirstOrThrow();
-      const { oidc: _previous, ...rest } = JSON.parse(row.settings) as Record<string, unknown>;
-      await tx.updateTable('org').set({ settings: JSON.stringify(input.oidc ? { ...rest, oidc: { ...input.oidc, allowedDomains: input.oidc.allowedDomains.map(domain => domain.trim().toLowerCase().replace(/^@/, '')) } } : rest) }).where('id', '=', row.id).execute();
-      return context.events.append(tx, [{ type: 'settings.changed', category: 'audit', actorKind: 'user', userId: me(c), payload: { kind: 'auth', oidc: input.oidc ? { issuer: input.oidc.issuer, allowedDomains: input.oidc.allowedDomains } : null } }]);
-    });
-    context.events.published(published);
-    return c.json({ ok: true });
-  });
+  app.post('/api/settings/auth', async c => { allow(c, 'org.settings'); await authSettings.save(me(c), await parseBody(c, AuthSettingsBody)); return c.json({ ok: true }); });
 
   app.get('/api/machine-tokens', async c => { allow(c, 'org.members'); return c.json({ tokens: await machineTokens.list() }); });
   app.post('/api/machine-tokens', async c => { allow(c, 'org.members'); return c.json(await machineTokens.create(c.get('viewer'), await parseBody(c, MachineTokenBody))); });

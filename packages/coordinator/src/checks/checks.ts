@@ -50,10 +50,18 @@ export function createChecks(context: Context) {
       const cells = [...latest.values()];
       const failingRuns = cells.filter(run => run.status === 'failed').map(run => run.id);
       const cases = failingRuns.length ? await db.selectFrom('check_cases').selectAll().where('run_id', 'in', failingRuns).where('status', '!=', 'quarantined').limit(200).execute() : [];
+      // A failure on a task's branch belongs to whoever works on that task, and to the issue the task fixes.
+      const branches = [...new Set(cells.filter(run => run.status === 'failed').map(run => run.branch))];
+      const tasks = branches.length ? await db.selectFrom('tasks').leftJoin('agents', 'agents.id', 'tasks.assignee_agent_id').select(['tasks.id', 'tasks.key', 'tasks.branch', 'agents.id as agent_id', 'agents.name as agent_name']).where('tasks.project_id', '=', projectId).where('tasks.branch', 'in', branches).orderBy('tasks.updated_at', 'desc').execute() : [];
+      const fixes = tasks.length ? await db.selectFrom('links').innerJoin('issues', 'issues.id', 'links.from_id').select(['links.to_id', 'issues.number', 'issues.title']).where('links.from_type', '=', 'issue').where('links.to_type', '=', 'task').where('links.to_id', 'in', tasks.map(task => task.id)).execute() : [];
+      const behind = (branch: string) => {
+        const task = tasks.find(item => item.branch === branch), issue = task && fixes.find(link => link.to_id === task.id);
+        return { owner: task?.agent_id ? { id: task.agent_id, name: task.agent_name ?? '' } : null, taskKey: task?.key ?? null, issue: issue ? { number: issue.number, title: issue.title } : null };
+      };
       return {
         suites: [...new Set(cells.map(run => run.suite))].sort(),
         branches: [...new Set(cells.map(run => run.branch))].map(branch => ({ branch, lastRunAt: Math.max(...cells.filter(run => run.branch === branch).map(run => Number(run.created_at))), runs: cells.filter(run => run.branch === branch).map(run => ({ id: run.id, suite: run.suite, status: run.status, passed: run.passed, total: run.total, failed: run.failed })) })),
-        failing: cases.map(item => ({ ...item, branch: latest.size ? cells.find(run => run.id === item.run_id)?.branch ?? '' : '', suite: cells.find(run => run.id === item.run_id)?.suite ?? '' })),
+        failing: cases.map(item => { const run = cells.find(cell => cell.id === item.run_id); return { ...item, branch: run?.branch ?? '', suite: run?.suite ?? '', ...behind(run?.branch ?? '') }; }),
       };
     },
 

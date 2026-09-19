@@ -42,6 +42,8 @@ export const OidcSettings = z.object({
   allowedDomains: z.array(z.string().min(1)).default([]), defaultRole: z.enum(['member', 'viewer']).default('viewer'),
   // Only for a test or development provider on plain HTTP.
   allowInsecure: z.boolean().default(false),
+  // Which entry of the identity catalog this was set up through, so the app can name it; absent when entered by hand.
+  provider: z.string().max(40).optional(),
 });
 export type OidcSettings = z.infer<typeof OidcSettings>;
 export const AuthSettingsBody = z.object({ oidc: OidcSettings.nullable() });

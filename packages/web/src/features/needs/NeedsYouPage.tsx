@@ -19,7 +19,6 @@ export function NeedsYouPage({ me, projects }: { me: Me; projects: ProjectNode[]
   return (
     <OrgShell me={me} projects={projects} title="Needs you" active={null}>
       <SettingsBody><div className="flex max-w-3xl flex-col gap-3">
-        <Text size="small" tone="muted">What the team cannot settle on its own. Nothing here is retried or decided automatically.</Text>
         {view.data?.items.length === 0 && <EmptyState title="Nothing needs you" note="Decisions, unknown outcomes and proposals that need a person will appear here." />}
         {view.data?.items.map(item => <NeedCard key={`${item.kind}:${item.id}`} item={item} project={names.get(item.projectId) ?? ''} onDone={view.reload} />)}
       </div></SettingsBody>

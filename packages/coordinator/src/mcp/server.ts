@@ -130,7 +130,7 @@ export function createMcp(context: Context, deps: McpDeps) {
       events.published(published);
       return { state };
     },
-    'knowledge.search': async (turn, input) => knowledge.search(await scopesOf(turn), input.query),
+    'knowledge.search': async (turn, input) => knowledge.search(await scopesOf(turn), input.query, 10, { countHits: true }),
     'knowledge.read': async (turn, input) => {
       const page = await db.selectFrom('kb_pages').select(['scope_type', 'scope_id']).where('id', '=', input.pageId).executeTakeFirst();
       if (!page || !(await scopesOf(turn)).some(scope => scope.type === page.scope_type && scope.id === page.scope_id)) throw new ToolError('Page not found in this project');

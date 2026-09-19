@@ -10,7 +10,7 @@ export function Card({ as: Tag = 'div', tone = 'card', pad = 'md', className, ch
 }
 
 export function SectionLabel({ children, aside }: { children: ReactNode; aside?: ReactNode }) {
-  return <div className="flex items-baseline gap-2"><Text size="label">{children}</Text>{aside && <span className="ml-auto">{aside}</span>}</div>;
+  return <div className="flex items-baseline gap-2"><Text size="label" truncate className="min-w-0">{children}</Text>{aside && <span className="ml-auto shrink-0 whitespace-nowrap">{aside}</span>}</div>;
 }
 
 export function Meter({ value, tone = 'working', thin }: { value: number; tone?: 'working' | 'review' | 'idle' | 'attention'; thin?: boolean }) {

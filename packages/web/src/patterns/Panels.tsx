@@ -17,13 +17,46 @@ export function ListLink({ href, active, indent, mark, children, aside }: { href
   );
 }
 
-// Article body: a knowledge page's markdown, rendered and sanitized by Markdown.
-export function Prose({ children }: { children: string }) {
-  return <Markdown className="max-w-180">{children}</Markdown>;
+// A page points at a decision with this token instead of copying its words, so the page always shows the decision as it stands.
+const DECISION_TOKEN = /\[\[decision:([A-Za-z0-9_-]{1,64})\]\]/;
+export const decisionToken = (id: string) => `[[decision:${id}]]`;
+// For places that show a page's raw text to a reader, such as a comparison of two versions.
+export const maskDecisionTokens = (text: string) => text.replace(new RegExp(DECISION_TOKEN.source, 'g'), '[a decision is shown here]');
+export const hasDecisionToken = (text: string) => DECISION_TOKEN.test(text);
+
+// Article body: a knowledge page's markdown, rendered and sanitized by Markdown. With `decision`, each decision token
+// in the text becomes whatever the caller renders for that decision, in place.
+export function Prose({ children, decision }: { children: string; decision?: (id: string) => ReactNode }) {
+  if (!decision || !DECISION_TOKEN.test(children)) return <Markdown className="max-w-180">{children}</Markdown>;
+  // Splitting on a pattern with one group leaves text at even positions and decision ids at odd ones.
+  const parts = children.split(new RegExp(DECISION_TOKEN.source, 'g'));
+  return <div className="flex max-w-180 flex-col gap-3">{parts.map((part, index) => (index % 2 ? <div key={index}>{decision(part)}</div> : part.trim() ? <Markdown key={index}>{part}</Markdown> : null))}</div>;
 }
 
-export function NoteCard({ children, meta, tag }: { children: ReactNode; meta: ReactNode; tag?: string }) {
-  return <Card tone="raised" pad="sm" className="flex flex-col gap-1.5"><Text size="small" tone="soft">{children}</Text><div className="flex items-center gap-1.5"><Text size="caption" tone="muted">{meta}</Text>{tag && <span className="ml-auto"><Chip>{tag}</Chip></span>}</div></Card>;
+// A decision shown inside a page: what was decided, where it stands, and the way to the discussion it came from.
+export function DecisionCallout({ summary, state, waiting, href }: { summary: string; state: string; waiting?: boolean; href?: string | undefined }) {
+  return (
+    <Card tone="decision" pad="sm" className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2"><Text size="label">Decision</Text><Chip tone={waiting ? 'attention' : 'working'}>{state}</Chip></div>
+      <Text size="small">{summary}</Text>
+      {href && <Link href={href} className="self-start"><Text size="caption" tone="accent">Open the discussion it came from</Text></Link>}
+    </Card>
+  );
+}
+
+export function NoteCard({ children, meta, tag, tagTone, highlight }: { children: ReactNode; meta: ReactNode; tag?: string; tagTone?: 'neutral' | 'working' | 'attention'; highlight?: boolean }) {
+  return <Card tone={highlight ? 'decision' : 'raised'} pad="sm" className="flex flex-col gap-1.5"><Text size="small" tone="soft">{children}</Text><div className="flex items-center gap-1.5"><Text size="caption" tone="muted">{meta}</Text>{tag && <span className="ml-auto"><Chip tone={tagTone ?? 'neutral'}>{tag}</Chip></span>}</div></Card>;
+}
+
+// A notice inside a form or a page: something went wrong or needs a choice. The buttons to act on it go in as children.
+export function Notice({ tone = 'attention', title, children, actions }: { tone?: 'attention' | 'stop' | 'working'; title: string; children?: ReactNode; actions?: ReactNode }) {
+  return (
+    <Card tone="raised" pad="sm" className="flex flex-col gap-2">
+      <Text size="small" weight="semibold" tone={tone}>{title}</Text>
+      {children && <Text size="small" tone="soft">{children}</Text>}
+      {actions && <div className="flex flex-wrap gap-2">{actions}</div>}
+    </Card>
+  );
 }
 
 export function BarRow({ label, value, share, note, indent }: { label: ReactNode; value: string; share: number; note?: string; indent?: boolean }) {

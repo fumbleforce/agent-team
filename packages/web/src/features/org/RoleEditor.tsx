@@ -34,7 +34,6 @@ export function RoleEditor({ role, onSaved, onCancel }: { role: EditableRole; on
       <Field label="Note for the history"><Input name="note" maxLength={200} /></Field>
       {error && <Text size="small" tone="stop">{error}</Text>}
       <div className="flex gap-1.5"><Button variant="primary" type="submit">Save as version {role.version + 1}</Button><Button variant="ghost" onClick={onCancel}>Cancel</Button></div>
-      <Text size="caption" tone="muted">A running turn keeps the permissions it was claimed with. The project's committed ceiling still caps whatever a role allows.</Text>
     </form>
   );
 }

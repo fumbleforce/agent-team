@@ -22,6 +22,14 @@ export async function uploadImage(file: File): Promise<{ id: string; name: strin
   return { id: (json as { id: string }).id, name };
 }
 
+// Sends a test results file (JUnit XML) for one suite on one branch. The body is the file itself.
+export async function uploadCheckResults(slug: string, suite: string, branch: string, file: File): Promise<{ id: string; status: string }> {
+  const response = await fetch(`/api/projects/${slug}/checks/${encodeURIComponent(suite)}?branch=${encodeURIComponent(branch)}`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/xml' }, body: await file.text() });
+  const json = await response.json().catch(() => null);
+  if (!response.ok) throw new ApiError(response.status, json?.error?.code ?? 'error', json?.error?.message ?? 'Upload failed');
+  return json as { id: string; status: string };
+}
+
 // Posts to a thread. Attached images are stored on the message and shown under it.
 export const postToThread = (threadId: string, body: string, attachmentIds: string[] = []): Promise<void> =>
   api(`/api/threads/${threadId}/messages`, { body, attachmentIds }).then(() => undefined);

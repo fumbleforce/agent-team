@@ -93,7 +93,7 @@ export function Sidebar({ orgName, projects, activeSlug, roster, teamName, links
       </div>
       {roster.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          <div className="px-1.5 pb-1.5"><SectionLabel aside={<Link href="/org"><Text size="caption" tone="accent">All teams</Text></Link>}>{teamName ?? 'Team'} · {roster.length}</SectionLabel></div>
+          <div className="px-1.5 pb-1.5"><SectionLabel aside={<Link href="/org" className="shrink-0 whitespace-nowrap"><Text size="caption" tone="accent">All teams</Text></Link>}>{teamName ?? 'Team'} · {roster.length}</SectionLabel></div>
           {roster.map(agent => <AgentLine key={agent.id} agent={agent} />)}
         </div>
       )}

@@ -12,8 +12,10 @@ import { createMachineTokens } from '../auth/machineTokens.ts';
 import { clientAddress, idempotency, ifMatch, onError, onNotFound, pageOf, parseBody, preconditioned } from './conventions.ts';
 import { registerOrgRoutes } from './orgRoutes.ts';
 import { registerRuleRoutes } from './ruleRoutes.ts';
+import { registerKnowledgeRoutes } from './knowledgeRoutes.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
 import { mountSetupRoutes } from './setupRoutes.ts';
+import { mountSsoSetupRoutes } from './ssoSetupRoutes.ts';
 import { mountOnboardingRoutes } from './onboardingRoutes.ts';
 import { createControls } from '../runtime/controls.ts';
 import { createNeedsYou, type NeedsYouKind } from '../runtime/needsYou.ts';
@@ -38,7 +40,7 @@ import { createSessions } from '../runtime/sessions.ts';
 import { createTraceStore } from '../runtime/traceStore.ts';
 import { createVersionedDocs } from '../repos/versionedDocs.ts';
 import { AttachHandoffBody, ConnectionBody, createIntegrations, HandoffBody, HandoffResultBody } from '../repos/integrations.ts';
-import { ClaimBody, FinishBody, GitAdminBody, LeaseBody, TaskStatesBody, SessionBody, StepArtifactKind, STREAM_ARTIFACT_SEQ, CreateIssueBody, MemoryActionBody, RegisterProjectBody, CreateProjectBody, SeatProviderBody, StepsBody, WritePageBody } from '@agent-team/protocol';
+import { ClaimBody, FinishBody, GitAdminBody, LeaseBody, TaskStatesBody, SessionBody, StepArtifactKind, STREAM_ARTIFACT_SEQ, CreateIssueBody, RegisterProjectBody, CreateProjectBody, SeatProviderBody, StepsBody } from '@agent-team/protocol';
 
 type Env = { Variables: { viewer: Viewer } };
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.json': 'application/json', '.png': 'image/png' };
@@ -284,29 +286,8 @@ export function createApp(context: Context) {
     allow(c, action, project.parent_id ?? project.id);
     return { project, scope: { type: project.parent_id ? 'subproject' : 'project', id: project.id } as Scope };
   };
-  app.get('/api/projects/:slug/knowledge', async c => {
-    const { scope } = await projectFor(c, 'project.read');
-    return c.json({ pages: await knowledge.tree(scope), memories: await knowledge.memories(scope), seq: await context.events.head() });
-  });
-  app.post('/api/projects/:slug/knowledge', async c => {
-    const { scope } = await projectFor(c, 'project.contribute');
-    return c.json(await knowledge.write({ kind: 'user', id: c.get('viewer').userId }, { scope, ...(await body(c, WritePageBody)) }));
-  });
-  app.get('/api/projects/:slug/knowledge/pages/:id', async c => {
-    await projectFor(c, 'project.read');
-    return c.json({ page: await knowledge.read(c.req.param('id')), history: await knowledge.history(c.req.param('id')) });
-  });
-  app.post('/api/projects/:slug/memories/:id', async c => {
-    await projectFor(c, 'project.contribute');
-    const input = await body(c, MemoryActionBody);
-    if (input.action === 'promote') return c.json(await knowledge.promote({ kind: 'user', id: c.get('viewer').userId }, c.req.param('id'), input.path ?? ''));
-    await knowledge.setMemoryStatus(c.req.param('id'), input.action === 'confirm' ? 'confirmed' : 'retired');
-    return c.json({ ok: true });
-  });
-  app.get('/api/projects/:slug/search', async c => {
-    const { scope } = await projectFor(c, 'project.read');
-    return c.json({ hits: await knowledge.search([scope], c.req.query('q') ?? '') });
-  });
+  // Pages, memories, history, search and decisions: knowledgeRoutes.ts.
+  registerKnowledgeRoutes(app, context, { workspace, knowledge });
 
   // One lane per agent: what it is on now, what is queued, what it owes teammates, and why anything waits.
   app.get('/api/projects/:slug/workload', async c => {
@@ -567,6 +548,7 @@ export function createApp(context: Context) {
   });
 
   registerOrgRoutes(app, context, { workspace, docs, machineTokens });
+  mountSsoSetupRoutes(app, { context, callbackUri });
   registerRuleRoutes(app, context, { workspace, docs, costs });
 
   // Snapshot-then-stream: a view returns the seq it is current to, the client subscribes from there.

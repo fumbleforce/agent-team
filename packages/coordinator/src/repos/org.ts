@@ -331,7 +331,7 @@ export function createOrg(context: Context) {
         entries: page.map(row => {
           const payload = JSON.parse(row.payload) as Record<string, unknown>;
           const named = ['email', 'name', 'slug', 'label', 'subject', 'library', 'template'].map(key => payload[key]).find(value => typeof value === 'string') as string | undefined;
-          return { seq: Number(row.seq), at: Number(row.at), action: row.type, category: row.category, actor: { kind: row.actor_kind, id: row.user_id ?? row.agent_id, name: row.user_name ?? (row.actor_kind === 'user' ? 'Unknown person' : row.actor_kind), email: row.user_email }, target: named ?? row.project_name ?? row.task_id ?? row.thread_id ?? null, project: row.project_id ? { id: row.project_id, name: row.project_name } : null, payload };
+          return { seq: Number(row.seq), at: Number(row.at), action: row.type, category: row.category, actor: { kind: row.actor_kind, id: row.user_id ?? row.agent_id, name: row.user_name ?? ({ user: 'Someone who has since been removed', system: 'The platform itself', agent: 'An agent', worker: 'A worker' }[row.actor_kind] ?? row.actor_kind), email: row.user_email }, target: named ?? row.project_name ?? row.task_id ?? row.thread_id ?? null, project: row.project_id ? { id: row.project_id, name: row.project_name } : null, payload };
         }),
         next: rows.length > filter.limit ? Number(page.at(-1)!.seq) : null,
       };

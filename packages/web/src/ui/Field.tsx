@@ -7,7 +7,9 @@ const BOX = 'w-full rounded-control border border-line-strong bg-raised px-3 tex
 export function Field({ label, help, error, children }: { label: string; help?: string | undefined; error?: string | undefined; children: ReactNode }) {
   return <label className="flex flex-col gap-1.5"><Text size="small" tone="muted">{label}</Text>{children}{error ? <Text size="caption" tone="stop">{error}</Text> : help && <Text size="caption" tone="faint">{help}</Text>}</label>;
 }
-export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) { return <input className={cx(BOX, 'h-9', className)} {...rest} />; }
+// A file picker is the same box; its built-in button is drawn as a small control inside it.
+const FILE = 'cursor-pointer py-1.5 text-small text-ink-soft file:mr-3 file:cursor-pointer file:rounded-chip file:border-0 file:bg-active file:px-2 file:py-0.5 file:text-small file:text-ink';
+export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) { return <input className={cx(BOX, 'h-9', rest.type === 'file' && FILE, className)} {...rest} />; }
 export function Textarea({ className, bare, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement> & { bare?: boolean; ref?: Ref<HTMLTextAreaElement> }) {
   return <textarea className={cx(bare ? 'w-full resize-none bg-transparent text-body text-ink placeholder:text-ink-faint outline-none' : cx(BOX, 'py-2 resize-none'), className)} {...rest} />;
 }

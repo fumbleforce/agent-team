@@ -1,11 +1,12 @@
-import type { HarnessHealthView } from '../../data/client';
+import { useState } from 'react';
+import { uploadCheckResults, type HarnessHealthView } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
-import { BarRow, MatrixTable, NoteCard } from '../../patterns';
-import { Card, SectionLabel, StatTile, Text } from '../../ui';
+import { BarRow, EmptyState, EntityLink, MatrixTable, NoteCard, Notice, Steps } from '../../patterns';
+import { Button, Card, Field, Input, LinkButton, SectionLabel, StatTile, Text } from '../../ui';
 
 interface Run { id: string; suite: string; status: string; passed: number; total: number; failed: number }
-interface Matrix { suites: string[]; branches: { branch: string; lastRunAt: number; runs: Run[] }[]; failing: { run_id: string; name: string; message: string | null; branch: string; suite: string }[] }
+interface Matrix { suites: string[]; branches: { branch: string; lastRunAt: number; runs: Run[] }[]; failing: { run_id: string; name: string; message: string | null; branch: string; suite: string; owner: { id: string; name: string } | null; taskKey: string | null; issue: { number: number; title: string } | null }[] }
 
 const ago = (ms: number) => { const minutes = Math.round((Date.now() - ms) / 60_000); return minutes < 60 ? `${minutes} min` : minutes < 1440 ? `${Math.round(minutes / 60)} h` : `${Math.round(minutes / 1440)} d`; };
 
@@ -45,6 +46,61 @@ function HarnessHealth({ health, code }: { health: HarnessHealthView; code: bool
   );
 }
 
+// Bringing results in by hand: pick the file a test tool saved, say what it covers and where it ran.
+function UploadResults({ slug, branch, onDone }: { slug: string; branch: string; onDone(): void }) {
+  const [suite, setSuite] = useState('');
+  const [where, setWhere] = useState(branch);
+  const [file, setFile] = useState<File | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [result, setResult] = useState<{ ok: boolean; text: string } | null>(null);
+  const send = async () => {
+    if (!file) return;
+    setBusy(true); setResult(null);
+    try { await uploadCheckResults(slug, suite.trim(), where.trim() || branch, file); setResult({ ok: true, text: 'The results are in.' }); setFile(null); onDone(); }
+    catch (error) { setResult({ ok: false, text: `${(error as Error).message}. The file has to be in the “JUnit XML” format, which most test tools can save.` }); }
+    finally { setBusy(false); }
+  };
+  return (
+    <form className="flex flex-col gap-3" onSubmit={event => { event.preventDefault(); void send(); }}>
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <Field label="What do these results cover?" help="The name this group of tests gets on the page, for example “Unit tests”.">
+          <Input value={suite} onChange={event => setSuite(event.target.value)} placeholder="Unit tests" maxLength={60} required />
+        </Field>
+        <Field label="Which branch were they run on?" help={`Leave it as “${branch}” for the version everyone shares.`}>
+          <Input value={where} onChange={event => setWhere(event.target.value)} maxLength={120} />
+        </Field>
+      </div>
+      <Field label="Results file" help="A file ending in .xml that your test tool saved. Ask for “JUnit XML” if it offers a choice of formats.">
+        <Input type="file" accept=".xml,text/xml,application/xml" onChange={event => setFile(event.target.files?.[0] ?? null)} />
+      </Field>
+      {result && <Notice tone={result.ok ? 'working' : 'stop'} title={result.ok ? 'Uploaded' : 'The file could not be read'}>{result.text}</Notice>}
+      <div className="flex"><Button type="submit" variant="primary" disabled={busy || !file || !suite.trim()}>{busy ? 'Uploading…' : 'Upload results'}</Button></div>
+    </form>
+  );
+}
+
+// What an empty Tests page says: what will be here, and the three ways results arrive.
+function NoResultsYet({ slug, branch, onDone }: { slug: string; branch: string; onDone(): void }) {
+  return (
+    <div className="flex max-w-180 flex-col gap-3.5 p-5">
+      <EmptyState title="No test results yet" note="This page shows which tests pass on each branch, what is failing right now and who is looking at it." />
+      <Card className="flex flex-col gap-3">
+        <SectionLabel>How results get here</SectionLabel>
+        <Steps items={[
+          'Connect the place your code is hosted. Every time it runs your tests, the results appear here on their own.',
+          'Agents report the tests they run while they work. There is nothing to set up for that.',
+          'Or upload a results file yourself, below.',
+        ]} />
+        <div className="flex"><LinkButton href={`/p/${slug}/integrations`}>Connect a code host</LinkButton></div>
+      </Card>
+      <Card className="flex flex-col gap-3">
+        <SectionLabel>Upload a results file</SectionLabel>
+        <UploadResults slug={slug} branch={branch} onDone={onDone} />
+      </Card>
+    </div>
+  );
+}
+
 // `code` says whether the project is a repository: its runs are per branch and come from pipelines; elsewhere they are per version of the work.
 export function ChecksTab({ slug, code = true }: { slug: string; code?: boolean }) {
   const matrix = useResource<Matrix>(`/api/projects/${slug}/checks`);
@@ -52,7 +108,8 @@ export function ChecksTab({ slug, code = true }: { slug: string; code?: boolean 
   useStream(event => event.type.startsWith('check.'), () => { matrix.reload(); health.reload(); });
   const data = matrix.data;
   if (!data) return <div className="p-5"><Text tone="muted">Loading…</Text></div>;
-  if (data.branches.length === 0) return <div className="p-5"><Text tone="muted">{code ? 'No runs reported yet. Agents report them with test.report; a pipeline can upload JUnit XML.' : 'No checks reported yet. The team reports them as it reviews its work.'}</Text></div>;
+  const refresh = () => { matrix.reload(); health.reload(); };
+  if (data.branches.length === 0) return code ? <NoResultsYet slug={slug} branch={health.data?.branch ?? 'main'} onDone={refresh} /> : <div className="max-w-180 p-5"><EmptyState title="No checks yet" note="The team writes down what it checked each time it reviews its work, and the results show up here." /></div>;
   return (
     <div className="flex min-h-0 grow flex-col gap-3.5 overflow-y-auto px-5 pt-4 pb-5">
       <MatrixTable rowLabel={code ? 'Branch' : 'Version'}
@@ -61,10 +118,17 @@ export function ChecksTab({ slug, code = true }: { slug: string; code?: boolean 
       />
       <Card className="flex flex-col gap-2.5">
         <SectionLabel>Failing now</SectionLabel>
-        {data.failing.map(item => <NoteCard key={`${item.run_id}${item.name}`} meta={`${item.branch} · ${item.suite}`}>{item.name}{item.message ? ` — ${item.message}` : ''}</NoteCard>)}
+        {data.failing.map(item => <NoteCard key={`${item.run_id}${item.name}`} meta={<>{item.suite} on {item.branch} · {item.owner ? `${item.owner.name} is on it${item.taskKey ? ` (${item.taskKey})` : ''}` : 'nobody is on it yet'}{item.issue && <> · <EntityLink kind="issue" href={`/p/${slug}/issues/${item.issue.number}`} code={String(item.issue.number)}>{item.issue.title}</EntityLink></>}</>}>{item.name}{item.message ? ` — ${item.message}` : ''}</NoteCard>)}
         {data.failing.length === 0 && <Text size="small" tone="working">Everything passing.</Text>}
       </Card>
       {health.data && <HarnessHealth health={health.data} code={code} />}
+      {code && (
+        <Card className="flex flex-col gap-3">
+          <SectionLabel>Upload a results file</SectionLabel>
+          <Text size="small" tone="muted">Results normally arrive from your code host and from the agents. You can also bring in a file a test tool saved.</Text>
+          <UploadResults slug={slug} branch={health.data?.branch ?? 'main'} onDone={refresh} />
+        </Card>
+      )}
     </div>
   );
 }

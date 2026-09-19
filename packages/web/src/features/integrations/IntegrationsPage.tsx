@@ -67,7 +67,7 @@ export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me;
   return (
     <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={slug} roster={[]} teamName={null} links={[]} />}>
       <PageHeader title="Integrations" crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }, { label: projects.flatMap(project => [project, ...project.subprojects]).find(project => project.slug === slug)?.name ?? slug, href: `/p/${slug}` }]}>
-        <div className="flex items-center gap-3 pb-3"><Text size="small" tone="muted" className="grow">What this project works with: where its code and tasks live, and the tools its team may use.</Text><ConnectFlow slug={slug} connectedKinds={view.data?.connections.map(item => item.kind) ?? []} onDone={view.reload} /></div>
+        <div className="flex items-center gap-3 pb-3"><span className="grow" /><ConnectFlow slug={slug} connectedKinds={view.data?.connections.map(item => item.kind) ?? []} onDone={view.reload} /></div>
       </PageHeader>
       <div className="flex min-h-0 grow">
         <div className="flex min-w-0 grow flex-col gap-3 overflow-y-auto px-5 py-3.5">
@@ -90,10 +90,9 @@ export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me;
         <SidePanel label="Handoffs" side="right" wide>
           <div className="flex flex-col gap-2.5 px-1.5">
             <SectionLabel>Handoffs</SectionLabel>
-            <Text size="caption" tone="muted">Work done elsewhere, brought to the team with its context.</Text>
             {incoming.map(handoff => <HandoffCard key={handoff.id} slug={slug} handoff={handoff} tasks={tasks} onChanged={view.reload} />)}
             {view.data && incoming.length === 0 && <Text size="small" tone="muted">Nothing handed over yet.</Text>}
-            {outgoing.length > 0 && <><SectionLabel>Sent out by the team</SectionLabel><Text size="caption" tone="muted">Work the team passed to someone outside. It waits here until the result is written down.</Text></>}
+            {outgoing.length > 0 && <><SectionLabel>Sent out by the team</SectionLabel></>}
             {outgoing.map(handoff => <HandoffCard key={handoff.id} slug={slug} handoff={handoff} tasks={tasks} onChanged={view.reload} />)}
           </div>
         </SidePanel>

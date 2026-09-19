@@ -37,7 +37,7 @@ export function LibraryPage({ me, projects }: { me: Me; projects: ProjectNode[] 
   return (
     <OrgShell me={me} projects={projects} title="Agent library" active="/library">
       <div className="flex min-h-0 grow flex-col gap-3 overflow-y-auto px-5 pt-4 pb-5">
-        <div className="flex items-center gap-3"><Text size="small" tone="muted" className="grow">Agents kept ready to hire. A project's Team tab adds any of them as a new seat; changing one here does not change seats already hired.</Text>{canEdit && <Button variant="primary" onClick={() => setEditing({ open: true, item: null })}>+ Add an agent to the library</Button>}</div>
+        <div className="flex items-center gap-3"><span className="grow" />{canEdit && <Button variant="primary" onClick={() => setEditing({ open: true, item: null })}>+ Add an agent to the library</Button>}</div>
         <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
           {library.data?.items.map(entry => (
             <Card key={entry.slug} tone="raised" pad="sm" className="flex flex-col gap-1.5">

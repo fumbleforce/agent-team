@@ -1,7 +1,7 @@
 export { AppShell, Sidebar, PageHeader, RailHeader, CenteredPanel, AgentLine, type SidebarProps, type Crumb } from './AppShell';
 export { Message, Composer, resolveAuthor, mentionOptions, type Author, type ComposerImage, type ComposerProps, type MentionOption } from './Thread';
 export { TaskCard, BoardColumn } from './TaskCard';
-export { SidePanel, ListLink, Prose, NoteCard, BarRow, TraceRow } from './Panels';
+export { SidePanel, ListLink, Prose, NoteCard, BarRow, TraceRow, DecisionCallout, Notice, decisionToken, hasDecisionToken, maskDecisionTokens } from './Panels';
 export { Attachment, KeyValueList, PreviewFrame, LaneRow, LaneCell, SeatRow, SubHeader, VoteLine, type LaneItem } from './Lanes';
 export { MatrixTable, type MatrixCell } from './MatrixTable';
 export { Markdown, renderMarkdown } from './Markdown';

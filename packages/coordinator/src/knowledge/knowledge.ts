@@ -1,6 +1,7 @@
 import { newId } from '@agent-team/protocol';
 import { portableVectors, type Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
+import { lineDiff } from './diff.ts';
 
 export interface Scope { type: 'org' | 'team' | 'project' | 'subproject'; id: string }
 export interface Author { kind: 'user' | 'agent' | 'system'; id: string | null }
@@ -10,6 +11,8 @@ const tokens = (text: string) => Math.ceil(text.length / 4);
 export interface Embedder { model: string; embed(text: string): Promise<number[]> }
 // What counts as near in meaning: cosine similarity, 0 to 1.
 const SIMILARITY_FLOOR = 0.6;
+// A memory nobody has used for this long is stale.
+const STALE_AFTER_MS = 60 * 24 * 3600_000;
 
 // Embeddings from any endpoint that speaks the common local-model API; without one, search is lexical only.
 export function httpEmbedder(url: string, model: string): Embedder {
@@ -87,6 +90,57 @@ ${body}`).catch(() => []);
       return db.selectFrom('kb_revisions').select(['rev_no', 'author_kind', 'author_id', 'note', 'created_at']).where('page_id', '=', pageId).orderBy('rev_no', 'desc').execute();
     },
 
+    // Where a page lives, for callers that must check it belongs to what the viewer may see.
+    async pageScope(pageId: string): Promise<Scope | null> {
+      const page = await db.selectFrom('kb_pages').select(['scope_type', 'scope_id']).where('id', '=', pageId).executeTakeFirst();
+      return page ? { type: page.scope_type as Scope['type'], id: page.scope_id } : null;
+    },
+
+    // The history as a person reads it: who, when, their note. `current` is the revision the page shows;
+    // `waiting` is a revision kept beside it (a sibling from a sync conflict) that nobody has chosen between yet.
+    async historyView(pageId: string) {
+      const page = await db.selectFrom('kb_pages').select('current_rev').where('id', '=', pageId).executeTakeFirst();
+      if (!page) throw notFound('Page');
+      const rows = await this.history(pageId);
+      const ids = (kind: string) => [...new Set(rows.filter(row => row.author_kind === kind && row.author_id).map(row => row.author_id!))];
+      const users = ids('user').length ? await db.selectFrom('users').select(['id', 'name']).where('id', 'in', ids('user')).execute() : [];
+      const agents = ids('agent').length ? await db.selectFrom('agents').select(['id', 'name']).where('id', 'in', ids('agent')).execute() : [];
+      const nameOf = (row: (typeof rows)[number]) => row.author_kind === 'user' ? users.find(user => user.id === row.author_id)?.name ?? 'Someone' : row.author_kind === 'agent' ? agents.find(agent => agent.id === row.author_id)?.name ?? 'An agent' : row.author_id === 'folder-sync' ? 'The document folder' : 'The platform';
+      return rows.map(row => ({ rev: row.rev_no, author: nameOf(row), authorKind: row.author_kind, note: row.note, at: Number(row.created_at), current: row.rev_no === page.current_rev, waiting: row.rev_no > page.current_rev }));
+    },
+
+    async revision(pageId: string, rev: number) {
+      const row = await db.selectFrom('kb_revisions').selectAll().where('page_id', '=', pageId).where('rev_no', '=', rev).executeTakeFirst();
+      if (!row) throw notFound('Revision');
+      return { rev: row.rev_no, body: row.body, note: row.note, at: Number(row.created_at) };
+    },
+
+    // What changed from one revision to another; the second defaults to what the page shows now.
+    async diff(pageId: string, fromRev: number, toRev?: number) {
+      const page = await db.selectFrom('kb_pages').select(['path', 'current_rev']).where('id', '=', pageId).executeTakeFirst();
+      if (!page) throw notFound('Page');
+      const [from, to] = [await this.revision(pageId, fromRev), await this.revision(pageId, toRev ?? page.current_rev)];
+      return { from: from.rev, to: to.rev, ...lineDiff(page.path, from.body, to.body) };
+    },
+
+    // Going back is going forward: the old text becomes a new revision, and everything in between stays in the history.
+    async restore(author: Author, pageId: string, rev: number) {
+      const page = await db.selectFrom('kb_pages').selectAll().where('id', '=', pageId).executeTakeFirst();
+      if (!page) throw notFound('Page');
+      const old = await this.revision(pageId, rev);
+      return this.write(author, { scope: { type: page.scope_type as Scope['type'], id: page.scope_id }, path: page.path, title: page.title, body: old.body, note: `Restored version ${rev}`, expectedRev: page.current_rev });
+    },
+
+    // Settles a revision kept beside the current one. Either way a new revision is written, so the choice is on record
+    // and the page's number moves past the sibling: "mine" repeats the current text, "theirs" takes the sibling's.
+    async resolveSibling(author: Author, pageId: string, rev: number, choice: 'mine' | 'theirs') {
+      const page = await db.selectFrom('kb_pages').selectAll().where('id', '=', pageId).executeTakeFirst();
+      if (!page) throw notFound('Page');
+      if (rev <= page.current_rev) throw new HttpError(409, 'settled', 'That version has already been dealt with');
+      const body = (await this.revision(pageId, choice === 'theirs' ? rev : page.current_rev)).body;
+      return this.write(author, { scope: { type: page.scope_type as Scope['type'], id: page.scope_id }, path: page.path, title: page.title, body, note: choice === 'theirs' ? 'Used the version from the document folder' : 'Kept this version over the one from the document folder', expectedRev: page.current_rev });
+    },
+
     async fileMemory(input: { scope: Scope; agentId: string | null; type: string; title: string; body: string }) {
       const id = newId(now());
       const published = await storage.transaction(async tx => {
@@ -99,12 +153,33 @@ ${body}`).catch(() => []);
       return id;
     },
 
+    // What the team still holds: filed, confirmed and stale memories. `stale` is true for one marked so, and for one
+    // nobody has used in sixty days even if the sweep has not reached it yet.
     async memories(scope: Scope) {
-      return db.selectFrom('memories').selectAll().where('scope_type', '=', scope.type).where('scope_id', '=', scope.id).where('status', 'in', ['filed', 'confirmed']).orderBy('created_at', 'desc').limit(100).execute();
+      const rows = await db.selectFrom('memories').selectAll().where('scope_type', '=', scope.type).where('scope_id', '=', scope.id).where('status', 'in', ['filed', 'confirmed', 'stale']).orderBy('created_at', 'desc').limit(100).execute();
+      return rows.map(row => ({ ...row, stale: row.status === 'stale' || Number(row.last_hit_at ?? row.created_at) < now() - STALE_AFTER_MS }));
     },
 
+    async memoryScope(memoryId: string): Promise<Scope | null> {
+      const memory = await db.selectFrom('memories').select(['scope_type', 'scope_id']).where('id', '=', memoryId).executeTakeFirst();
+      return memory ? { type: memory.scope_type as Scope['type'], id: memory.scope_id } : null;
+    },
+
+    // Confirming a stale memory is a person saying it still holds, which counts as a use: the sixty days start again.
     async setMemoryStatus(memoryId: string, status: 'confirmed' | 'stale' | 'retired') {
-      await db.updateTable('memories').set({ status }).where('id', '=', memoryId).execute();
+      const memory = await db.selectFrom('memories').select(['status', 'last_hit_at', 'created_at']).where('id', '=', memoryId).executeTakeFirst();
+      if (!memory) throw notFound('Memory');
+      const wasStale = memory.status === 'stale' || Number(memory.last_hit_at ?? memory.created_at) < now() - STALE_AFTER_MS;
+      await db.updateTable('memories').set(status === 'confirmed' && wasStale ? { status, last_hit_at: now() } : { status }).where('id', '=', memoryId).execute();
+    },
+
+    // The stale rule: a filed or confirmed memory with no hit in sixty days (or never hit and filed that long ago) is marked
+    // stale. Stale memories stop being injected into turns and wait for a person to review them.
+    async sweepStale(): Promise<number> {
+      const before = now() - STALE_AFTER_MS;
+      const rows = await db.selectFrom('memories').select('id').where('status', 'in', ['filed', 'confirmed']).where(eb => eb.or([eb('last_hit_at', '<', before), eb.and([eb('last_hit_at', 'is', null), eb('created_at', '<', before)])])).limit(500).execute();
+      if (rows.length) await db.updateTable('memories').set({ status: 'stale' }).where('id', 'in', rows.map(row => row.id)).where('status', 'in', ['filed', 'confirmed']).execute();
+      return rows.length;
     },
 
     // A memory becomes a page; the memory stays, pointing at it.
@@ -117,14 +192,20 @@ ${body}`).catch(() => []);
     },
 
     // Every term must start a word of the title or body; title hits rank first. Pages, memories, messages and issues of the given scopes.
-    async search(scopes: Scope[], query: string, limit = 10) {
-      const lexical = await storage.search.query(query, scopes, limit);
-      if (!embedder || scopes.length === 0 || lexical.length >= limit) return lexical;
-      // Meaning fills what the words missed: the nearest documents of the same scopes, above a similarity floor.
-      const target = await embedder.embed(query).catch(() => []);
-      if (target.length === 0) return lexical;
-      const near = (await vectors.nearest(target, embedder.model, scopes, limit, SIMILARITY_FLOOR)).filter(item => !lexical.some(hit => hit.type === item.type && hit.id === item.id));
-      return [...lexical, ...near.slice(0, limit - lexical.length).map(({ similarity: _similarity, ...hit }) => hit)];
+    // `countHits` is for an agent's search: a memory it is handed counts as used. A person browsing does not count.
+    async search(scopes: Scope[], query: string, limit = 10, options: { countHits?: boolean } = {}) {
+      const found = await (async () => {
+        const lexical = await storage.search.query(query, scopes, limit);
+        if (!embedder || scopes.length === 0 || lexical.length >= limit) return lexical;
+        // Meaning fills what the words missed: the nearest documents of the same scopes, above a similarity floor.
+        const target = await embedder.embed(query).catch(() => []);
+        if (target.length === 0) return lexical;
+        const near = (await vectors.nearest(target, embedder.model, scopes, limit, SIMILARITY_FLOOR)).filter(item => !lexical.some(hit => hit.type === item.type && hit.id === item.id));
+        return [...lexical, ...near.slice(0, limit - lexical.length).map(({ similarity: _similarity, ...hit }) => hit)];
+      })();
+      const memoryIds = options.countHits ? found.filter(hit => hit.type === 'memory').map(hit => hit.id) : [];
+      if (memoryIds.length) await db.updateTable('memories').set(eb => ({ hits: eb('hits', '+', 1), last_hit_at: now() })).where('id', 'in', memoryIds).execute();
+      return found;
     },
 
     // What a turn starts with: confirmed memories by hits and recency, cut at the token cap; injected ids are counted as hits.

@@ -26,7 +26,7 @@ function Milestones({ slug, canEdit }: { slug: string; canEdit: boolean }) {
   const action = useAction(), key = useCreateKey();
   const patch = (id: string, body: Record<string, unknown>) => { void action.run(() => api(`/api/milestones/${id}`, body)).then(milestones.reload); };
   return (
-    <SettingsSection title="Milestones" note="Open milestones show in the project header with their progress. Tasks point at a milestone; deleting one leaves its tasks in place.">
+    <SettingsSection title="Milestones">
       <DataTable rows={milestones.data?.milestones ?? []} rowKey={item => item.id} empty={<Text size="small" tone="muted">No milestones yet.</Text>} columns={[
         { label: 'Milestone', width: 'grow', cell: item => <Text size="small" weight="medium" truncate>{item.label}</Text> },
         { label: 'Due', cell: item => (canEdit ? <Input type="date" aria-label={`Due date of ${item.label}`} defaultValue={dateInput(item.dueAt)} onChange={event => patch(item.id, { dueAt: event.target.value ? Date.parse(event.target.value) : null })} /> : <Text size="caption" tone="muted" mono>{dueLabel(item.dueAt)}</Text>) },
@@ -51,7 +51,7 @@ function ProjectMembers({ slug }: { slug: string }) {
   const action = useAction();
   const set = (userId: string, role: string | null) => { void action.run(() => api(`/api/projects/${slug}/members`, { userId, role })).then(members.reload); };
   return (
-    <SettingsSection title="Members" note="People with a grant on this project. Owners and administrators of the organization always have access and are not listed.">
+    <SettingsSection title="Members">
       <DataTable rows={members.data?.members ?? []} rowKey={member => member.id} empty={<Text size="small" tone="muted">Nobody has a grant on this project yet.</Text>} columns={[
         { label: 'Person', width: 'grow', cell: member => <span className="flex min-w-0 flex-col"><Text size="small" weight="medium" truncate>{member.name}</Text><Text size="caption" tone="muted" truncate>{member.email}</Text></span> },
         { label: 'Role here', width: 'sm', cell: member => <Select compact aria-label={`Project role of ${member.name}`} value={member.role} onChange={event => set(member.id, event.target.value)}><option value="viewer">viewer</option><option value="member">member</option><option value="admin">admin</option></Select> },
@@ -78,7 +78,7 @@ function ExtraTabs({ tabs, canEdit, onSave }: { tabs: ExtraTab[]; canEdit: boole
   const action = useAction();
   const save = (next: ExtraTab[], note: string) => action.run(() => onSave(next, note));
   return (
-    <SettingsSection title="Extra tabs" note="A dashboard, a calendar or any other page your team runs can sit beside Tasks and Issues. Choosing the tab opens that page in a new browser tab.">
+    <SettingsSection title="Extra tabs" note="Pages your team runs elsewhere, opened from a tab beside Tasks.">
       <DataTable rows={tabs} rowKey={tab => `${tab.label} ${tab.url}`} empty={<Text size="small" tone="muted">No extra tabs yet.</Text>} columns={[
         { label: 'Name on the tab', cell: tab => <Text size="small" weight="medium" truncate>{tab.label}</Text> },
         { label: 'Opens', width: 'grow', cell: tab => <Text size="caption" tone="muted" truncate>{tab.url}</Text> },

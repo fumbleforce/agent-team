@@ -1,13 +1,13 @@
 import { useState } from 'react';
 import { Link } from 'wouter';
 import type { Agent, Me, ProjectNode } from '../../data/client';
-import { api } from '../../data/client';
+import { api, ApiError } from '../../data/client';
 import { useResource } from '../../data/useResource';
 import { KeyValueList, ListLink, SidePanel } from '../../patterns';
 import { ActionError, isOrgAdmin, OrgShell, useAction } from './OrgShell';
 import { LinkForm, ProjectStructure, type Structure } from './Structure';
 import { RoleEditor, type EditableRole } from './RoleEditor';
-import { Avatar, Button, Card, Chip, Meter, SectionLabel, StatusDot, Text } from '../../ui';
+import { Avatar, Button, Card, Chip, Dialog, Field, Input, Meter, SectionLabel, StatusDot, Text } from '../../ui';
 
 interface OrgProject extends ProjectNode { roster: Agent[]; openTasks: number; spendMinor: number }
 interface Grant { repoRead: unknown; codeWrite: unknown; shell: string; browser: string; issues: string; comms: string; deploy: string; secrets: string[]; spendDailyCapMinor: number }
@@ -23,7 +23,6 @@ function ArchivedProjects() {
   return (
     <section aria-label="Archived projects" className="flex flex-col gap-2 px-5 pb-5">
       <SectionLabel>Archived projects</SectionLabel>
-      <Text size="small" tone="muted">Archived projects are hidden everywhere else. Restore one to bring back its board, threads and team as they were.</Text>
       <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
         {archived.data.projects.map(project => (
           <Card key={project.id} tone="raised" pad="sm" className="flex items-center gap-2">
@@ -71,6 +70,30 @@ export function OrgPage({ me, projects }: { me: Me; projects: ProjectNode[] }) {
   );
 }
 
+// A role's name as a person reads it: "pm" is PM, "release-manager" is Release manager.
+const roleName = (slug: string) => (slug.length <= 3 ? slug.toUpperCase() : (slug[0]!.toUpperCase() + slug.slice(1)).replaceAll('-', ' '));
+
+// A new role starts from the safest grant (read only); what it may do is then set in the editor.
+function NewRole({ onCreated }: { onCreated(slug: string): void }) {
+  const [open, setOpen] = useState(false), [error, setError] = useState<string | null>(null);
+  const create = async (form: FormData) => {
+    const name = String(form.get('name') ?? '').trim(), slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    if (!slug) { setError('Give the role a name'); return; }
+    try { await api(`/api/roles/${slug}`, { doc: { summary: String(form.get('summary') ?? '').trim(), perspective: '', permissions: { repoRead: 'all' }, decides: [], approvalKinds: [] }, note: 'Created', expectedVersion: 0 }); setOpen(false); setError(null); onCreated(slug); }
+    catch (failure) { setError(failure instanceof ApiError ? failure.message : 'The role could not be created'); }
+  };
+  return (
+    <Dialog open={open} onOpenChange={setOpen} title="New role" description="A role is a perspective plus what its wearer may do. It starts read-only; open it afterwards to grant more." trigger={<Button block variant="dashed">+ New role</Button>}>
+      <form className="flex flex-col gap-3" onSubmit={event => { event.preventDefault(); void create(new FormData(event.currentTarget)); }}>
+        <Field label="Name"><Input name="name" required maxLength={40} autoFocus placeholder="Release manager" /></Field>
+        <Field label="What it is for, in one line"><Input name="summary" required maxLength={160} placeholder="Owns the release checklist and the go / no-go call" /></Field>
+        {error && <Text size="small" tone="stop">{error}</Text>}
+        <div className="flex justify-end gap-2"><Button onClick={() => setOpen(false)}>Cancel</Button><Button type="submit" variant="primary">Create role</Button></div>
+      </form>
+    </Dialog>
+  );
+}
+
 export function RolesPage({ slug, me, projects }: { slug: string | null; me: Me; projects: ProjectNode[] }) {
   const roles = useResource<{ roles: RoleDoc[] }>('/api/roles');
   const role = roles.data?.roles.find(item => item.slug === slug) ?? roles.data?.roles[0];
@@ -80,12 +103,13 @@ export function RolesPage({ slug, me, projects }: { slug: string | null; me: Me;
     <OrgShell me={me} projects={projects} title="Roles" active="/roles">
       <div className="flex min-h-0 grow">
         <SidePanel label="Roles" wide>
-          {roles.data?.roles.map(item => <ListLink key={item.slug} href={`/roles/${item.slug}`} active={item.slug === role?.slug} aside={<span className="flex gap-0.5">{item.wornBy.map(agent => <Avatar key={agent.id} initials={agent.initials} tint={agent.tint} size="xs" />)}</span>}>{item.slug}</ListLink>)}
+          {canEdit && <div className="px-1.5 pb-2"><NewRole onCreated={created => { roles.reload(); window.history.pushState(null, '', `/roles/${created}`); window.dispatchEvent(new PopStateEvent('popstate')); }} /></div>}
+          {roles.data?.roles.map(item => <ListLink key={item.slug} href={`/roles/${item.slug}`} active={item.slug === role?.slug} aside={<span className="flex gap-0.5">{item.wornBy.map(agent => <Avatar key={agent.id} initials={agent.initials} tint={agent.tint} size="xs" />)}</span>}>{roleName(item.slug)}</ListLink>)}
         </SidePanel>
         {role && (
           <div className="flex min-w-0 grow flex-col gap-4 overflow-y-auto px-6 py-5">
             <div className="flex flex-col gap-1.5">
-              <div className="flex items-center gap-2.5"><Text as="h2" size="heading" mono>{role.slug}</Text><Text size="caption" tone="muted">v{role.version} · edited by {role.author}</Text>{canEdit && editing !== role.slug && <span className="ml-auto"><Button onClick={() => setEditing(role.slug)}>Edit</Button></span>}</div>
+              <div className="flex items-center gap-2.5"><Text as="h2" size="heading">{roleName(role.slug)}</Text><Text size="caption" tone="muted">v{role.version} · edited by {role.author}</Text>{canEdit && editing !== role.slug && <span className="ml-auto"><Button onClick={() => setEditing(role.slug)}>Edit</Button></span>}</div>
               <Text tone="soft">{role.doc.summary}. {role.doc.perspective}</Text>
             </div>
             {editing === role.slug && <RoleEditor role={role as unknown as EditableRole} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); roles.reload(); }} />}
@@ -93,7 +117,6 @@ export function RolesPage({ slug, me, projects }: { slug: string | null; me: Me;
               <Card className="flex flex-col gap-2.5">
                 <SectionLabel>Permissions</SectionLabel>
                 <KeyValueList items={[['Read repository', scope(role.doc.permissions.repoRead)], ['Write code', scope(role.doc.permissions.codeWrite)], ['Run shell', role.doc.permissions.shell], ['Run browser', role.doc.permissions.browser], ['Issues', role.doc.permissions.issues], ['Comms', role.doc.permissions.comms], ['Deploy', role.doc.permissions.deploy], ['Secrets', role.doc.permissions.secrets.join(', ') || 'none'], ['Spend per day', String(role.doc.permissions.spendDailyCapMinor / 100)]]} />
-                <Text size="caption" tone="muted">Roles stack: an agent may do what any of its roles allows, capped by the project's committed ceiling.</Text>
               </Card>
               <Card className="flex flex-col gap-2.5"><SectionLabel>Reads first</SectionLabel>{role.doc.knowledgeFirst.map(page => <Text key={page} size="small" mono tone="soft">{page}</Text>)}{role.doc.knowledgeFirst.length === 0 && <Text size="small" tone="muted">Nothing pinned.</Text>}<SectionLabel>Approves as</SectionLabel><div className="flex gap-1">{role.doc.approvalKinds.map(kind => <Chip key={kind} tone="review">{kind}</Chip>)}{role.doc.approvalKinds.length === 0 && <Text size="small" tone="muted">Nothing.</Text>}</div></Card>
               <Card className="flex flex-col gap-2.5"><SectionLabel>Worn by</SectionLabel>{role.wornBy.map(agent => <div key={agent.id} className="flex items-center gap-2"><Avatar initials={agent.initials} tint={agent.tint} size="sm" /><Text>{agent.name}</Text></div>)}{role.wornBy.length === 0 && <Text size="small" tone="muted">Nobody yet.</Text>}</Card>

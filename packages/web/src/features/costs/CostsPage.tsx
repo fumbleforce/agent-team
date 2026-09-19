@@ -29,14 +29,14 @@ function RoutingEditor({ routes, providers, canEdit, onSave }: { routes: Route[]
   };
   return (
     <div className="flex flex-col gap-2.5">
-      <div className="flex flex-col gap-0.5"><Text size="small" weight="semibold">Which provider runs what</Text><Text size="caption" tone="muted">Normally a turn runs on its agent’s own provider. A rule sends some turns elsewhere, for example reviews to a cheaper model. Rules are read from the top and the first one that fits is used; work that has started on a task stays where it started.</Text></div>
+      <div className="flex flex-col gap-0.5"><Text size="small" weight="semibold">Which provider runs what</Text></div>
       {routes.map(route => (
         <div key={route.id} className="flex items-start gap-2">
           <div className="min-w-0 grow"><Checkbox disabled={!canEdit} checked={route.enabled} label={ruleWords(route)} note={`use ${named(route.provider)}${route.model ? ` with the model ${route.model}` : ''}${route.enabled ? '' : ' · switched off'}`} onChange={event => onSave(routes.map(other => (other.id === route.id ? { ...other, enabled: event.target.checked } : other)))} /></div>
           {canEdit && <Button size="sm" variant="ghost" onClick={() => onSave(routes.filter(other => other.id !== route.id))}>Remove</Button>}
         </div>
       ))}
-      {routes.length === 0 && <Text size="small" tone="muted">No rules yet: every turn runs on its agent’s own provider.</Text>}
+      {routes.length === 0 && <Text size="small" tone="muted">No rules yet.</Text>}
       {canEdit && providers.length > 0 && (
         <form className="grid grid-cols-1 items-start gap-2.5 md:grid-cols-2 xl:grid-cols-5" onSubmit={event => { event.preventDefault(); add(); }}>
           <Field label="When a turn is" help="Leave on any kind to match every turn.">
@@ -63,7 +63,6 @@ function ProjectBudgets({ projects, budgets, spent, money, currency, canEdit, on
   return (
     <Card className="flex flex-col gap-2.5">
       <SectionLabel>Project budgets</SectionLabel>
-      <Text size="caption" tone="muted">A project’s budget covers its sub-projects too. When both a project budget and the organization budget apply, the fuller one decides. Near the limit the team is warned once in its discussion; at the limit only replies to people and work that unblocks others keep running.</Text>
       {projects.map(project => {
         const budget = budgets.find(item => item.scope === 'project' && item.scopeId === project.id) ?? null, total = spent(project);
         return (
@@ -98,7 +97,6 @@ function CurrencyCard({ shown, canEdit, onSave }: { shown: CostCurrency; canEdit
   return (
     <Card className="flex flex-col gap-2.5">
       <SectionLabel>Currency</SectionLabel>
-      <Text size="caption" tone="muted">Providers bill in US dollars, and that is what every turn reports. This page shows costs in your own currency, using the rate you set here. Each cost keeps the rate it was recorded at, so a new rate only applies to turns from now on. Turns on a subscription or a local model cost nothing extra and are recorded at zero; their tokens still count toward the provider’s usage window.</Text>
       {editing ? (
         <form className="flex flex-wrap items-start gap-2.5" onSubmit={event => { event.preventDefault(); void save(); }}>
           <Field label="Show costs in" help="The three-letter code of the currency, such as EUR, USD or NOK."><Input value={currency} maxLength={3} required autoFocus onChange={event => setCurrency(event.target.value)} /></Field>
@@ -146,7 +144,7 @@ export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectN
       {!data ? <div className="p-5"><Text tone="muted">Loading…</Text></div> : (
         <div className="flex min-h-0 grow flex-col gap-3.5 overflow-y-auto px-5 pt-4 pb-5">
           <div className="flex items-center justify-end gap-2">
-            <Text size="caption" tone="muted">Every cost entry of this month</Text>
+            
             <LinkButton href="/api/costs/export.csv" download size="sm">Export CSV</LinkButton>
           </div>
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
@@ -172,7 +170,7 @@ export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectN
               <div className="flex items-center gap-3"><SectionLabel>Rules</SectionLabel>{problem && <Text size="caption" tone="stop">{problem}</Text>}</div>
               <div className="grid grid-cols-1 gap-4 lg:grid-cols-3">
                 <div className="flex flex-col gap-2">
-                  <Checkbox label="Daily cap per agent" note="Over its cap an agent waits for tomorrow, or moves to the fallback provider." disabled={!admin} checked={rules.doc.dailyCap.enabled} onChange={event => saveCost({ dailyCap: { ...rules.doc.dailyCap, enabled: event.target.checked } })} />
+                  <Checkbox label="Daily cap per agent" disabled={!admin} checked={rules.doc.dailyCap.enabled} onChange={event => saveCost({ dailyCap: { ...rules.doc.dailyCap, enabled: event.target.checked } })} />
                   <Field label="Fallback provider">
                     <Select disabled={!admin || !rules.doc.dailyCap.enabled} value={rules.doc.dailyCap.fallbackProvider ?? ''} onChange={event => saveCost({ dailyCap: { ...rules.doc.dailyCap, fallbackProvider: event.target.value || null } })}>
                       <option value="">None: wait for tomorrow</option>
@@ -181,11 +179,11 @@ export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectN
                   </Field>
                 </div>
                 <div className="flex flex-col gap-2">
-                  <Checkbox label="Warn in the discussion" note="One message when spend crosses this share of a budget. At 100 % only replies to people and unblocking work run." disabled={!admin} checked={rules.doc.budgetWarn.enabled} onChange={event => saveCost({ budgetWarn: { ...rules.doc.budgetWarn, enabled: event.target.checked } })} />
+                  <Checkbox label="Warn in the discussion" disabled={!admin} checked={rules.doc.budgetWarn.enabled} onChange={event => saveCost({ budgetWarn: { ...rules.doc.budgetWarn, enabled: event.target.checked } })} />
                   <Field label="Warn at, % of budget"><Input key={rules.version} type="number" min={1} max={100} disabled={!admin || !rules.doc.budgetWarn.enabled} defaultValue={rules.doc.budgetWarn.percent} onBlur={event => { const percent = Number(event.target.value); if (percent !== rules.doc.budgetWarn.percent) saveCost({ budgetWarn: { ...rules.doc.budgetWarn, percent } }); }} /></Field>
                 </div>
                 <div className="flex flex-col gap-2">
-                  <Checkbox label="Pause agents of paused projects" note="A paused project keeps its agents until the usage window of their provider is this full." disabled={!admin} checked={rules.doc.windowPause.enabled} onChange={event => saveCost({ windowPause: { ...rules.doc.windowPause, enabled: event.target.checked } })} />
+                  <Checkbox label="Pause agents of paused projects" disabled={!admin} checked={rules.doc.windowPause.enabled} onChange={event => saveCost({ windowPause: { ...rules.doc.windowPause, enabled: event.target.checked } })} />
                   <Field label="Pause at, % of window"><Input key={rules.version} type="number" min={1} max={100} disabled={!admin || !rules.doc.windowPause.enabled} defaultValue={rules.doc.windowPause.percent} onBlur={event => { const percent = Number(event.target.value); if (percent !== rules.doc.windowPause.percent) saveCost({ windowPause: { ...rules.doc.windowPause, percent } }); }} /></Field>
                 </div>
               </div>
