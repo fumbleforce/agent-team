@@ -51,13 +51,17 @@ async function nativeVectors(db: Db): Promise<VectorPort | undefined> {
   };
 }
 
-export async function createPostgresAdapter(config: { url: string; poolSize?: number; listen?: boolean }): Promise<StorageAdapter> {
+export async function createPostgresAdapter(config: { url: string; poolSize?: number; listen?: boolean; schema?: string }): Promise<StorageAdapter> {
   const name = 'pg';
   const pg = await import(name).catch(() => { throw new Error('The postgres storage adapter needs the "pg" package: npm install pg'); });
   const Pool = pg.default?.Pool ?? pg.Pool, Client = pg.default?.Client ?? pg.Client;
   // bigint columns are millisecond timestamps and sequence numbers, all within the safe integer range.
   (pg.default?.types ?? pg.types).setTypeParser(20, (value: string) => Number(value));
-  const db = new Kysely<Schema>({ dialect: new PostgresDialect({ pool: new Pool({ connectionString: config.url, ...(config.poolSize ? { max: config.poolSize } : {}) }) }) });
+  // A named schema keeps one deployment (or one test) apart from whatever else lives in the database.
+  if (config.schema !== undefined && !/^[a-z_][a-z0-9_]{0,50}$/.test(config.schema)) throw new Error('A storage schema name is lowercase letters, digits and underscores');
+  const pool = new Pool({ connectionString: config.url, ...(config.poolSize ? { max: config.poolSize } : {}) });
+  if (config.schema) pool.on('connect', (client: { query(text: string): Promise<unknown> }) => { void client.query(`set search_path to "${config.schema}"`).catch(() => {}); });
+  const db = new Kysely<Schema>({ dialect: new PostgresDialect({ pool }) });
   // Without `listen` this process is the only one appending, and in-process fan-out is the whole bus.
   const shared = config.listen ? createSharedBus({
     origin: randomUUID(),
@@ -75,7 +79,7 @@ export async function createPostgresAdapter(config: { url: string; poolSize?: nu
     appendLock: async tx => { await sql`select pg_advisory_xact_lock(${APPEND_LOCK})`.execute(tx); },
     // Taken before the queue is read, and always before the append lock, so the two never wait on each other.
     claimLock: async tx => { await sql`select pg_advisory_xact_lock(${CLAIM_LOCK})`.execute(tx); },
-    migrate: upTo => runMigrations(db, MIGRATION_CONTEXT, upTo),
+    migrate: async upTo => { if (config.schema) await sql`create schema if not exists ${sql.id(config.schema)}`.execute(db); return runMigrations(db, MIGRATION_CONTEXT, upTo); },
     close: async () => { await shared?.stop(); await db.destroy(); },
   };
 }

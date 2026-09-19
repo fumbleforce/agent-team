@@ -8,17 +8,19 @@ import { pathToFileURL } from 'node:url';
 import { sql } from 'kysely';
 import { newId } from '@agent-team/protocol';
 import { createStorage, type StorageAdapter, type StorageConfig } from './index.ts';
-import { postgresForTests } from './testing.ts';
+import { hostedForTests, postgresForTests } from './testing.ts';
 
 // Postgres runs in-process, a fresh database per test; AGENT_TEAM_TEST_PG_URL points the same suite at a real server instead.
 const configs: StorageConfig[] = [{ kind: 'sqlite', path: ':memory:' }, { kind: 'postgres', url: process.env.AGENT_TEAM_TEST_PG_URL ?? '' }];
 
 async function fresh(config: StorageConfig, options: { upTo?: string; vector?: boolean } = {}): Promise<StorageAdapter & { url: string | null; hasVector: boolean }> {
   const local = config.kind === 'postgres' && !config.url ? await postgresForTests(options.vector ? { vector: true } : {}) : null;
-  const used = local?.config ?? config;
+  // On a real server every test lives in a schema of its own, so nothing is left behind and nothing else there is touched.
+  const hosted = config.kind === 'postgres' && config.url ? await hostedForTests(config.url) : null;
+  const used = local?.config ?? hosted?.config ?? config;
   const storage = await createStorage(used);
   await storage.migrate(options.upTo);
-  return { ...storage, url: used.kind === 'postgres' ? used.url : null, hasVector: local?.available.vector ?? false, close: async () => { await storage.close(); await local?.stop(); } };
+  return { ...storage, url: used.kind === 'postgres' ? used.url : null, hasVector: local?.available.vector ?? false, close: async () => { await storage.close(); await local?.stop(); await hosted?.stop(); } };
 }
 const project = { type: 'project', id: 'p1' }, elsewhere = { type: 'project', id: 'p2' };
 

@@ -53,7 +53,7 @@ What these runs found and fixed: sessions never resumed, because rotation used a
 
 Run on 2026-09-19 with `node scripts/real-check.ts <owner/name>` (uses `GH_TOKEN`) and `node scripts/real-check-sso.ts` (no credentials). Nothing is written anywhere by either.
 
-- GitHub: the guided setup's connection test reached a real repository; the tracker read its issues (pull requests excluded) and an issue's comments; environments and test reports answered without error. Writing (moving a card, commenting, publishing a branch) has not run against a real repository.
+- GitHub: the guided setup's connection test reached a real repository; the tracker read its issues (pull requests excluded) and an issue's comments; environments and test reports answered without error. Writes ran against a private scratch repository (`scripts/real-check-writes.ts`): an issue was created, commented on, moved through the board's states and closed, and read back.
 - Single sign-on: the address the guided setup derives for Google Workspace, and for Microsoft Entra ID from a tenant ID, answers as an OpenID service that names the same issuer. A full sign-in with a registered app has not been done.
 
 The wording of every guided setup (integrations, model providers, single sign-on) was checked against each vendor's official documentation on 2026-09-19 and corrected. Known limits that came out of it: the hosted HubSpot tool server signs in with OAuth and its tokens expire, and nothing here refreshes them yet; a fine-grained GitHub token cannot read check results on a private repository, so the GitHub CLI login or a classic token is what the merge gate needs there.
@@ -61,7 +61,7 @@ The wording of every guided setup (integrations, model providers, single sign-on
 ## Open
 
 - The same real delivery on GitLab, and a pilot on a real project rather than a scratch one.
-- A hosted Postgres (Supabase) with a real connection string.
+- A hosted Postgres (Supabase). Everything is ready for it: set `AGENT_TEAM_TEST_PG_URL` to a direct connection string and run `AGENT_TEAM_TEST_STORAGE=postgres npm run test:postgres`; every test then lives in a schema of its own on that server and drops it afterwards. A deployment can likewise be kept in a named schema with `storage: { kind: 'postgres', url, schema }`.
 - Real credentials for chat, the document folder and an identity provider.
 - Deploying Fly and AWS from this code: both create billable resources and need the owner's go-ahead. The launched host's boot script has only been syntax-checked.
 - The three other engine CLIs are not installed on this machine, so their adapters remain unrun.

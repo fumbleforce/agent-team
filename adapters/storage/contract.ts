@@ -61,4 +61,4 @@ export type StorageConfig =
   // `vectorExtension` is the path of a loadable vector extension; when it does not load, vectors stay portable.
   | { kind: 'sqlite'; path: string; vectorExtension?: string }
   // `listen` opens one more, direct connection that hears the events other coordinator processes append (and tells them of ours).
-  | { kind: 'postgres'; url: string; poolSize?: number; listen?: boolean };
+  | { kind: 'postgres'; url: string; poolSize?: number; schema?: string; listen?: boolean };

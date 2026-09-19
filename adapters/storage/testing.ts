@@ -15,3 +15,17 @@ export async function postgresForTests(options: { vector?: boolean } = {}): Prom
   await server.start();
   return { available: { vector: Boolean(extension) }, config: { kind: 'postgres', url: `postgres://postgres@127.0.0.1:${port}/postgres`, poolSize: 1 }, stop: async () => { await server.stop(); await db.close(); } };
 }
+
+// The same suite against a real server: every throwaway database is a schema of its own, dropped when the test closes it.
+export async function hostedForTests(url: string): Promise<{ config: StorageConfig; stop(): Promise<void> }> {
+  const schema = `t_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+  return {
+    config: { kind: 'postgres', url, schema, poolSize: 4 },
+    stop: async () => {
+      const name = 'pg', pg = await import(name);
+      const client = new (pg.default?.Client ?? pg.Client)({ connectionString: url });
+      await client.connect();
+      try { await client.query(`drop schema if exists "${schema}" cascade`); } finally { await client.end(); }
+    },
+  };
+}
