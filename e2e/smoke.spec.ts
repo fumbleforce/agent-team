@@ -497,3 +497,12 @@ test('single sign-on is set up through a guided flow, checked, shown in sentence
   await expect(page.locator('pre')).toHaveCount(0);
   expect(errors).toEqual([]);
 });
+
+test('an accent button has dark text on it, not the light text of the page', async ({ page }) => {
+  await page.goto('/dev/ui');
+  const button = page.getByRole('button', { name: 'primary', exact: true }).first();
+  const [text, background] = await button.evaluate(node => { const style = getComputedStyle(node); return [style.color, style.backgroundColor]; });
+  const light = (value: string) => { const [r, g, b] = (value.match(/[\d.]+/g) ?? []).map(Number); return (0.2126 * r! + 0.7152 * g! + 0.0722 * b!) / 255; };
+  // Dark on amber: the text must be much darker than what it sits on.
+  expect(light(background) - light(text)).toBeGreaterThan(0.4);
+});

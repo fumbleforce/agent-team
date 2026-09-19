@@ -89,6 +89,9 @@
   --color-tint-10: #e0b3a3;
 }
 
-html, body, #root { height: 100%; }
-body { margin: 0; background: var(--color-ground); color: var(--color-ink); font-family: var(--font-sans); font-size: var(--text-body); -webkit-font-smoothing: antialiased; }
-textarea, input, button { font: inherit; color: inherit; }
+/* In the base layer: a rule outside every layer would win over the utilities, and did (it turned the dark text of every accent button light). */
+@layer base {
+  html, body, #root { height: 100%; }
+  body { margin: 0; background: var(--color-ground); color: var(--color-ink); font-family: var(--font-sans); font-size: var(--text-body); -webkit-font-smoothing: antialiased; }
+  textarea, input, button { font: inherit; color: inherit; }
+}
