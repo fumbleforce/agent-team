@@ -4,6 +4,8 @@ import type { Context } from '../context.ts';
 import { createKnowledge } from '../knowledge/knowledge.ts';
 import { createVersionedDocs } from '../repos/versionedDocs.ts';
 import { createProposals } from '../runtime/proposals.ts';
+import { createIssues } from '../repos/issues.ts';
+import path from 'node:path';
 
 export const DEMO_LOGIN = { email: 'demo@example.com', password: 'demo-password-1234' };
 
@@ -11,7 +13,8 @@ export const DEMO_LOGIN = { email: 'demo@example.com', password: 'demo-password-
 // A deployment holds one organization, so the boards' second one, Nordlys Studio, is here as a project that is not
 // software: documents instead of a repository, checks instead of tests, a tab of its own and its own connections.
 // `empty` stops after the organization and its owner: what a person sees right after their own first sign-in.
-export async function seedDemo(context: Context, options: { empty?: boolean } = {}): Promise<void> {
+// `activity` adds work under way and product environments: right for looking at the demo, wrong for tests that use the seed as a quiet fixture.
+export async function seedDemo(context: Context, options: { empty?: boolean; activity?: boolean } = {}): Promise<void> {
   const db = context.storage.db;
   const at = context.now();
   const userId = newId();
@@ -93,6 +96,46 @@ export async function seedDemo(context: Context, options: { empty?: boolean } = 
   })).execute();
 
   // Two team proposals through the real voting path: one inside the delegated bounds (applied by the team), one above them (waits for the owner).
+  const seedActivity = async () => {
+    // The issue the boards show: raised by the owner from the discussion, picked up by the PM, with the team's replies.
+    const issues = createIssues(context, path.join(context.dataDir, 'blobs'));
+    const raised = await issues.create(userId, checkout.id, { title: 'Pay button stays disabled after a network drop on Safari', body: 'Tap Pay on Safari 18, turn Wi-Fi off for a few seconds and back on: the button never comes back and there is no message. @Cleo can you reproduce it on staging?', source: 'discussion', markers: [] });
+    const issueThread = (await db.selectFrom('issues').select('thread_id').where('id', '=', raised.id).executeTakeFirstOrThrow()).thread_id;
+    await db.insertInto('messages').values([
+      say(maren, 12, 'decision', 'Accepted, high priority: it blocks 2.14. Cleo owns the reproduction, Bram the fix on top of CK-28.', {}, issueThread),
+      say(cleo, 13, 'note', 'Reproduced on staging run #4812: the fetch stays pending forever after the drop, so the timeout never fires. Safari 18 only.', {}, issueThread),
+      say(bram, 15, 'note', 'Pairing the fetch with an AbortController fixes it locally. Pushing to the CK-28 branch once the hang test is in.', {}, issueThread),
+    ]).execute();
+
+    // What the roster says each seat is doing is also what the workload shows: work under way, work waiting, and feedback owed.
+    const taskId = async (key: string) => (await db.selectFrom('tasks').select('id').where('key', '=', key).executeTakeFirstOrThrow()).id;
+    const item = (agent: { id: string }, kind: string, lane: string, state: string, priority: number, task: string | null, deferReason: string | null = null) =>
+      ({ id: newId(), agent_id: agent.id, project_id: checkout.id, kind, lane, task_id: task, thread_id: task ? null : threadId, priority_class: priority, state, defer_reason: deferReason, not_before: null, dedupe_key: null, cause_event_id: null, created_at: at });
+    await db.insertInto('work_items').values([
+      item(maren, 'triage', 'bounded', 'leased', 1, null), item(ada, 'work', 'work', 'leased', 4, await taskId('CK-27')), item(cleo, 'work', 'work', 'leased', 4, await taskId('CK-29')),
+      item(ada, 'work', 'work', 'queued', 5, await taskId('CK-33')), item(bram, 'work', 'work', 'queued', 5, await taskId('CK-32')), item(bram, 'work', 'work', 'queued', 5, await taskId('CK-31')),
+      item(cleo, 'work', 'work', 'queued', 4, await taskId('CK-30'), 'lane-busy'), item(finn, 'work', 'work', 'queued', 5, await taskId('CK-34')),
+      item(cleo, 'review', 'bounded', 'queued', 3, await taskId('CK-28')), item(ada, 'review', 'bounded', 'queued', 3, await taskId('CK-26')),
+    ]).execute();
+
+    // Where the product runs, so the product view has something to capture and mark up.
+    await db.insertInto('product_envs').values([
+      { id: newId(), project_id: checkout.id, name: 'Staging', branch: 'release/2.14', url: 'https://staging.shop.example', source: 'manual', created_at: at, last_status: 'ok', last_latency_ms: 412 },
+      { id: newId(), project_id: checkout.id, name: 'Production', branch: 'main', url: 'https://shop.example', source: 'manual', created_at: at, last_status: null, last_latency_ms: null },
+    ]).execute();
+
+    // A finished turn with its trace, so the agent page shows what inspecting an agent looks like.
+    const tracedItem = item(ada, 'work', 'work', 'done', 4, await taskId('CK-27')), turnId = newId();
+    await db.insertInto('work_items').values(tracedItem).execute();
+    await db.insertInto('turns').values({ id: turnId, work_item_id: tracedItem.id, agent_id: ada.id, project_id: checkout.id, task_id: tracedItem.task_id, kind: 'work', lane: 'work', access: 'write', state: 'completed', stop_reason: 'completed', worker_id: 'atlas', lease_token_hash: 'x', lease_until: at, grants: '{}',
+      summary: 'Webhook handler accepts the v2 payload behind a version check; v1 stays until billing confirms the cut-over. Tests added for both shapes.', tokens_in: 184_200, tokens_out: 6_410, cost_minor: 212, started_at: at - 14 * 60_000, finished_at: at - 3 * 60_000, provider_id: null, model: null, session_id: null, context_mode: 'packet', git_admin: null }).execute();
+    const diff = ['diff --git a/billing/webhooks.py b/billing/webhooks.py', '--- a/billing/webhooks.py', '+++ b/billing/webhooks.py', '@@ -41,7 +41,12 @@ def handle(event):', '     payload = event["data"]', '-    invoice = payload["invoice_id"]', '+    # v2 nests the invoice; v1 stays until billing confirms the cut-over.', '+    if event.get("version", 1) >= 2:', '+        invoice = payload["invoice"]["id"]', '+    else:', '+        invoice = payload["invoice_id"]', '     return settle(invoice)'].join(String.fromCharCode(10));
+    const steps: [string, string, string | null][] = [['think', 'The v2 payload nests the invoice under "invoice"; keep v1 working behind a version check.', null], ['read', 'Read: billing/webhooks.py', null], ['read', 'Grep: invoice_id', null], ['edit', 'Edit: billing/webhooks.py', diff], ['run', 'Bash: pytest billing/tests/test_webhooks.py', '12 passed in 1.84s'], ['think', 'Both payload shapes pass. Reporting and handing to review.', null]];
+    await db.insertInto('trace_steps').values(steps.map(([kind, title], seq) => ({ turn_id: turnId, seq, at: at - (13 - seq * 2) * 60_000, kind, title, detail: null, status: 'ok', artifact_id: null }))).execute();
+    await db.insertInto('step_artifacts').values(steps.flatMap(([kind, , body], seq) => (body ? [{ turn_id: turnId, seq, kind: kind === 'edit' ? 'diff' : 'output', body, bytes: body.length, truncated: 0, created_at: at, storage_key: null, mime: null }] : []))).execute();
+  };
+  if (options.activity) await seedActivity();
+
   const proposals = createProposals(context);
   const voters = (await db.selectFrom('agents').select('id').where('team_id', '=', bram.team_id).where('status', '=', 'active').execute()).map(row => row.id);
   for (const [capMinor, title, why] of [[1200, 'Raise Cleo’s daily cap to 12', 'Regression sweeps stop at the cap mid-afternoon twice a week.'], [4000, 'Move Ada to the larger model for design reviews, cap 40', 'Three of the last five design decisions were revised after review found gaps the smaller model missed.']] as const) {

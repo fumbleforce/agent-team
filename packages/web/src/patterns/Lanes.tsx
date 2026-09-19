@@ -17,15 +17,20 @@ export function LaneRow({ agent, load, children }: { agent: Agent; load: string;
   );
 }
 
+// What a turn is for and why work waits, in the words a person would use.
+const KIND: Record<string, string> = { work: 'Working on a task', review: 'Reviewing', feedback: 'Giving feedback', revise: 'Revising a proposal', conclude: 'Deciding', triage: 'Sorting out what came in', reply: 'Replying', retro: 'Looking back on the week', ideate: 'Proposing new work', deliver: 'Merging', publish: 'Publishing a branch', capture: 'Capturing a page' };
+const WAITS: Record<string, string> = { 'agent-paused': 'agent is paused', 'task-blocked': 'task is blocked', 'task-closed': 'task is closed', 'task-quarantined': 'needs a person first', 'lane-busy': 'after the current task', 'writer-busy': 'someone else is editing this', 'writers-busy': 'project is at its limit of editors', 'delivery-busy': 'a merge is under way',
+  'provider-unavailable': 'provider is not available', 'provider-limited': 'provider hit its usage limit', 'provider-busy': 'provider is at its limit', 'provider-window': 'close to the usage allowance', 'over-cap': 'over today’s cap', 'over-budget': 'budget is used up', 'project-paused': 'project is paused', 'no-worktree-holder': 'its worker is away', 'checkout-quarantined': 'that worker’s copy needs a person' };
+
 // Why something waits is shown on the item itself; idle is a signal, so it is said out loud.
 export function LaneCell({ items, empty, emphasis }: { items: LaneItem[]; empty: string; emphasis?: boolean }) {
   return (
     <div className="flex min-w-0 grow basis-0 flex-col gap-1">
       {items.map(item => (
         <div key={item.id} className={cx('flex items-center gap-1.5 rounded-control border px-2 py-1', emphasis ? 'border-line-strong bg-raised' : 'border-line bg-raised')}>
-          <Text size="caption" tone="muted" mono>{item.key ?? item.kind}</Text>
-          <Text size="small" truncate>{item.title}</Text>
-          {item.deferReason && <span className="ml-auto"><Chip tone="attention">{item.deferReason}</Chip></span>}
+          {item.key && <Text size="caption" tone="muted" mono className="whitespace-nowrap">{item.key}</Text>}
+          <Text size="small" truncate>{item.key ? item.title : KIND[item.kind] ?? item.title}</Text>
+          {item.deferReason && <span className="ml-auto"><Chip tone="attention">{WAITS[item.deferReason] ?? item.deferReason.replaceAll('-', ' ')}</Chip></span>}
         </div>
       ))}
       {items.length === 0 && <Text size="caption" tone="faint">{empty}</Text>}

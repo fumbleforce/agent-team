@@ -62,7 +62,9 @@ export function createMcp(context: Context, deps: McpDeps) {
 
   async function threadInProject(turn: Turn, threadId: string) {
     const thread = await workspace.thread(threadId).catch(() => null);
-    if (!thread || thread.project_id !== turn.project_id || thread.visibility !== 'team') throw new ToolError('Thread not found in this project');
+    // A private thread is open only to the reply turn it caused: no other turn, of this agent or any other, can read or write it.
+    const own = thread && thread.visibility !== 'team' ? (await db.selectFrom('work_items').select('thread_id').where('id', '=', turn.work_item_id).executeTakeFirst())?.thread_id === threadId && turn.kind === 'reply' : false;
+    if (!thread || thread.project_id !== turn.project_id || (thread.visibility !== 'team' && !own)) throw new ToolError('Thread not found in this project');
     return thread;
   }
 

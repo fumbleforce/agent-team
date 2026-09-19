@@ -10,3 +10,4 @@ packages/web/dist/
 test-results/
 playwright-report/
 /dist/
+walk-shots/

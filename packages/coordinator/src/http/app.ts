@@ -15,6 +15,7 @@ import { registerRuleRoutes } from './ruleRoutes.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
 import { mountSetupRoutes } from './setupRoutes.ts';
 import { mountOnboardingRoutes } from './onboardingRoutes.ts';
+import { createControls } from '../runtime/controls.ts';
 import { createNeedsYou, type NeedsYouKind } from '../runtime/needsYou.ts';
 import { mountProviderRoutes } from './providerSetupRoutes.ts';
 import { SCM_KINDS } from '../../../../adapters/scm/index.ts';
@@ -327,6 +328,25 @@ export function createApp(context: Context) {
     return c.json({ lanes, busy: lanes.filter(lane => lane.now.length > 0).length, seq: await context.events.head() });
   });
 
+  // Direct control over an agent, and the private 1:1 with it.
+  const controls = createControls(context, turns);
+  const agentHome = async (c: Hc<Env>, action: Action) => {
+    const row = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['projects.id']).where('agents.id', '=', c.req.param('id') ?? '').executeTakeFirst();
+    if (!row) throw new HttpError(404, 'not_found', 'Agent not found');
+    allow(c, action, row.id);
+    return row.id;
+  };
+  app.post('/api/agents/:id/stop', async c => { await agentHome(c, 'project.operate'); return c.json(await controls.stopAgent(c.get('viewer').userId, c.req.param('id')!)); });
+  app.get('/api/agents/:id/dm', async c => { const projectId = await agentHome(c, 'project.contribute'); return c.json(await controls.direct(c.get('viewer').userId, c.req.param('id')!, projectId)); });
+  app.post('/api/agents/:id/dm', async c => { const projectId = await agentHome(c, 'project.contribute'); const input = await body(c, z.object({ body: z.string().trim().min(1).max(8000) })); return c.json(await controls.say(c.get('viewer').userId, c.req.param('id')!, projectId, input.body)); });
+  app.post('/api/tasks/:id/stop', async c => {
+    const task = await context.storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['projects.id', 'projects.parent_id']).where('tasks.id', '=', c.req.param('id')).executeTakeFirst();
+    if (!task) throw new HttpError(404, 'not_found', 'Task not found');
+    allow(c, 'project.operate', task.parent_id ?? task.id);
+    await controls.stopTask(c.get('viewer').userId, c.req.param('id'));
+    return c.json({ ok: true });
+  });
+
   // What reaches a human, in one queue, limited to the projects they can see. Settling anything in it needs the right to decide for that project.
   const needsYou = createNeedsYou(context, turns);
   const rootOf = async (projectId: string) => { const row = await context.storage.db.selectFrom('projects').select(['id', 'parent_id']).where('id', '=', projectId).executeTakeFirst(); return row?.parent_id ?? projectId; };
@@ -555,7 +575,14 @@ export function createApp(context: Context) {
     let cursor = Number(c.req.header('last-event-id') ?? c.req.query('after') ?? 0);
     const roots = new Map<string, string>();
     for (const project of await context.storage.db.selectFrom('projects').select(['id', 'parent_id']).execute()) roots.set(project.id, project.parent_id ?? project.id);
-    const visible = (event: StoredEvent) => event.category !== 'audit' && canSeeProject(viewer, event.projectId ? (roots.get(event.projectId) ?? event.projectId) : null);
+    // A private thread's events reach its owner only; who owns a thread is looked up once per thread.
+    const owners = new Map<string, string | null>();
+    const mine = async (threadId: string) => {
+      if (!owners.has(threadId)) { const thread = await context.storage.db.selectFrom('threads').select(['visibility', 'owner_user_id']).where('id', '=', threadId).executeTakeFirst(); owners.set(threadId, thread && thread.visibility !== 'team' ? thread.owner_user_id ?? '' : null); }
+      const owner = owners.get(threadId);
+      return owner === null || owner === undefined || owner === viewer.userId;
+    };
+    const visible = async (event: StoredEvent) => event.category !== 'audit' && canSeeProject(viewer, event.projectId ? (roots.get(event.projectId) ?? event.projectId) : null) && (!event.threadId || await mine(event.threadId));
     let wake: (() => void) | null = null;
     const unsubscribe = context.storage.bus.subscribe(() => wake?.());
     stream.onAbort(() => { unsubscribe(); wake?.(); });
@@ -563,7 +590,7 @@ export function createApp(context: Context) {
       const events = await context.events.read({ after: cursor });
       for (const event of events) {
         cursor = event.seq;
-        if (visible(event)) await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
+        if (await visible(event)) await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
       }
       if (events.length === 0) {
         await Promise.race([new Promise<void>(resolve => { wake = resolve; }), stream.sleep(15_000)]);

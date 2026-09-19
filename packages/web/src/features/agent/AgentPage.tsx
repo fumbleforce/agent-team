@@ -3,6 +3,7 @@ import type { Me, ProjectNode } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
 import { AppShell, Attachment, DiffView, Disclosure, OutputView, PageHeader, Sidebar, TraceRow } from '../../patterns';
+import { AgentControls, DirectMessages } from './AgentControls';
 import { Avatar, Card, Chip, SectionLabel, Text, type ChipTone } from '../../ui';
 
 interface Turn { id: string; kind: string; state: string; summary: string | null; tokens_in: number; tokens_out: number; cost_minor: number; started_at: number }
@@ -49,6 +50,8 @@ export function AgentPage({ id, me, projects }: { id: string; me: Me; projects: 
               {data.agent.model && <span className="ml-auto"><Chip mono>{data.agent.model}</Chip></span>}
             </div>
             <Text size="small" tone="soft">{data.agent.persona}</Text>
+            <AgentControls id={id} name={data.agent.name} status={data.agent.status} running={data.turns.some(turn => turn.state === 'running')} onChanged={view.reload} />
+            <DirectMessages id={id} name={data.agent.name} />
             <SectionLabel>Recent turns</SectionLabel>
             {data.turns.map(turn => (
               <div key={turn.id} className="flex flex-col gap-0.5">
