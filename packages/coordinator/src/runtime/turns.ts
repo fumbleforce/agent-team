@@ -86,9 +86,10 @@ export function createTurns(context: Context) {
       const fresh = new Set((await tx.selectFrom('workers').select('id').where('last_seen_at', '>', now() - WORKER_FRESH_MS).execute()).map(row => row.id));
       // Newest first: the first write turn seen per task names the holder of its worktree, the first routed work turn its sticky route.
       const written = await tx.selectFrom('turns').select(['task_id', 'kind', 'worker_id', 'provider_id', 'model']).where('task_id', 'in', taskIds).where('access', '=', 'write').orderBy('started_at', 'desc').orderBy('id', 'desc').execute();
-      for (const task of await tx.selectFrom('tasks').select(['id', 'state', 'tag']).where('id', 'in', taskIds).execute()) {
+      for (const task of await tx.selectFrom('tasks').select(['id', 'state', 'tag', 'blocked_reason']).where('id', 'in', taskIds).execute()) {
         const mine = written.filter(turn => turn.task_id === task.id), holder = mine[0]?.worker_id, routed = mine.find(turn => turn.kind === 'work' && turn.provider_id !== null);
-        snapshot.tasks[task.id] = { state: task.state, tags: task.tag ? [task.tag] : [], quarantined: quarantined.has(task.id), writerRunning: running.some(turn => turn.task_id === task.id && turn.access === 'write'), holder: holder && fresh.has(holder) ? holder : null, sticky: routed ? { providerId: routed.provider_id, model: routed.model } : null };
+        // A task held in the backlog (an idea waiting for its owner, say) is not to be worked on, whatever queued it.
+        snapshot.tasks[task.id] = { state: task.state === 'backlog' && task.blocked_reason ? 'blocked' : task.state, tags: task.tag ? [task.tag] : [], quarantined: quarantined.has(task.id), writerRunning: running.some(turn => turn.task_id === task.id && turn.access === 'write'), holder: holder && fresh.has(holder) ? holder : null, sticky: routed ? { providerId: routed.provider_id, model: routed.model } : null };
       }
     }
 

@@ -171,13 +171,13 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
     const { allIssues } = await client.snapshot(manifest);
     const out = await pushOut(projectId, system, client, manifest, config, allIssues);
 
-    const before = new Map((await db.selectFrom('tasks').select(['id', 'key', 'state']).where('project_id', '=', projectId).where('source', '=', 'tracker').execute()).map(task => [task.key, task]));
+    const before = new Map((await db.selectFrom('tasks').select(['id', 'key', 'state', 'blocked_reason']).where('project_id', '=', projectId).where('source', '=', 'tracker').execute()).map(task => [task.key, task]));
     const refs = new Map((before.size ? await db.selectFrom('external_refs').selectAll().where('entity_type', '=', 'task').where('system', '=', system).where('entity_id', 'in', [...before.values()].map(task => task.id)).execute() : []).map(ref => [ref.entity_id, ref]));
     // Network first, the transaction after. An approved idea is prepared for the team by marking it ready; one that cannot be marked waits for the next poll.
     const unprepared = new Set<string>(), incoming = new Map<string, TrackerComment[]>();
     for (const issue of allIssues) {
       const task = before.get(issue.identifier), ref = task ? refs.get(task.id) : undefined;
-      if (config && readyLabel && client.addLabel && approvalStatus(config, issue).allowed && !has(issue, readyLabel) && (!task || task.state === 'canceled')) await client.addLabel(manifest, issue.identifier, readyLabel).catch(() => unprepared.add(issue.identifier));
+      if (config && readyLabel && client.addLabel && approvalStatus(config, issue).allowed && !has(issue, readyLabel) && (!task || task.state === 'canceled' || Boolean(task.blocked_reason))) await client.addLabel(manifest, issue.identifier, readyLabel).catch(() => unprepared.add(issue.identifier));
       // Comments are read only where the issue changed since the last poll, from a little before it to allow for clock skew.
       if (task && ref && client.comments && issue.updatedAt && ref.remote_version !== issue.updatedAt && !terminal(issue)) {
         const found = await client.comments(manifest, issue.identifier, new Date(Number(ref.synced_at) - SKEW_MS).toISOString()).catch(() => []);
@@ -186,7 +186,7 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
     }
 
     const result = await storage.transaction(async tx => {
-      const existing = new Map((await tx.selectFrom('tasks').select(['id', 'key', 'title', 'brief', 'state', 'tag']).where('project_id', '=', projectId).where('source', '=', 'tracker').execute()).map(task => [task.key, task]));
+      const existing = new Map((await tx.selectFrom('tasks').select(['id', 'key', 'title', 'brief', 'state', 'tag', 'blocked_reason']).where('project_id', '=', projectId).where('source', '=', 'tracker').execute()).map(task => [task.key, task]));
       // A local move made after the outbound pass has not reached the tracker yet; this poll must not undo it.
       const pending = new Set([...out.pushed, ...(await tx.selectFrom('events').select('task_id').where('project_id', '=', projectId).where('type', '=', 'task.state_changed').where('seq', '>', out.cursor).execute()).map(row => row.task_id ?? '')]);
       const drafts: EventDraft[] = [];
@@ -201,10 +201,12 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
         const state = taskStateOf(issue), tag = tagOf(issue), task = existing.get(issue.identifier);
         const approval = config && has(issue, config.ideaLabel) ? approvalStatus(config, issue) : null;
         if (!task) {
-          // An idea is not work until its owner approves it, and then only once it could be marked ready.
-          if (state === 'canceled' || (approval && !terminal(issue) && (!approval.allowed || unprepared.has(issue.identifier)))) continue;
+          // Everything in the tracker is on the board. An idea its owner has not approved, or one on hold, is shown held in the
+          // backlog with the reason; holding it is what keeps it from being worked on, not hiding it.
+          if (state === 'canceled') continue;
+          const heldBecause = approval && !terminal(issue) && (!approval.allowed || unprepared.has(issue.identifier)) ? (approval.allowed ? 'Approved; being marked ready' : approval.reason) : null;
           const id = newId(now());
-          await tx.insertInto('tasks').values({ id, project_id: projectId, key: issue.identifier, source: 'tracker', title: issue.title, brief: issue.description ?? '', tag, priority: index, milestone_id: null, state, assignee_agent_id: null, author_agent_id: null, branch: null, head_sha: null, pr_url: null, blocked_reason: null, created_at: now(), updated_at: now() }).execute();
+          await tx.insertInto('tasks').values({ id, project_id: projectId, key: issue.identifier, source: 'tracker', title: issue.title, brief: issue.description ?? '', tag, priority: index, milestone_id: null, state: heldBecause ? 'backlog' : state, assignee_agent_id: null, author_agent_id: null, branch: null, head_sha: null, pr_url: null, blocked_reason: heldBecause, created_at: now(), updated_at: now() }).execute();
           await remember(id, issue, false);
           drafts.push({ type: 'task.synced', actorKind: 'system', projectId, taskId: id, payload: { key: issue.identifier, state, ...(approval?.allowed ? { approved: true } : {}) } });
           created++;
@@ -222,16 +224,19 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
           drafts.push({ type: 'message.posted', actorKind: 'user', projectId, taskId: task.id, threadId: thread.id, payload: { messageId, kind: 'note', origin: 'tracker' } });
           comments++;
         }
-        // Withdrawn approval cancels what has not started; work already under way is the team's to finish or the owner's to stop.
-        if (approval && !approval.allowed && !terminal(issue) && (task.state === 'canceled' || bucketOf(task.state) === 'backlog')) {
-          if (task.state !== 'canceled') {
-            await tx.updateTable('tasks').set({ state: 'canceled', title: issue.title, brief: issue.description ?? '', tag, updated_at: now() }).where('id', '=', task.id).execute();
+        // An idea that is no longer approved (or was put on hold) stays on the board, held: what has not started is taken off the
+        // queue, and work already under way is the team's to finish or the owner's to stop. Approval clears the hold again.
+        const hold = approval && !terminal(issue) && !approval.allowed ? approval.reason : null;
+        if (hold && bucketOf(task.state) === 'backlog') {
+          if (task.blocked_reason !== hold || task.state === 'canceled') {
+            await tx.updateTable('tasks').set({ state: 'backlog', blocked_reason: hold, title: issue.title, brief: issue.description ?? '', tag, updated_at: now() }).where('id', '=', task.id).execute();
             await tx.updateTable('work_items').set({ state: 'canceled' }).where('task_id', '=', task.id).where('state', '=', 'queued').execute();
-            drafts.push({ type: 'task.state_changed', actorKind: 'system', projectId, taskId: task.id, payload: { from: task.state, to: 'canceled', source: 'tracker', reason: 'approval_withdrawn' } });
+            drafts.push({ type: 'task.state_changed', actorKind: 'system', projectId, taskId: task.id, payload: { from: task.state, to: 'backlog', source: 'tracker', reason: 'held', why: hold } });
             canceled++;
           }
           continue;
         }
+        if (!hold && task.blocked_reason && bucketOf(task.state) === 'backlog') await tx.updateTable('tasks').set({ blocked_reason: null, updated_at: now() }).where('id', '=', task.id).execute();
         // Remote wins where the two disagree about the column; the finer local states within a column are the platform's.
         const nextState = pending.has(task.id) || bucketOf(task.state) === state || (LOCAL.includes(task.state) && state !== 'done' && state !== 'canceled') ? task.state : state;
         if (task.title === issue.title && task.tag === tag && task.state === nextState && task.brief === (issue.description ?? '')) continue;

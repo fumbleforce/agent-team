@@ -159,21 +159,23 @@ test('an idea becomes a task only while its owner approves it', async () => {
     // The schedule exists but is not due, so this test is about approval only.
     await storage.db.insertInto('schedules').values({ id: 's1', project_id: projectId, kind: 'ideate', interval_ms: 168 * 3_600_000, next_at: 9e15, last_at: null }).execute();
     await sync.syncProject(projectId, client);
-    assert.equal(await task('GH-1'), undefined, 'a proposed idea waits for the owner');
+    // Everything in the tracker is on the board; what waits for the owner is shown held, with the reason, and cannot be handed out.
+    const proposed = (await task('GH-1'))!;
+    assert.deepEqual([proposed.state, proposed.blocked_reason], ['backlog', 'Owner approval required'], 'a proposed idea is shown, held');
     assert.equal((await task('GH-2'))!.state, 'backlog');
 
     remote.issues[0] = issue('GH-1', 'Saved carts', 'unstarted', ['idea'], 'Todo');
     await sync.syncProject(projectId, client);
     assert.deepEqual(remote.writes, [['label', 'GH-1', 'agent:ready']], 'the approved idea is prepared for the team');
     const approved = (await task('GH-1'))!;
-    assert.equal(approved.state, 'backlog');
+    assert.deepEqual([approved.state, approved.blocked_reason], ['backlog', null], 'approval lifts the hold');
     await storage.db.insertInto('work_items').values({ id: 'w1', agent_id: (await storage.db.selectFrom('agents').select('id').executeTakeFirstOrThrow()).id, project_id: projectId, kind: 'work', lane: 'work', task_id: approved.id, thread_id: null, priority_class: 5, state: 'queued', defer_reason: null, not_before: null, dedupe_key: null, cause_event_id: null, created_at: 1 }).execute();
 
-    // The owner takes the approval back before anyone started: the task and its queued work are canceled, and stay so.
+    // The owner takes the approval back before anyone started: the task is held again, still on the board, and its queued work is taken off.
     remote.issues[0] = issue('GH-1', 'Saved carts', 'backlog', ['idea', 'agent:ready'], 'Proposed');
     assert.equal((await sync.syncProject(projectId, client)).canceled, 1);
     await sync.syncProject(projectId, client);
-    assert.equal((await task('GH-1'))!.state, 'canceled');
+    assert.deepEqual([(await task('GH-1'))!.state, (await task('GH-1'))!.blocked_reason], ['backlog', 'Owner approval required']);
     assert.equal((await storage.db.selectFrom('work_items').select('state').where('id', '=', 'w1').executeTakeFirstOrThrow()).state, 'canceled');
     assert.equal(remote.writes.length, 1, 'withdrawing is the owner’s act; nothing is written back');
 

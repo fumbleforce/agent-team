@@ -1,7 +1,12 @@
 import type { Agent, TaskCardData } from '../data/client';
 import { Avatar, Card, Chip, Select, StatusDot, Text, type DotTone } from '../ui';
 
+// Why a card is held, in the words of the person looking at the board.
+const HELD: [RegExp, string][] = [[/approval required/i, 'Waiting for your approval'], [/being marked ready/i, 'Approved: getting ready'], [/on hold/i, 'On hold'], [/is blocked/i, 'Blocked by another issue']];
+const heldWords = (reason: string) => HELD.find(([pattern]) => pattern.test(reason))?.[1] ?? reason;
+
 export function TaskCard({ task, owner, roster = [], onAssign }: { task: TaskCardData; owner: Agent | undefined; roster?: Agent[]; onAssign?: ((taskId: string, agentId: string) => void) | undefined }) {
+  const held = task.state === 'backlog' && Boolean(task.blocked_reason);
   return (
     <Card as="article" tone="raised" pad="sm" className="flex flex-col gap-2">
       <Text size="small" weight="medium">{task.title}</Text>
@@ -10,8 +15,9 @@ export function TaskCard({ task, owner, roster = [], onAssign }: { task: TaskCar
         {task.tag && <Chip>{task.tag}</Chip>}
         {(task.state === 'blocked' || task.state === 'quarantined') && <Chip tone="stop">{task.state}</Chip>}
         {task.state === 'awaiting_decision' && <Chip tone="attention">awaiting decision</Chip>}
+        {held && <Chip tone="attention">{heldWords(task.blocked_reason!)}</Chip>}
         <span className="ml-auto flex items-center gap-1.5">
-          {onAssign && !owner && <Select compact aria-label={`Assign ${task.key}`} value="" onChange={event => { if (event.target.value) onAssign(task.id, event.target.value); }}><option value="">Assign…</option>{roster.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</Select>}
+          {onAssign && !owner && !held && <Select compact aria-label={`Assign ${task.key}`} value="" onChange={event => { if (event.target.value) onAssign(task.id, event.target.value); }}><option value="">Assign…</option>{roster.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</Select>}
           {owner && <Avatar initials={owner.initials} tint={owner.tint} size="xs" />}
         </span>
       </div>

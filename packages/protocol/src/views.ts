@@ -7,7 +7,9 @@ import { z } from 'zod';
 export const AgentView = z.object({ id: z.string(), name: z.string(), initials: z.string(), tint: z.string(), title: z.string(), persona: z.string(), status: z.string(), provider_id: z.string().nullable(), model: z.string().nullable(), is_pm: z.boolean(), doing: z.string().nullable() });
 export type AgentView = z.infer<typeof AgentView>;
 
-export const TaskCardView = z.object({ id: z.string(), key: z.string(), title: z.string(), tag: z.string().nullable(), state: z.string(), assignee_agent_id: z.string().nullable() });
+export const TaskCardView = z.object({ id: z.string(), key: z.string(), title: z.string(), tag: z.string().nullable(), state: z.string(), assignee_agent_id: z.string().nullable(),
+  // Why a task in the backlog is not to be worked on yet (an idea waiting for its owner, say), or why a blocked one is blocked.
+  blocked_reason: z.string().nullable().optional() });
 export type TaskCardView = z.infer<typeof TaskCardView>;
 export const BoardView = z.object({ backlog: z.array(TaskCardView), in_progress: z.array(TaskCardView), review: z.array(TaskCardView), done: z.array(TaskCardView) });
 export type BoardView = z.infer<typeof BoardView>;

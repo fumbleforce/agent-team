@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { BOARD_COLUMNS, newId, packageRoot, type BoardColumn, type MessageKind, type MessageView, type TaskState } from '@agent-team/protocol';
-import { notFound, type Context } from '../context.ts';
+import { HttpError, notFound, type Context } from '../context.ts';
 import { canSeeProject, type Viewer } from '../auth/rbac.ts';
 import { indexMessage } from '../knowledge/indexing.ts';
 
@@ -88,7 +88,7 @@ export function createWorkspace(context: Context) {
     },
 
     async board(projectId: string) {
-      const tasks = await db.selectFrom('tasks').select(['id', 'key', 'title', 'tag', 'state', 'assignee_agent_id', 'priority', 'updated_at'])
+      const tasks = await db.selectFrom('tasks').select(['id', 'key', 'title', 'tag', 'state', 'assignee_agent_id', 'blocked_reason', 'priority', 'updated_at'])
         .where('project_id', '=', projectId).where('state', 'in', [...OPEN_STATES]).orderBy('priority').orderBy('updated_at', 'desc').execute();
       return Object.fromEntries(Object.entries(BOARD_COLUMNS).map(([column, states]) => [column, tasks.filter(task => (states as readonly string[]).includes(task.state))])) as Record<BoardColumn, typeof tasks>;
     },
@@ -106,8 +106,10 @@ export function createWorkspace(context: Context) {
     // Assigning is what starts work: the agent gets a work item for the task.
     async assignTask(viewer: Viewer, taskId: string, agentId: string) {
       const published = await storage.transaction(async tx => {
-        const task = await tx.selectFrom('tasks').select(['id', 'project_id', 'state']).where('id', '=', taskId).executeTakeFirst();
+        const task = await tx.selectFrom('tasks').select(['id', 'project_id', 'state', 'blocked_reason']).where('id', '=', taskId).executeTakeFirst();
         if (!task) throw notFound('Task');
+        // Held in the backlog means not to be worked on yet; handing it to someone would start exactly that.
+        if (task.state === 'backlog' && task.blocked_reason) throw new HttpError(409, 'conflict', `This task is held: ${task.blocked_reason}. Approve it in the tracker (or lift the hold there) first.`);
         await tx.updateTable('tasks').set({ assignee_agent_id: agentId, state: task.state === 'backlog' ? 'assigned' : task.state, updated_at: now() }).where('id', '=', taskId).execute();
         return { projectId: task.project_id, events: await events.append(tx, [{ type: 'task.assigned', actorKind: 'user', userId: viewer.userId, projectId: task.project_id, taskId, agentId }]) };
       });
