@@ -143,8 +143,8 @@ export function createTurns(context: Context) {
     async enqueue(input: { agentId: string; projectId: string; kind: TurnKind; taskId?: string | null; threadId?: string | null; dedupeKey?: string; causeEventId?: string; notBefore?: number; prepare?: (tx: Tx, workItemId: string) => Promise<void> }): Promise<string | null> {
       const id = newId(now());
       const published = await storage.transaction(async tx => {
-        // An agent works for its own team's projects and for those it is on loan to; a paused or archived project takes no new work.
-        if (!(await effectiveProjects(tx, input.agentId)).includes(input.projectId)) return null;
+        // An agent works for its own team's projects and for those it is on loan to. Work for a paused project is kept and waits at the claim.
+        if (!(await effectiveProjects(tx, input.agentId, { whilePaused: true })).includes(input.projectId)) return null;
         const live = input.dedupeKey ? await tx.selectFrom('work_items').select('dedupe_key').where('dedupe_key', '=', input.dedupeKey).where('state', 'in', ['queued', 'leased']).execute() : [];
         const task = input.taskId ? await tx.selectFrom('tasks').select(['state', 'assignee_agent_id']).where('id', '=', input.taskId).executeTakeFirst() : undefined;
         const draft = scheduler.enqueue({ kind: input.kind, agentId: input.agentId, dedupeKey: input.dedupeKey }, { liveDedupeKeys: new Set(live.map(row => row.dedupe_key ?? '')), task: task ? { state: task.state, assigneeAgentId: task.assignee_agent_id } : null });

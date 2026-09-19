@@ -7,14 +7,16 @@ type Seat = z.infer<typeof TemplateSeat>;
 
 // The projects an agent may be given work in: its own team's projects and their sub-projects, plus every project it is on loan to,
 // leaving out any that is paused or archived. Pure over the executor it is given, so a claim can call it inside its transaction.
-export async function effectiveProjects(executor: Db | Tx, agentId: string): Promise<string[]> {
+// `whilePaused` keeps paused projects in: queued work for them waits at the claim instead of being lost.
+export async function effectiveProjects(executor: Db | Tx, agentId: string, options: { whilePaused?: boolean } = {}): Promise<string[]> {
   const agent = await executor.selectFrom('agents').select('team_id').where('id', '=', agentId).executeTakeFirst();
   if (!agent) return [];
   const projects = await executor.selectFrom('projects').select(['id', 'parent_id', 'team_id', 'status']).execute();
   const loans = await executor.selectFrom('seat_loans').select('to_project_id').where('agent_id', '=', agentId).where('state', '=', 'active').execute();
   const roots = new Set([...projects.filter(project => project.team_id === agent.team_id).map(project => project.id), ...loans.map(loan => loan.to_project_id)]);
   const byId = new Map(projects.map(project => [project.id, project]));
-  const live = (project: (typeof projects)[number]): boolean => project.status === 'active' && (project.parent_id === null || byId.get(project.parent_id)?.status === 'active');
+  const open = (status: string) => status === 'active' || (options.whilePaused === true && status === 'paused');
+  const live = (project: (typeof projects)[number]): boolean => open(project.status) && (project.parent_id === null || open(byId.get(project.parent_id)?.status ?? ''));
   return projects.filter(project => (roots.has(project.id) || (project.parent_id !== null && roots.has(project.parent_id))) && live(project)).map(project => project.id);
 }
 
