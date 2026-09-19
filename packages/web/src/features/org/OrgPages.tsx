@@ -1,0 +1,74 @@
+import { useState } from 'react';
+import { Link } from 'wouter';
+import type { Agent, Me, ProjectNode } from '../../data/client';
+import { useResource } from '../../data/useResource';
+import { AppShell, KeyValueList, ListLink, PageHeader, Sidebar, SidePanel } from '../../patterns';
+import { RoleEditor, type EditableRole } from './RoleEditor';
+import { Avatar, Button, Card, Chip, Meter, SectionLabel, StatusDot, Text } from '../../ui';
+
+interface OrgProject extends ProjectNode { roster: Agent[]; openTasks: number; spendMinor: number }
+interface Grant { repoRead: unknown; codeWrite: unknown; shell: string; browser: string; issues: string; comms: string; deploy: string; secrets: string[]; spendDailyCapMinor: number }
+interface RoleDoc { slug: string; version: number; author: string; doc: { summary: string; perspective: string; skills: string[]; permissions: Grant; knowledgeFirst: string[]; approvalKinds: string[] }; wornBy: { id: string; name: string; initials: string; tint: string }[] }
+
+const shell = (me: Me, projects: ProjectNode[]) => <Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} teamName={null} links={[]} />;
+const scope = (value: unknown) => (typeof value === 'string' ? value : (value as { paths: string[] }).paths.join(', '));
+
+export function OrgPage({ me, projects }: { me: Me; projects: ProjectNode[] }) {
+  const org = useResource<{ projects: OrgProject[] }>('/api/org');
+  const money = (minor: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: me.org?.currency ?? 'EUR', maximumFractionDigits: 0 }).format(minor / 100);
+  return (
+    <AppShell sidebar={shell(me, projects)}>
+      <PageHeader title="Organization" crumbs={[me.org?.name ?? 'Organization']} />
+      <div className="grid min-h-0 grow auto-rows-min grid-cols-1 gap-3 overflow-y-auto px-5 pt-4 pb-5 md:grid-cols-2 xl:grid-cols-4">
+        {org.data?.projects.map(project => (
+          <Card key={project.id} as="article" className="flex flex-col gap-2.5">
+            <div className="flex items-center gap-1.5"><StatusDot tone={project.status === 'paused' ? 'idle' : 'working'} /><Text weight="semibold">{project.name}</Text><span className="ml-auto"><Chip>{project.kind}</Chip></span></div>
+            <Text size="caption" tone="muted">{project.subprojects.length ? `Sub-projects: ${project.subprojects.map(sub => sub.name).join(' · ')}` : 'No sub-projects'}</Text>
+            <Meter thin value={project.progress} />
+            <Card tone="raised" pad="sm" className="flex flex-col gap-1.5">
+              <Text size="small" weight="medium">{project.team?.name ?? 'No team'}</Text>
+              <div className="flex flex-wrap gap-1">{project.roster.map(agent => <Avatar key={agent.id} initials={agent.initials} tint={agent.tint} size="sm" />)}</div>
+            </Card>
+            <KeyValueList items={[['Open tasks', String(project.openTasks)], ['Spend this month', money(project.spendMinor)]]} />
+            <Link href={`/p/${project.subprojects[0]?.slug ?? project.slug}/tasks`}><Button block>Open</Button></Link>
+          </Card>
+        ))}
+      </div>
+    </AppShell>
+  );
+}
+
+export function RolesPage({ slug, me, projects }: { slug: string | null; me: Me; projects: ProjectNode[] }) {
+  const roles = useResource<{ roles: RoleDoc[] }>('/api/roles');
+  const role = roles.data?.roles.find(item => item.slug === slug) ?? roles.data?.roles[0];
+  const [editing, setEditing] = useState<string | null>(null);
+  const canEdit = me.user.orgRole === 'owner' || me.user.orgRole === 'admin';
+  return (
+    <AppShell sidebar={shell(me, projects)}>
+      <PageHeader title="Roles" crumbs={[me.org?.name ?? 'Organization']} />
+      <div className="flex min-h-0 grow">
+        <SidePanel label="Roles" wide>
+          {roles.data?.roles.map(item => <ListLink key={item.slug} href={`/roles/${item.slug}`} active={item.slug === role?.slug} aside={<span className="flex gap-0.5">{item.wornBy.map(agent => <Avatar key={agent.id} initials={agent.initials} tint={agent.tint} size="xs" />)}</span>}>{item.slug}</ListLink>)}
+        </SidePanel>
+        {role && (
+          <div className="flex min-w-0 grow flex-col gap-4 overflow-y-auto px-6 py-5">
+            <div className="flex flex-col gap-1.5">
+              <div className="flex items-center gap-2.5"><Text as="h2" size="heading" mono>{role.slug}</Text><Text size="caption" tone="muted">v{role.version} · edited by {role.author}</Text>{canEdit && editing !== role.slug && <span className="ml-auto"><Button onClick={() => setEditing(role.slug)}>Edit</Button></span>}</div>
+              <Text tone="soft">{role.doc.summary}. {role.doc.perspective}</Text>
+            </div>
+            {editing === role.slug && <RoleEditor role={role as unknown as EditableRole} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); roles.reload(); }} />}
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+              <Card className="flex flex-col gap-2.5">
+                <SectionLabel>Permissions</SectionLabel>
+                <KeyValueList items={[['Read repository', scope(role.doc.permissions.repoRead)], ['Write code', scope(role.doc.permissions.codeWrite)], ['Run shell', role.doc.permissions.shell], ['Run browser', role.doc.permissions.browser], ['Issues', role.doc.permissions.issues], ['Comms', role.doc.permissions.comms], ['Deploy', role.doc.permissions.deploy], ['Secrets', role.doc.permissions.secrets.join(', ') || 'none'], ['Spend per day', String(role.doc.permissions.spendDailyCapMinor / 100)]]} />
+                <Text size="caption" tone="muted">Roles stack: an agent may do what any of its roles allows, capped by the project's committed ceiling.</Text>
+              </Card>
+              <Card className="flex flex-col gap-2.5"><SectionLabel>Reads first</SectionLabel>{role.doc.knowledgeFirst.map(page => <Text key={page} size="small" mono tone="soft">{page}</Text>)}{role.doc.knowledgeFirst.length === 0 && <Text size="small" tone="muted">Nothing pinned.</Text>}<SectionLabel>Approves as</SectionLabel><div className="flex gap-1">{role.doc.approvalKinds.map(kind => <Chip key={kind} tone="review">{kind}</Chip>)}{role.doc.approvalKinds.length === 0 && <Text size="small" tone="muted">Nothing.</Text>}</div></Card>
+              <Card className="flex flex-col gap-2.5"><SectionLabel>Worn by</SectionLabel>{role.wornBy.map(agent => <div key={agent.id} className="flex items-center gap-2"><Avatar initials={agent.initials} tint={agent.tint} size="sm" /><Text>{agent.name}</Text></div>)}{role.wornBy.length === 0 && <Text size="small" tone="muted">Nobody yet.</Text>}</Card>
+            </div>
+          </div>
+        )}
+      </div>
+    </AppShell>
+  );
+}

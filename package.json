@@ -8,17 +8,36 @@
   },
   "description": "Provider-neutral agent delivery teams: adapters for engines, SCMs, trackers, launchers and hosting, with a durable multi-project queue, git-backed project memory and a resident PM",
   "engines": {
-    "node": ">=22.21.1"
+    "node": ">=24"
   },
   "scripts": {
-    "test": "node --test 'core/**/*.test.mjs' 'adapters/**/*.test.mjs' 'bin/**/*.test.mjs'",
+    "test": "npm run test:legacy && npm run test:ts",
     "coordinator": "node core/queue.mjs --config coordinator.example.json",
     "worker": "node core/worker.mjs --config worker.example.json",
     "intake": "node core/intake.mjs --config intake.example.json",
     "dashboard": "node core/dashboard.mjs --config dashboard.example.json",
     "pm": "node core/pm.mjs --config pm.example.json",
-    "lint": "node scripts/lint-neutral.mjs",
-    "check": "node scripts/check-syntax.mjs && npm run lint",
-    "seed-memory": "node core/seed-memory.mjs"
+    "lint": "node scripts/lint-neutral.mjs && node scripts/lint-ui.ts && node scripts/lint-sql.ts",
+    "check": "node scripts/check-syntax.mjs && npm run typecheck && npm run lint",
+    "seed-memory": "node core/seed-memory.mjs",
+    "test:legacy": "node --test \"core/**/*.test.mjs\" \"adapters/**/*.test.mjs\" \"bin/**/*.test.mjs\"",
+    "test:ts": "node --test \"packages/**/*.test.ts\" \"adapters/**/*.test.ts\" \"scripts/**/*.test.ts\"",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "build:web": "npm run build -w @agent-team/web",
+    "demo": "node bin/agent-team-demo.ts"
+  },
+  "workspaces": [
+    "packages/*",
+    "adapters/storage"
+  ],
+  "dependencies": {
+    "@hono/node-server": "^2.1.1",
+    "hono": "^4.13.8",
+    "kysely": "^0.29.6",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
   }
 }

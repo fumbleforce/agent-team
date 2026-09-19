@@ -1,0 +1,17 @@
+verify:
+  image: node:24-slim
+  timeout: 10 minutes
+  cache:
+    key:
+      files: [package-lock.json]
+    paths: [.npm/]
+  before_script:
+    - apt-get update -qq && apt-get install -y -qq git
+    - npm ci --cache .npm --prefer-offline
+  script:
+    - npm test
+    - npm run check
+    - npm run build:web
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH

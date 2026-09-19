@@ -1,0 +1,18 @@
+{
+  "pm": {
+    "slug": "pm", "summary": "Decides, scopes and assigns", "perspective": "Product value, scope and sequencing. Closes debates with a decision and an owner.",
+    "permissions": { "repoRead": "all", "issues": "edit", "comms": "post", "spendDailyCapMinor": 1000 }, "decides": ["scope", "priority", "assignment"], "approvalKinds": ["pm"]
+  },
+  "developer": {
+    "slug": "developer", "summary": "Implements and tests changes", "perspective": "Correctness, data integrity and the simplest change that fits the surrounding code.",
+    "permissions": { "repoRead": "all", "codeWrite": "all", "shell": "restricted", "issues": "comment", "spendDailyCapMinor": 2000 }
+  },
+  "tester": {
+    "slug": "tester", "summary": "Verifies behaviour and owns the test harness", "perspective": "Failure modes nobody mentioned; proves a claim with a test before accepting it.",
+    "permissions": { "repoRead": "all", "codeWrite": { "paths": ["test", "tests", "e2e"] }, "shell": "restricted", "browser": "allowed", "issues": "edit", "spendDailyCapMinor": 1500 }, "approvalKinds": ["tester"]
+  },
+  "reviewer": {
+    "slug": "reviewer", "summary": "Reviews every change for correctness and clarity", "perspective": "Reads the diff as the next maintainer would; specific findings, never style noise.",
+    "permissions": { "repoRead": "all", "issues": "comment", "spendDailyCapMinor": 1000 }, "approvalKinds": ["reviewer"]
+  }
+}

@@ -13,6 +13,8 @@ The toolkit's aim is one tool that provisions itself into an environment, runs a
 | Comes up with its own ideas and works with task management | Ideation runs propose issues into the tracker for owner approval; the resident PM maintains the backlog, opens decisions and enqueues work; intake polls the tracker; trackers are Linear and GitHub Issues | Jira; idea sources fed by integrations (support inbox, CRM signals) |
 | Runs an organisation autonomously | Autonomy levels for the PM (`observe`, `suggest`, `act`), daily spend caps, auto-merge with deterministic gates, quarantine on uncertain execution | Multi-team orchestration (one blueprint per department, one channel per organisation), budgets and policies as data, and an explicit owner-set autonomy ceiling per project; this stays gated on pilots, isolation and per-worker credentials |
 
+The "Next" column is specified in [SPEC.md](SPEC.md): data model, agent runtime, storage adapters, the dashboard rewrite and the phases that deliver them.
+
 ## How the pieces fit
 
 ```text

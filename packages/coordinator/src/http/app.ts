@@ -1,0 +1,445 @@
+import { readFile } from 'node:fs/promises';
+import path from 'node:path';
+import { Hono, type Context as Hc } from 'hono';
+import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
+import { streamSSE } from 'hono/streaming';
+import { z } from 'zod';
+import { AcceptInviteBody, InviteBody, LoginBody, newId, ProductEnvBody, PostMessageBody, SetupBody, TaskState, type StoredEvent } from '@agent-team/protocol';
+import { createAccounts } from '../auth/accounts.ts';
+import { createOidc } from '../auth/oidc.ts';
+import { can, canSeeProject, type Action, type Viewer } from '../auth/rbac.ts';
+import { sameSecret } from '../auth/secrets.ts';
+import { forbidden, HttpError, type Context } from '../context.ts';
+import { createWorkspace } from '../repos/workspace.ts';
+import { createTurns } from '../runtime/turns.ts';
+import { createMcp } from '../mcp/server.ts';
+import { createDeliberation } from '../runtime/deliberation.ts';
+import { createReviews } from '../runtime/reviews.ts';
+import { createRetro } from '../runtime/retro.ts';
+import { createKnowledge, httpEmbedder, type Scope } from '../knowledge/knowledge.ts';
+import { createCosts } from '../costs/costs.ts';
+import { createChecks } from '../checks/checks.ts';
+import { createProposals } from '../runtime/proposals.ts';
+import { createIssues } from '../repos/issues.ts';
+import { createVersionedDocs } from '../repos/versionedDocs.ts';
+import { ConnectionBody, createIntegrations, HandoffBody } from '../repos/integrations.ts';
+import { ClaimBody, FinishBody, LeaseBody, CreateIssueBody, MemoryActionBody, ProviderBody, RegisterProjectBody, SeatProviderBody, StepsBody, WritePageBody } from '@agent-team/protocol';
+
+type Env = { Variables: { viewer: Viewer } };
+const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.json': 'application/json', '.png': 'image/png' };
+
+export function createApp(context: Context) {
+  const accounts = createAccounts(context);
+  const oidc = createOidc(context);
+  const workspace = createWorkspace(context);
+  const turns = createTurns(context);
+  const deliberation = createDeliberation(context, turns);
+  const reviews = createReviews(context, turns);
+  const retro = createRetro(context, turns);
+  // Semantic search is on when an embeddings endpoint is named; otherwise search is lexical.
+  const knowledge = createKnowledge(context, process.env.AGENT_TEAM_EMBEDDINGS_URL ? httpEmbedder(process.env.AGENT_TEAM_EMBEDDINGS_URL, process.env.AGENT_TEAM_EMBEDDINGS_MODEL ?? 'nomic-embed-text') : null);
+  const mcp = createMcp(context, workspace, deliberation, reviews, knowledge);
+  const costs = createCosts(context);
+  const checks = createChecks(context);
+  const proposals = createProposals(context);
+  const issues = createIssues(context, path.join(context.dataDir, 'blobs'));
+  const docs = createVersionedDocs(context);
+  const integrations = createIntegrations(context, turns);
+  const LIBRARY = { type: 'library' as const, id: '' };
+  const cookieName = context.secureCookies ? '__Host-session' : 'session';
+  const app = new Hono<Env>();
+
+  const body = async <T extends z.ZodType>(c: Hc, schema: T): Promise<z.infer<T>> => {
+    const parsed = schema.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) throw new HttpError(400, 'invalid', z.prettifyError(parsed.error));
+    return parsed.data;
+  };
+  const startSession = (c: Hc, token: string) => setCookie(c, cookieName, token, { httpOnly: true, sameSite: 'Lax', secure: context.secureCookies, path: '/', maxAge: 30 * 24 * 3600 });
+  const allow = (c: Hc<Env>, action: Action, projectId?: string) => { if (!can(c.get('viewer'), action, projectId)) throw forbidden(); };
+  const machine = (c: Hc) => { if (!sameSecret(c.req.header('authorization') ?? '', `Bearer ${context.machineToken}`)) throw new HttpError(401, 'unauthorized', 'Machine token required'); };
+
+  app.onError((error, c) => {
+    if (error instanceof HttpError) return c.json({ error: { code: error.code, message: error.message } }, error.status as 400);
+    console.error(error);
+    return c.json({ error: { code: 'internal', message: 'Internal error' } }, 500);
+  });
+
+  // Cookie-authenticated writes must come from this origin and carry JSON.
+  app.use('/api/*', async (c, next) => {
+    if (c.req.method !== 'GET' && c.req.method !== 'HEAD') {
+      const site = c.req.header('sec-fetch-site');
+      const origin = c.req.header('origin');
+      const sameOrigin = site ? site === 'same-origin' || site === 'none' : !origin || origin === new URL(c.req.url).origin;
+      if (!sameOrigin) throw new HttpError(403, 'cross_site', 'Cross-site request refused');
+    }
+    await next();
+  });
+
+  app.get('/health', c => c.json({ ok: true }));
+  app.post('/machine/projects', async c => {
+    machine(c);
+    const id = await workspace.registerProject(await body(c, RegisterProjectBody));
+    await retro.ensureSchedule(id);
+    return c.json({ id });
+  });
+  app.post('/machine/setup-link', async c => { machine(c); return c.json({ path: await accounts.setupLink() }); });
+
+  // Worker routes: machine token plus, per turn, the lease. A lost lease answers 409 and the worker stops.
+  app.use('/worker/*', async (c, next) => { machine(c); await next(); });
+  app.post('/worker/claim', async c => c.json({ turn: await turns.claim(await body(c, ClaimBody)) }));
+  app.post('/worker/turns/:id/heartbeat', async c => { const lease = await body(c, LeaseBody); await turns.heartbeat(c.req.param('id'), lease.workerId, lease.leaseToken); return c.json({ ok: true }); });
+  app.post('/worker/turns/:id/steps', async c => { const input = await body(c, StepsBody); await turns.steps(c.req.param('id'), input.workerId, input.leaseToken, input.steps); return c.json({ ok: true }); });
+  app.post('/worker/turns/:id/delivery', async c => {
+    const lease = await body(c, LeaseBody);
+    await turns.heartbeat(c.req.param('id'), lease.workerId, lease.leaseToken);
+    const turn = await context.storage.db.selectFrom('turns').select(['task_id', 'kind']).where('id', '=', c.req.param('id')).executeTakeFirstOrThrow();
+    if (turn.kind !== 'deliver' || !turn.task_id) throw new HttpError(409, 'delivery', 'Not a delivery turn');
+    return c.json(await reviews.deliveryFor(turn.task_id));
+  });
+  app.post('/worker/turns/:id/finish', async c => { const input = await body(c, FinishBody); const finished = await turns.finish(c.req.param('id'), input.workerId, input.leaseToken, input.outcome);
+    // A work turn that reported ready_for_review hands its head to the reviewers.
+    if (finished.reviewTaskId && input.outcome.headSha) await reviews.request(finished.reviewTaskId, input.outcome.headSha);
+    return c.json({ ok: true });
+  });
+
+  app.post('/mcp', async c => { const answer = await mcp.handle(c.req.header('authorization'), await c.req.json().catch(() => null)); return answer.body === null ? c.body(null, 202) : c.json(answer.body as object, answer.status as 200); });
+
+  app.get('/demo/enter', async c => {
+    if (!context.demoLogin) throw new HttpError(404, 'not_found', 'Not found');
+    startSession(c, await accounts.login(context.demoLogin.email, context.demoLogin.password, 'demo'));
+    return c.redirect('/');
+  });
+
+  app.post('/api/auth/setup', async c => { startSession(c, await accounts.setup(await body(c, SetupBody))); return c.json({ ok: true }); });
+  app.post('/api/auth/login', async c => {
+    const input = await body(c, LoginBody);
+    startSession(c, await accounts.login(input.email, input.password, c.req.header('x-forwarded-for') ?? 'local'));
+    return c.json({ ok: true });
+  });
+  app.post('/api/auth/invites/:token', async c => { startSession(c, await accounts.acceptInvite(c.req.param('token'), await body(c, AcceptInviteBody))); return c.json({ ok: true }); });
+  const callbackUri = (c: Hc) => `${c.req.header('x-forwarded-proto') ?? new URL(c.req.url).protocol.replace(':', '')}://${c.req.header('host')}/api/auth/oidc/callback`;
+  app.get('/api/auth/oidc', async c => c.json({ enabled: await oidc.enabled() }));
+  app.get('/api/auth/oidc/start', async c => c.redirect(await oidc.start(callbackUri(c))));
+  app.get('/api/auth/oidc/callback', async c => {
+    const url = new URL(callbackUri(c));
+    url.search = new URL(c.req.url).search;
+    startSession(c, await accounts.sessionFor(await oidc.finish(url)));
+    return c.redirect('/');
+  });
+  app.post('/api/auth/logout', async c => {
+    const token = getCookie(c, cookieName);
+    if (token) await accounts.logout(token);
+    deleteCookie(c, cookieName, { path: '/' });
+    return c.json({ ok: true });
+  });
+
+  app.use('/api/*', async (c, next) => {
+    if (c.req.path.startsWith('/api/auth/')) return next();
+    const viewer = await accounts.viewer(getCookie(c, cookieName));
+    if (!viewer) throw new HttpError(401, 'unauthenticated', 'Sign in');
+    c.set('viewer', viewer);
+    await next();
+  });
+
+  app.get('/api/me', async c => {
+    const viewer = c.get('viewer');
+    const user = await context.storage.db.selectFrom('users').select(['id', 'email', 'name', 'org_role']).where('id', '=', viewer.userId).executeTakeFirstOrThrow();
+    return c.json({ user: { id: user.id, email: user.email, name: user.name, orgRole: user.org_role }, org: await workspace.org(), seq: await context.events.head() });
+  });
+  app.post('/api/invites', async c => { allow(c, 'org.members'); return c.json({ path: await accounts.invite(c.get('viewer'), await body(c, InviteBody)) }); });
+
+  app.get('/api/projects', async c => c.json({ projects: await workspace.projectTree(c.get('viewer')), seq: await context.events.head() }));
+  app.get('/api/projects/:slug', async c => {
+    const project = await workspace.project(c.req.param('slug'));
+    const root = project.parent_id ?? project.id;
+    allow(c, 'project.read', root);
+    const parent = project.parent_id ? await context.storage.db.selectFrom('projects').select(['slug', 'name', 'team_id']).where('id', '=', project.parent_id).executeTakeFirst() : null;
+    const teamId = project.team_id ?? parent?.team_id ?? null;
+    const discussion = await workspace.discussion(project.id).catch(() => null);
+    return c.json({
+      project: { id: project.id, slug: project.slug, name: project.name, kind: project.kind, status: project.status, parent: parent ? { slug: parent.slug, name: parent.name } : null },
+      roster: teamId ? await workspace.roster(teamId) : [],
+      board: await workspace.board(project.id),
+      discussionThreadId: discussion?.id ?? null,
+      seq: await context.events.head(),
+    });
+  });
+  app.post('/api/tasks/:id/state', async c => {
+    const task = await context.storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['projects.id', 'projects.parent_id']).where('tasks.id', '=', c.req.param('id')).executeTakeFirst();
+    if (!task) throw new HttpError(404, 'not_found', 'Task not found');
+    allow(c, 'project.operate', task.parent_id ?? task.id);
+    await workspace.moveTask(c.get('viewer'), c.req.param('id'), (await body(c, z.object({ state: TaskState }))).state);
+    return c.json({ ok: true });
+  });
+
+  app.post('/api/tasks/:id/assign', async c => {
+    const task = await context.storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['projects.id', 'projects.parent_id']).where('tasks.id', '=', c.req.param('id')).executeTakeFirst();
+    if (!task) throw new HttpError(404, 'not_found', 'Task not found');
+    allow(c, 'project.operate', task.parent_id ?? task.id);
+    const { agentId } = await body(c, z.object({ agentId: z.string() }));
+    const projectId = await workspace.assignTask(c.get('viewer'), c.req.param('id'), agentId);
+    await turns.enqueue({ agentId, projectId, kind: 'work', taskId: c.req.param('id'), dedupeKey: `work:${c.req.param('id')}` });
+    return c.json({ ok: true });
+  });
+
+  const threadFor = async (c: Hc<Env>, action: Action) => {
+    const thread = await workspace.thread(c.req.param('id')!);
+    const viewer = c.get('viewer');
+    if (thread.visibility === 'private') { if (thread.owner_user_id !== viewer.userId) throw forbidden(); return thread; }
+    if (thread.project_id) {
+      const project = await context.storage.db.selectFrom('projects').select(['id', 'parent_id']).where('id', '=', thread.project_id).executeTakeFirstOrThrow();
+      allow(c, action, project.parent_id ?? project.id);
+    }
+    return thread;
+  };
+  app.get('/api/threads/:id/messages', async c => {
+    const thread = await threadFor(c, 'project.read');
+    return c.json({ messages: await workspace.messages(thread.id, { after: Number(c.req.query('after') ?? 0), limit: 100 }), seq: await context.events.head() });
+  });
+  app.post('/api/threads/:id/messages', async c => {
+    const thread = await threadFor(c, 'project.contribute');
+    const input = await body(c, PostMessageBody);
+    const id = await workspace.postMessage({ kind: 'user', id: c.get('viewer').userId }, thread, input);
+    // What a human raises in a team thread goes to the PM, who answers or opens a deliberation.
+    const pm = thread.project_id && thread.visibility === 'team' ? await workspace.pm(thread.project_id) : null;
+    if (pm && thread.project_id) await turns.enqueue({ agentId: pm, projectId: thread.project_id, kind: 'triage', threadId: thread.id, dedupeKey: `triage:${thread.id}` });
+    return c.json({ id });
+  });
+
+  // Resolves a project slug the viewer may act on, and its knowledge scope.
+  const projectFor = async (c: Hc<Env>, action: Action) => {
+    const project = await workspace.project(c.req.param('slug')!);
+    allow(c, action, project.parent_id ?? project.id);
+    return { project, scope: { type: project.parent_id ? 'subproject' : 'project', id: project.id } as Scope };
+  };
+  app.get('/api/projects/:slug/knowledge', async c => {
+    const { scope } = await projectFor(c, 'project.read');
+    return c.json({ pages: await knowledge.tree(scope), memories: await knowledge.memories(scope), seq: await context.events.head() });
+  });
+  app.post('/api/projects/:slug/knowledge', async c => {
+    const { scope } = await projectFor(c, 'project.contribute');
+    return c.json(await knowledge.write({ kind: 'user', id: c.get('viewer').userId }, { scope, ...(await body(c, WritePageBody)) }));
+  });
+  app.get('/api/projects/:slug/knowledge/pages/:id', async c => {
+    await projectFor(c, 'project.read');
+    return c.json({ page: await knowledge.read(c.req.param('id')), history: await knowledge.history(c.req.param('id')) });
+  });
+  app.post('/api/projects/:slug/memories/:id', async c => {
+    await projectFor(c, 'project.contribute');
+    const input = await body(c, MemoryActionBody);
+    if (input.action === 'promote') return c.json(await knowledge.promote({ kind: 'user', id: c.get('viewer').userId }, c.req.param('id'), input.path ?? ''));
+    await knowledge.setMemoryStatus(c.req.param('id'), input.action === 'confirm' ? 'confirmed' : 'retired');
+    return c.json({ ok: true });
+  });
+  app.get('/api/projects/:slug/search', async c => {
+    const { scope } = await projectFor(c, 'project.read');
+    return c.json({ hits: await knowledge.search([scope], c.req.query('q') ?? '') });
+  });
+
+  // One lane per agent: what it is on now, what is queued, what it owes teammates, and why anything waits.
+  app.get('/api/projects/:slug/workload', async c => {
+    const { project } = await projectFor(c, 'project.read');
+    const root = project.parent_id ? await context.storage.db.selectFrom('projects').select(['id', 'team_id']).where('id', '=', project.parent_id).executeTakeFirstOrThrow() : project;
+    const roster = root.team_id ? await workspace.roster(root.team_id) : [];
+    const ids = roster.map(agent => agent.id);
+    const items = ids.length ? await context.storage.db.selectFrom('work_items').leftJoin('tasks', 'tasks.id', 'work_items.task_id').select(['work_items.id', 'work_items.agent_id', 'work_items.kind', 'work_items.lane', 'work_items.state', 'work_items.defer_reason', 'tasks.key', 'tasks.title']).where('work_items.agent_id', 'in', ids).where('work_items.state', 'in', ['queued', 'leased']).orderBy('work_items.priority_class').orderBy('work_items.created_at').execute() : [];
+    const lanes = roster.map(agent => {
+      const mine = items.filter(item => item.agent_id === agent.id);
+      const view = (item: (typeof items)[number]) => ({ id: item.id, kind: item.kind, key: item.key, title: item.title ?? item.kind, deferReason: item.defer_reason });
+      return { agent, now: mine.filter(item => item.state === 'leased').map(view), queued: mine.filter(item => item.state === 'queued' && item.lane === 'work').map(view), owed: mine.filter(item => item.state === 'queued' && item.lane !== 'work').map(view) };
+    });
+    return c.json({ lanes, busy: lanes.filter(lane => lane.now.length > 0).length, seq: await context.events.head() });
+  });
+
+  // What reaches a human: escalated decisions, quarantines and blocked tasks of the projects they can see.
+  app.get('/api/needs-you', async c => {
+    const viewer = c.get('viewer');
+    const db = context.storage.db;
+    const decisions = await db.selectFrom('decisions').select(['id', 'project_id', 'thread_id', 'summary', 'created_at']).where('needs_human', '=', true).where('resolved_at', 'is', null).execute();
+    const blocked = await db.selectFrom('tasks').select(['id', 'project_id', 'key', 'title', 'state', 'blocked_reason']).where('state', 'in', ['blocked', 'quarantined']).execute();
+    const roots = new Map((await db.selectFrom('projects').select(['id', 'parent_id']).execute()).map(row => [row.id, row.parent_id ?? row.id]));
+    const visible = <T extends { project_id: string }>(rows: T[]) => rows.filter(row => canSeeProject(viewer, roots.get(row.project_id) ?? row.project_id));
+    return c.json({ decisions: visible(decisions), tasks: visible(blocked) });
+  });
+
+  app.get('/api/projects/:slug/checks', async c => { const { project } = await projectFor(c, 'project.read'); return c.json(await checks.matrix(project.id)); });
+  // A JUnit report uploaded by a person or a pipeline step; the body is the XML itself.
+  app.post('/api/projects/:slug/checks/:suite', async c => {
+    const { project } = await projectFor(c, 'project.contribute');
+    const xml = await c.req.text();
+    let parsed;
+    try { parsed = checks.parse(xml); } catch (error) { throw new HttpError(400, 'junit', (error as Error).message); }
+    return c.json(await checks.record({ projectId: project.id, suite: c.req.param('suite').slice(0, 60), branch: c.req.query('branch') ?? 'main', sha: c.req.query('sha') ?? null, source: 'upload', report: parsed }));
+  });
+
+  // The body is the image itself; the name travels in the query, never in a path.
+  app.post('/api/attachments', async c => {
+    const bytes = new Uint8Array(await c.req.arrayBuffer());
+    return c.json({ id: await issues.attach(c.get('viewer').userId, { name: c.req.query('name') ?? 'attachment', mime: (c.req.header('content-type') ?? '').split(';')[0]!.trim(), bytes }) });
+  });
+  app.get('/api/attachments/:id', async c => {
+    const file = await issues.attachment(c.req.param('id'));
+    return c.body(file.data, 200, { 'content-type': file.mime, 'cache-control': 'private, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' });
+  });
+  app.get('/api/projects/:slug/issues', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ issues: await issues.list(project.id), seq: await context.events.head() }); });
+  app.post('/api/projects/:slug/issues', async c => {
+    const { project } = await projectFor(c, 'project.contribute');
+    const created = await issues.create(c.get('viewer').userId, project.id, await body(c, CreateIssueBody));
+    const pm = await workspace.pm(project.id);
+    if (pm) await turns.enqueue({ agentId: pm, projectId: project.id, kind: 'triage', threadId: created.threadId, dedupeKey: `triage:${created.threadId}` });
+    return c.json(created);
+  });
+  app.get('/api/projects/:slug/issues/:number', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ issue: await issues.get(project.id, Number(c.req.param('number'))) }); });
+  app.post('/api/projects/:slug/issues/:number/close', async c => { const { project } = await projectFor(c, 'project.contribute'); await issues.close(c.get('viewer').userId, project.id, Number(c.req.param('number'))); return c.json({ ok: true }); });
+
+  app.get('/api/projects/:slug/product', async c => {
+    const { project } = await projectFor(c, 'project.read');
+    const environments = await context.storage.db.selectFrom('product_envs').select(['id', 'name', 'branch', 'url']).where('project_id', '=', project.id).orderBy('created_at').execute();
+    return c.json({ environments, raised: (await issues.list(project.id)).filter(issue => issue.source === 'product') });
+  });
+  app.post('/api/projects/:slug/product', async c => {
+    const { project } = await projectFor(c, 'project.configure');
+    const input = await body(c, ProductEnvBody);
+    if (!/^https?:$/.test(new URL(input.url).protocol)) throw new HttpError(400, 'invalid', 'An environment is an http or https address');
+    const id = newId(context.now());
+    await context.storage.db.insertInto('product_envs').values({ id, project_id: project.id, name: input.name, branch: input.branch ?? null, url: input.url, source: 'manual', created_at: context.now() }).execute();
+    return c.json({ id });
+  });
+
+  app.get('/api/projects/:slug/integrations', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ connections: await integrations.connections(project.id), handoffs: await integrations.handoffs(project.id) }); });
+  app.post('/api/projects/:slug/integrations', async c => { const { project } = await projectFor(c, 'project.configure'); return c.json({ id: await integrations.connect(c.get('viewer').userId, project.id, await body(c, ConnectionBody)) }); });
+  app.post('/api/projects/:slug/handoffs', async c => { const { project } = await projectFor(c, 'project.contribute'); return c.json({ id: await integrations.receive(c.get('viewer').userId, project.id, await body(c, HandoffBody)) }); });
+  app.post('/api/projects/:slug/handoffs/:id/hand', async c => {
+    const { project } = await projectFor(c, 'project.contribute');
+    const discussion = await workspace.discussion(project.id).catch(() => null);
+    await integrations.handToTeam(c.get('viewer').userId, c.req.param('id'), await workspace.pm(project.id), discussion?.id ?? null);
+    return c.json({ ok: true });
+  });
+
+  // Roles are organization-wide documents: everyone may read them, admins change them.
+  app.get('/api/roles', async c => {
+    const roles = await docs.list('role', LIBRARY);
+    const wearers = await context.storage.db.selectFrom('agent_roles').innerJoin('agents', 'agents.id', 'agent_roles.agent_id').select(['agent_roles.role_slug', 'agents.id', 'agents.name', 'agents.initials', 'agents.tint']).where('agents.status', '!=', 'retired').execute();
+    return c.json({ roles: roles.map(role => ({ ...role, wornBy: wearers.filter(row => row.role_slug === role.slug).map(row => ({ id: row.id, name: row.name, initials: row.initials, tint: row.tint })) })) });
+  });
+  app.get('/api/roles/:slug/history', async c => c.json({ history: await docs.history('role', LIBRARY, c.req.param('slug')) }));
+  app.post('/api/roles/:slug', async c => {
+    allow(c, 'org.members');
+    const input = await body(c, z.object({ doc: z.record(z.string(), z.unknown()), note: z.string().max(200).optional(), expectedVersion: z.number().int().min(0).optional() }));
+    const user = await context.storage.db.selectFrom('users').select('name').where('id', '=', c.get('viewer').userId).executeTakeFirstOrThrow();
+    return c.json({ version: await docs.save('role', LIBRARY, c.req.param('slug'), { ...input.doc, slug: c.req.param('slug') }, { author: user.name, ...(input.note ? { note: input.note } : {}), ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}) }) });
+  });
+
+  // The organization at a glance: every project the viewer can see with its team, open work and spend this month.
+  app.get('/api/org', async c => {
+    const tree = await workspace.projectTree(c.get('viewer'));
+    const month = new Date(context.now()).toISOString().slice(0, 8);
+    const overview = [];
+    for (const project of tree) {
+      const ids = [project.id, ...project.subprojects.map(sub => sub.id)];
+      const open = await context.storage.db.selectFrom('tasks').select(eb => eb.fn.countAll<number>().as('n')).where('project_id', 'in', ids).where('state', 'not in', ['done', 'canceled']).executeTakeFirstOrThrow();
+      const spend = await costs.summary(ids, month + '01', month + '31');
+      overview.push({ ...project, roster: project.team ? await workspace.roster(project.team.id as string) : [], openTasks: Number(open.n), spendMinor: spend.totalMinor });
+    }
+    return c.json({ org: await workspace.org(), projects: overview });
+  });
+
+  app.get('/api/proposals', async c => {
+    const tree = await workspace.projectTree(c.get('viewer'));
+    return c.json({ proposals: await proposals.list(tree.flatMap(project => [project.id, ...project.subprojects.map(sub => sub.id)])) });
+  });
+  app.post('/api/proposals/:id/decide', async c => {
+    const row = await context.storage.db.selectFrom('proposals').innerJoin('projects', 'projects.id', 'proposals.project_id').select(['projects.id', 'projects.parent_id']).where('proposals.id', '=', c.req.param('id')).executeTakeFirst();
+    if (!row) throw new HttpError(404, 'not_found', 'Proposal not found');
+    allow(c, 'project.decide', row.parent_id ?? row.id);
+    const input = await body(c, z.object({ decision: z.enum(['approve', 'decline']), note: z.string().max(400).optional() }));
+    await proposals.decide(c.get('viewer').userId, c.req.param('id'), input.decision, input.note ?? null);
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/costs', async c => {
+    const tree = await workspace.projectTree(c.get('viewer'));
+    const ids = tree.flatMap(project => [project.id, ...project.subprojects.map(sub => sub.id)]);
+    const today = new Date(context.now()).toISOString().slice(0, 10);
+    return c.json(await costs.summary(ids, c.req.query('from') ?? `${today.slice(0, 8)}01`, c.req.query('to') ?? today));
+  });
+
+  // Providers are organization-wide: which engine serves them, how they bill, and which models an agent may be given.
+  app.get('/api/providers', async c => {
+    const rows = await context.storage.db.selectFrom('providers').selectAll().orderBy('name').execute();
+    const seats = await context.storage.db.selectFrom('agents').select('provider_id').select(eb => eb.fn.countAll<number>().as('n')).where('status', '!=', 'retired').groupBy('provider_id').execute();
+    return c.json({ providers: rows.map(row => ({ id: row.id, name: row.name, kind: row.kind, engine: row.engine, models: JSON.parse(row.models) as string[], status: row.status, statusDetail: row.status_detail, agents: Number(seats.find(seat => seat.provider_id === row.id)?.n ?? 0) })) });
+  });
+  app.post('/api/providers', async c => {
+    allow(c, 'org.members');
+    const input = await body(c, ProviderBody);
+    const id = newId(context.now());
+    await context.storage.db.insertInto('providers').values({ id, name: input.name, kind: input.kind, engine: input.engine, billing: input.kind, engine_config: '{}', models: JSON.stringify(input.models), limits: JSON.stringify({ maxConcurrentTurns: input.maxConcurrentTurns }), status: 'connected', status_detail: null }).execute();
+    return c.json({ id });
+  });
+  app.post('/api/agents/:id/provider', async c => {
+    const agent = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'projects.id as project_id']).where('agents.id', '=', c.req.param('id')).executeTakeFirst();
+    if (!agent) throw new HttpError(404, 'not_found', 'Agent not found');
+    allow(c, 'project.configure', agent.project_id);
+    const input = await body(c, SeatProviderBody);
+    if (input.providerId) {
+      const provider = await context.storage.db.selectFrom('providers').select('models').where('id', '=', input.providerId).executeTakeFirst();
+      if (!provider) throw new HttpError(404, 'not_found', 'Provider not found');
+      if (input.model && !(JSON.parse(provider.models) as string[]).includes(input.model)) throw new HttpError(400, 'invalid', 'That provider does not offer this model');
+    }
+    // A running turn keeps the engine and model it was claimed with; the change applies from the next turn.
+    await context.storage.db.updateTable('agents').set({ provider_id: input.providerId, model: input.providerId ? input.model : null }).where('id', '=', agent.id).execute();
+    return c.json({ ok: true });
+  });
+
+  app.get('/api/agents', async c => {
+    const rows = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'agents.name', 'agents.initials', 'agents.tint', 'agents.title', 'agents.persona', 'agents.status', 'agents.provider_id', 'agents.model', 'agents.is_pm', 'agents.doing', 'projects.id as project_id']).execute();
+    return c.json({ agents: rows.filter(row => canSeeProject(c.get('viewer'), row.project_id)) });
+  });
+  app.get('/api/agents/:id', async c => {
+    const agent = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'agents.name', 'agents.initials', 'agents.tint', 'agents.title', 'agents.persona', 'agents.status', 'agents.model', 'agents.doing', 'projects.id as project_id']).where('agents.id', '=', c.req.param('id')).executeTakeFirst();
+    if (!agent) throw new HttpError(404, 'not_found', 'Agent not found');
+    allow(c, 'project.read', agent.project_id);
+    const turns = await context.storage.db.selectFrom('turns').select(['id', 'kind', 'state', 'task_id', 'summary', 'tokens_in', 'tokens_out', 'cost_minor', 'started_at', 'finished_at']).where('agent_id', '=', agent.id).orderBy('started_at', 'desc').limit(10).execute();
+    const steps = turns[0] ? await context.storage.db.selectFrom('trace_steps').selectAll().where('turn_id', '=', turns[0].id).orderBy('seq').limit(400).execute() : [];
+    return c.json({ agent, turns, steps, seq: await context.events.head() });
+  });
+
+  // Snapshot-then-stream: a view returns the seq it is current to, the client subscribes from there.
+  app.get('/api/stream', c => streamSSE(c, async stream => {
+    const viewer = c.get('viewer');
+    let cursor = Number(c.req.header('last-event-id') ?? c.req.query('after') ?? 0);
+    const roots = new Map<string, string>();
+    for (const project of await context.storage.db.selectFrom('projects').select(['id', 'parent_id']).execute()) roots.set(project.id, project.parent_id ?? project.id);
+    const visible = (event: StoredEvent) => event.category !== 'audit' && canSeeProject(viewer, event.projectId ? (roots.get(event.projectId) ?? event.projectId) : null);
+    let wake: (() => void) | null = null;
+    const unsubscribe = context.storage.bus.subscribe(() => wake?.());
+    stream.onAbort(() => { unsubscribe(); wake?.(); });
+    while (!stream.aborted) {
+      const events = await context.events.read({ after: cursor });
+      for (const event of events) {
+        cursor = event.seq;
+        if (visible(event)) await stream.writeSSE({ id: String(event.seq), data: JSON.stringify(event) });
+      }
+      if (events.length === 0) {
+        await Promise.race([new Promise<void>(resolve => { wake = resolve; }), stream.sleep(15_000)]);
+        if (!stream.aborted) await stream.writeSSE({ event: 'ping', data: '' });
+      }
+    }
+  }));
+
+  // Prebuilt web assets, with the single-page app as the fallback for unknown paths.
+  app.get('*', async c => {
+    if (!context.webRoot || c.req.path.startsWith('/api/')) throw new HttpError(404, 'not_found', 'Not found');
+    const relative = path.normalize(c.req.path).replace(/^([/\\]|\.\.)+/, '');
+    const file = path.join(context.webRoot, relative);
+    const target = file.startsWith(context.webRoot) && path.extname(file) ? file : path.join(context.webRoot, 'index.html');
+    const data = await readFile(target).catch(() => null);
+    if (!data) throw new HttpError(404, 'not_found', 'Not found');
+    const immutable = target.includes(`${path.sep}assets${path.sep}`);
+    return c.body(data, 200, { 'content-type': MIME[path.extname(target)] ?? 'application/octet-stream', 'cache-control': immutable ? 'public, max-age=31536000, immutable' : 'no-cache' });
+  });
+
+  return app;
+}
+export type AppType = ReturnType<typeof createApp>;

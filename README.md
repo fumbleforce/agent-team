@@ -4,6 +4,20 @@ Reusable delivery teams for multiple repositories, executed by either the OpenCo
 
 Status: working initial implementation with synthetic automated tests. Real model/Linear/GitHub delivery and Tailscale service deployment require an integration pilot. No service is enabled merely by checking out this package.
 
+## The TypeScript platform
+
+Beside the toolkit described below, this repository holds the platform specified in [docs/SPEC.md](docs/SPEC.md): one coordinator process serving the API, the live stream, the agents' tool endpoint and the web app on a single port, with workers that run one engine session per agent. It lives in `packages/` (`protocol`, `coordinator`, `worker`, `web`), `adapters/storage`, `adapters/engine/*.ts`, `adapters/scm/*.ts`, `adapters/hosting/*/v2` and `blueprints/`. It needs Node 24 and `npm ci`.
+
+```sh
+npm run build:web                      # once, and after changing packages/web
+npm run demo                           # the sample organization on an in-memory database, with a fake engine
+node bin/agent-team.ts up /path/to/checkout --engine claude   # coordinator and worker for a checkout; prints the one-time owner setup link
+npm run test:ts && npm run typecheck   # its tests and type check
+node scripts/lint-ui.ts && node scripts/lint-sql.ts
+```
+
+Storage is an adapter: SQLite by default, Postgres when the coordinator's `storage` is `{ "kind": "postgres", "url": "..." }` (install `pg`). Sign-in is by password, with OpenID Connect when the organization's settings name an issuer. None of the four engine adapters has been run against its real CLI (they pass a contract suite with recorded events), and the Postgres adapter has not been run against a database; treat both as unproven until a pilot does.
+
 ## Architecture
 
 ```text
@@ -109,7 +123,7 @@ It loads the same role definitions and owner preferences for every project, adds
 - The child environment drops `ANTHROPIC_*`, `CLAUDE_CODE_*` and nested-session variables in addition to the usual filters, so an inherited API key, auth token, base URL or Bedrock/Vertex switch cannot select API billing. `--bare`, `--max-budget-usd` and `--fallback-model` are never used.
 - Owner preferences, the coordinator role and the project's charter/instruction files form an appended system prompt (`system-prompt.md` in the run directory). Shared subagent roles become `--agents`; OpenCode edit/bash/task/Linear denials map to `disallowedTools`.
 - Permissions: `acceptEdits` with automatic denial of anything that would prompt, `Bash` and the `linear` MCP server allowed, and prefix deny rules for `git push --force`/`-f`, `git reset --hard`, `gh pr merge` and deploy/live-test/db-reset scripts. These are prefix rules, not a sandbox: rearranged commands are not caught, and the delivery helper remains the merge gate. Only user settings load (`--setting-sources user`), so the worker account's own hooks, permission rules and `env` still apply; project settings from the target repository and every MCP server except `linear` are excluded (`--strict-mcp-config`). Built-in Claude subagent types stay available to the Agent tool; the coordinator is instructed to use only the shared role agents, and approvals are attested by agent identifiers, not enforced by tooling. Sessions are not persisted; `events.jsonl` holds the stream.
-- Ideation runs `--restricted` with only Read, Grep, Glob and Write, no MCP servers and no subagents.
+- Ideation runs with `--tools` limited to Read, Grep, Glob and Write, no MCP servers and no subagents.
 - A subscription usage limit (rejected rate-limit event, limit error result or 429 text; a 429 from another service is classified the same way) ends the cycle as `blocked` (exit 2) with no retry loop and no API fallback. Like any blocked or failed job it quarantines that project: no claims and no intake until an operator inspects and requeues it after the limit window resets.
 
 Linear for Claude Code uses the remote MCP server at `https://mcp.linear.app/mcp`, which needs one interactive OAuth login per worker account. Run this once and authenticate with `/mcp`, using the same server name and URL the runner passes:
@@ -371,6 +385,8 @@ Nothing to export and no flags to remember: `up` asks what it cannot derive and 
 2. **What the project is**, only when the checkout has no `.agent-team.json` yet: the name, where the code lives (detected from the origin remote), the base branch, where the backlog lives (the repository's own issues, or a Linear project chosen from a list after one API key), which engine runs the team (the ones installed here are marked), how it is billed, and what the worker machine offers (a headless browser, say). The answers are written to `.agent-team.json` and the runner's paths to `.gitignore`; commit both.
 3. **Which engine**, when the manifest's default is not installed on this machine: pick one that is, and it is stored as the project's engine setting.
 4. **Credentials**, each asked once with echo off: the SCM token, a tracker key when the tracker does not share it, the engine's API key for metered billing, and optional integration tokens. On the local target they are stored in `~/.config/agent-team/secrets/<project>.env`, readable by your user only and outside every repository; on AWS they go to Parameter Store. Later runs ask nothing; `agent-team secrets /path/to/checkout` enters them again. A variable already exported in the shell is used as is.
+
+The answers stay with the project on this machine: `up` run inside a checkout that has a manifest is `up` for that project, and the target and any `--engine`, `--billing` or `--model` given once are stored in `~/.config/agent-team/local/<project>/up.json` and applied next time, so the second `up` asks nothing. Pass a flag again to change a stored answer.
 
 Flags still work for scripts and CI: `--target`, `--engine`, `--yes` (no questions at all; missing pieces fail the preflight with the fix printed).
 
