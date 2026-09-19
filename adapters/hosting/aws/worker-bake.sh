@@ -1,6 +1,6 @@
 #!/bin/bash
-# Bake script for a worker image, run once on a fresh Ubuntu builder instance by deploy.mjs, which
-# fills the double-underscore placeholders. Installs Node, the engine and SCM CLIs, the toolkit and a warm
+# Bake script for a worker image, run once on a fresh Ubuntu builder instance by deploy.ts, which
+# fills the double-underscore placeholders. Installs Node 24, the engine and SCM CLIs, the toolkit and a warm
 # clone of the project with its dependencies, then powers off so the instance can be snapshotted.
 # The project is cloned over HTTPS with the SCM token read from Parameter Store by the instance
 # role; the token is kept in the git credential store for the worker's own fetches and pushes.
@@ -17,7 +17,7 @@ TOKEN_VARIABLE="__TOKEN_VARIABLE__"
 apt-get update
 apt-get install -y --no-install-recommends git curl ca-certificates unzip build-essential python3 redis-server jq
 systemctl disable --now redis-server || true
-curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+curl -fsSL https://deb.nodesource.com/setup_24.x | bash -
 apt-get install -y nodejs
 curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o /tmp/awscli.zip && unzip -q /tmp/awscli.zip -d /tmp && /tmp/aws/install && rm -rf /tmp/aws /tmp/awscli.zip
 GLAB_VERSION="$(curl -fsSL https://gitlab.com/api/v4/projects/gitlab-org%2Fcli/releases | jq -r '.[0].tag_name' | sed 's/^v//')"
@@ -36,6 +36,7 @@ id agent >/dev/null 2>&1 || useradd --create-home --shell /bin/bash agent
 # A branch, a tag or a commit: pin a commit so a later push to the toolkit cannot change what runs here.
 git clone "${TOOLKIT_REPO}" /opt/agent-team
 git -C /opt/agent-team checkout "${TOOLKIT_REF}"
+(cd /opt/agent-team && npm ci --omit=dev)
 chown -R agent:agent /opt/agent-team
 
 # Tracing stays off while the token is in hand: this output reaches the instance console log.
@@ -53,6 +54,30 @@ sudo -u agent -H bash -lc 'cd /srv/project && __PROJECT_SETUP__'
 sudo -u agent -H bash -lc 'cd /srv/project && __ENVIRONMENT_SETUP__'
 if id agent >/dev/null 2>&1 && getent group docker >/dev/null 2>&1; then usermod -aG docker agent; fi
 mkdir -p /var/lib/agent-team /etc/agent-team && chown agent:agent /var/lib/agent-team /etc/agent-team
+
+# The worker starts once whoever launches the instance has written its configuration (coordinator address,
+# worker id, projects) and AGENT_TEAM_TOKEN; a builder has neither, so the unit stays idle during the bake.
+cat > /etc/systemd/system/agent-team-worker.service <<'EOF'
+[Unit]
+Description=Agent team worker
+After=network-online.target
+Wants=network-online.target
+ConditionPathExists=/etc/agent-team/worker.json
+
+[Service]
+Type=simple
+User=agent
+WorkingDirectory=/opt/agent-team
+EnvironmentFile=/etc/agent-team/worker.env
+ExecStart=/usr/bin/node packages/worker/src/main.ts --config /etc/agent-team/worker.json
+Restart=on-failure
+RestartSec=10
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
+EOF
+systemctl enable agent-team-worker.service
 
 cloud-init clean --logs || true
 rm -rf /tmp/* /root/.npm /home/agent/.npm/_logs

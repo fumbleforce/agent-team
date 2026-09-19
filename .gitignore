@@ -7,3 +7,5 @@ node_modules/
 .agent-team-result.json
 .agent-team-pm/
 packages/web/dist/
+test-results/
+playwright-report/

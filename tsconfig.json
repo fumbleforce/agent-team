@@ -1,4 +1,4 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["adapters/engine/*.ts", "adapters/scm/*.ts", "adapters/hosting/local/*.ts", "adapters/hosting/fly/v2/*.ts", "adapters/hosting/shared/*.ts", "adapters/hosting/aws/v2/*.ts", "adapters/hosting/systemd/v2/*.ts", "packages/protocol", "packages/coordinator", "packages/worker", "adapters/storage", "scripts/*.ts", "bin/*.ts"]
+  "include": ["adapters/engine/*.ts", "adapters/scm/*.ts", "adapters/artifacts/*.ts", "adapters/launcher/*.ts", "adapters/integration/*.ts", "adapters/tracker/*.ts", "adapters/hosting/local/*.ts", "adapters/hosting/fly/*.ts", "adapters/hosting/shared/*.ts", "adapters/hosting/aws/*.ts", "adapters/hosting/systemd/*.ts", "packages/protocol", "packages/coordinator", "packages/worker", "adapters/storage", "scripts/*.ts", "bin/*.ts"]
 }

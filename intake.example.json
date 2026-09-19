@@ -1,5 +1,0 @@
-{
-  "coordinatorUrl": "http://127.0.0.1:4310",
-  "pollSeconds": 60,
-  "projects": { "my-project": "/absolute/path/to/project" }
-}

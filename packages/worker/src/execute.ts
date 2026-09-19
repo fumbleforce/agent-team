@@ -1,8 +1,8 @@
-import { spawn } from 'node:child_process';
 import { mkdirSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { createInterface } from 'node:readline';
 import type { TraceStepInput } from '@agent-team/protocol';
+import { killTree, spawnCommand } from './platform.ts';
 import { newParseState, type EngineAdapter, type StopReason, type TurnSpec } from '../../../adapters/engine/contract.ts';
 
 export interface TurnResult { state: 'completed' | 'failed' | 'deferred' | 'interrupted' | 'timed_out'; stopReason: StopReason | 'timeout' | 'aborted'; summary: string | null; tokensIn: number; tokensOut: number; costUsd: number; sessionId: string | null }
@@ -17,17 +17,20 @@ export function executeTurn(options: { adapter: EngineAdapter; spec: TurnSpec; t
   const state = newParseState();
 
   return new Promise(resolve => {
-    const child = spawn(prepared.bin, prepared.args, { cwd: spec.cwd, env: prepared.env, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
-    child.stdin.end(prepared.input ?? '');
+    const child = spawnCommand(prepared.bin, prepared.args, { cwd: spec.cwd, env: prepared.env, stdio: ['pipe', 'pipe', 'pipe'] });
+    // An engine that cannot be started is a failed turn with a known state, not a crashed worker.
+    child.on('error', error => { clearTimeout(timer); resolve({ state: 'failed', stopReason: 'crashed', summary: `The engine could not be started: ${error.message}`.slice(0, 500), tokensIn: 0, tokensOut: 0, costUsd: 0, sessionId: null }); });
+    child.stdin!.on('error', () => {});
+    child.stdin!.end(prepared.input ?? '');
     let stderrTail = '', ended: 'timeout' | 'aborted' | null = null;
-    child.stderr.on('data', chunk => { stderrTail = (stderrTail + String(chunk)).slice(-8192); });
-    createInterface({ input: child.stdout }).on('line', line => { const steps = adapter.parse(line, state); if (steps.length) options.onSteps(steps); });
+    child.stderr!.on('data', chunk => { stderrTail = (stderrTail + String(chunk)).slice(-8192); });
+    createInterface({ input: child.stdout! }).on('line', line => { const steps = adapter.parse(line, state); if (steps.length) options.onSteps(steps); });
 
     const stop = (reason: 'timeout' | 'aborted') => {
       if (ended) return;
       ended = reason;
-      child.kill('SIGTERM');
-      setTimeout(() => child.kill('SIGKILL'), GRACE_MS).unref();
+      killTree(child.pid, 'SIGTERM');
+      setTimeout(() => killTree(child.pid, 'SIGKILL'), GRACE_MS).unref();
     };
     const timer = setTimeout(() => stop('timeout'), options.timeoutMs);
     signal.addEventListener('abort', () => stop('aborted'), { once: true });

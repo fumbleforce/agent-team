@@ -51,10 +51,12 @@ export function createWorker(config: WorkerConfig) {
     const facts = await call<DeliveryFacts>(`/worker/turns/${turn.turnId}/delivery`, lease);
     const checkout = config.projects[turn.projectId] ?? process.cwd();
     const worktree = worktreeFor(checkout, facts.taskKey, config.worktrees?.branchPrefix ?? 'agents/');
+    const scm = facts.manifest.scm?.kind;
+    if (!scm) throw new Error('The project manifest names no source host');
     if (!facts.manifest.delivery) throw new Error('The project manifest has no delivery section');
     // Approvals are re-read from the platform each time the gate asks, so one withdrawn in between stops the merge.
     const approvals = async () => (await call<DeliveryFacts>(`/worker/turns/${turn.turnId}/delivery`, lease)).approvals;
-    const delivery = await Promise.resolve().then(() => (config.deliver ?? defaultDeliver)({ config: facts.manifest.delivery!, scm: facts.manifest.scm?.kind ?? 'github', prUrl: facts.prUrl, approvals, worktree: worktree.path, branch: worktree.branch }))
+    const delivery = await Promise.resolve().then(() => (config.deliver ?? defaultDeliver)({ config: facts.manifest.delivery!, scm, prUrl: facts.prUrl, approvals, worktree: worktree.path, branch: worktree.branch }))
       .catch((error: Error): DeliveryResult => ({ state: 'blocked', reason: error.message, mergeAttempted: false }));
     const result = { state: delivery.state, reason: delivery.reason.slice(0, 500), mergeAttempted: delivery.mergeAttempted, ...(delivery.mergeCommit ? { mergeCommit: delivery.mergeCommit } : {}) };
     await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'completed', summary: result.reason, delivery: result } });

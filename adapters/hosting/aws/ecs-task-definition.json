@@ -14,27 +14,19 @@
       "name": "control-plane",
       "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/agent-team:latest",
       "essential": true,
-      "portMappings": [
-        { "containerPort": 4310, "protocol": "tcp" },
-        { "containerPort": 4311, "protocol": "tcp" }
-      ],
+      "portMappings": [{ "containerPort": 4310, "protocol": "tcp" }],
       "mountPoints": [{ "sourceVolume": "data", "containerPath": "/data" }],
       "environment": [
         { "name": "AGENT_TEAM_DATA", "value": "/data" },
-        { "name": "AGENT_TEAM_HOSTNAME", "value": "aws" },
         { "name": "AGENT_TEAM_SSM_PREFIX", "value": "/agent-team" },
-        { "name": "AGENT_TEAM_PROJECTS", "value": "{\"my-project\":{\"repository\":\"group/project\"}}" },
-        { "name": "AGENT_TEAM_PM_ENGINE", "value": "claude" },
-        { "name": "AGENT_TEAM_PM_BILLING", "value": "bedrock" },
-        { "name": "AGENT_TEAM_LAUNCHER", "value": "{\"kind\":\"ec2\",\"options\":{\"region\":\"REGION\",\"subnetId\":\"subnet-CHANGEME\",\"securityGroupId\":\"sg-CHANGEME\",\"instanceProfile\":\"agent-team-worker\",\"coordinatorUrl\":\"https://agents.example.internal:4310\"}}" },
-        { "name": "CLAUDE_CODE_USE_BEDROCK", "value": "1" },
+        { "name": "AGENT_TEAM_PUBLIC_URL", "value": "https://agents.example.com" },
         { "name": "AWS_REGION", "value": "REGION" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": { "awslogs-group": "/agent-team/control-plane", "awslogs-region": "REGION", "awslogs-stream-prefix": "control-plane", "awslogs-create-group": "true" }
       },
-      "healthCheck": { "command": ["CMD-SHELL", "curl -fs http://127.0.0.1:4311/health || exit 1"], "interval": 30, "timeout": 5, "retries": 3, "startPeriod": 20 }
+      "healthCheck": { "command": ["CMD-SHELL", "curl -fs http://127.0.0.1:4310/health || exit 1"], "interval": 30, "timeout": 5, "retries": 3, "startPeriod": 20 }
     }
   ]
 }

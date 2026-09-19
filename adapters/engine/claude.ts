@@ -10,7 +10,7 @@ const KIND: Record<string, TraceStepInput['kind']> = { Read: 'read', Grep: 'read
 const DENIED = ['Bash(git push:*)', 'Bash(git reset --hard:*)', 'Bash(gh pr merge:*)', 'Bash(glab mr merge:*)', 'Agent'];
 
 type Block = { type?: string; text?: string; name?: string; input?: Record<string, unknown> };
-type StreamEvent = { type?: string; subtype?: string; session_id?: string; is_error?: boolean; result?: string; total_cost_usd?: number; usage?: { input_tokens?: number; output_tokens?: number }; message?: { content?: Block[] }; rate_limit_info?: { status?: string } };
+type StreamEvent = { type?: string; subtype?: string; session_id?: string; is_error?: boolean; result?: string; total_cost_usd?: number; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }; message?: { content?: Block[] }; rate_limit_info?: { status?: string } };
 
 const detail = (input: Record<string, unknown> = {}) => String(input.description ?? input.command ?? input.file_path ?? input.pattern ?? input.query ?? '').replace(/\s+/g, ' ').slice(0, 120);
 
@@ -51,7 +51,8 @@ export const claude: EngineAdapter = {
     if (event.type === 'rate_limit_event' && event.rate_limit_info?.status === 'rejected') state.limited = true;
     if (event.type === 'result') {
       state.costUsd += event.total_cost_usd ?? 0;
-      state.tokensIn += event.usage?.input_tokens ?? 0;
+      // Most of a turn's input arrives through the cache; leaving it out would report a handful of tokens.
+      state.tokensIn += (event.usage?.input_tokens ?? 0) + (event.usage?.cache_read_input_tokens ?? 0) + (event.usage?.cache_creation_input_tokens ?? 0);
       state.tokensOut += event.usage?.output_tokens ?? 0;
       state.summary = typeof event.result === 'string' ? event.result.slice(0, 2000) : state.summary;
       if (event.is_error && LIMIT.test(event.result ?? '')) state.limited = true;

@@ -28,7 +28,9 @@ export function createTrackerSync(context: Context) {
     // One poll of one project. Remote wins for title, tag and state; assignee, branch and thread are local and never overwritten.
     async syncProject(projectId: string, client: TrackerClient) {
       const project = await storage.db.selectFrom('projects').select('manifest').where('id', '=', projectId).executeTakeFirstOrThrow();
-      const { allIssues } = await client.snapshot(JSON.parse(project.manifest));
+      // The tracker's own settings sit under `tracker` in the manifest.
+      const manifest = JSON.parse(project.manifest) as { tracker?: Record<string, unknown> };
+      const { allIssues } = await client.snapshot(manifest.tracker ?? {});
       const result = await storage.transaction(async tx => {
         const existing = new Map((await tx.selectFrom('tasks').select(['id', 'key', 'title', 'state', 'tag']).where('project_id', '=', projectId).where('source', '=', 'tracker').execute()).map(task => [task.key, task]));
         const drafts = [];

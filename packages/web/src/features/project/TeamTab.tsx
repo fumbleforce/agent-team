@@ -43,10 +43,10 @@ export function TeamTab({ roster, teamName, onChanged }: { roster: Agent[]; team
           ))}
         </div>
         <form className="flex flex-wrap items-end gap-2.5" onSubmit={event => { event.preventDefault(); void add(new FormData(event.currentTarget)); event.currentTarget.reset(); }}>
-          <Field label="Name"><Input name="name" required placeholder="OpenRouter" /></Field>
+          <Field label="Name"><Input name="name" required placeholder="Metered gateway" /></Field>
           <Field label="Billing"><Select name="kind"><option value="metered">metered</option><option value="subscription">subscription</option><option value="local">local</option></Select></Field>
-          <Field label="Engine"><Select name="engine"><option>claude</option><option>opencode</option><option>codex</option><option>cursor</option></Select></Field>
-          <Field label="Models, comma-separated"><Input name="models" required placeholder="openrouter/moonshotai/kimi-k2" /></Field>
+          <Field label="Engine adapter"><Input name="engine" required placeholder="as named on the workers" /></Field>
+          <Field label="Models, comma-separated"><Input name="models" required placeholder="vendor/model-a, vendor/model-b" /></Field>
           <Button type="submit">Add provider</Button>
         </form>
         <Text size="caption" tone="muted">Any agent can run on any provider. Credentials stay on the workers; a provider here only names the engine and the models it offers.</Text>

@@ -4,27 +4,24 @@
   "private": true,
   "type": "module",
   "bin": {
-    "agent-team": "bin/agent-team.mjs"
+    "agent-team": "bin/agent-team.ts"
   },
-  "description": "Provider-neutral agent delivery teams: adapters for engines, SCMs, trackers, launchers and hosting, with a durable multi-project queue, git-backed project memory and a resident PM",
+  "description": "Provider-neutral agent teams: one coordinator on one port, workers that run one engine session per agent, and adapters for engines, source hosts, trackers, storage and hosting",
   "engines": {
     "node": ">=24"
   },
   "scripts": {
-    "test": "npm run test:legacy && npm run test:ts",
-    "coordinator": "node core/queue.mjs --config coordinator.example.json",
-    "worker": "node core/worker.mjs --config worker.example.json",
-    "intake": "node core/intake.mjs --config intake.example.json",
-    "dashboard": "node core/dashboard.mjs --config dashboard.example.json",
-    "pm": "node core/pm.mjs --config pm.example.json",
-    "lint": "node scripts/lint-neutral.mjs && node scripts/lint-ui.ts && node scripts/lint-sql.ts",
-    "check": "node scripts/check-syntax.mjs && npm run typecheck && npm run lint",
-    "seed-memory": "node core/seed-memory.mjs",
-    "test:legacy": "node --test \"core/**/*.test.mjs\" \"adapters/**/*.test.mjs\" \"bin/**/*.test.mjs\"",
-    "test:ts": "node --test \"packages/**/*.test.ts\" \"adapters/**/*.test.ts\" \"scripts/**/*.test.ts\"",
+    "test": "node --test \"packages/**/*.test.ts\" \"adapters/**/*.test.ts\" \"scripts/**/*.test.ts\"",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "lint": "node scripts/lint-neutral.ts && node scripts/lint-ui.ts && node scripts/lint-sql.ts",
+    "check": "npm run typecheck && npm run lint",
     "build:web": "npm run build -w @agent-team/web",
-    "demo": "node bin/agent-team-demo.ts"
+    "coordinator": "node packages/coordinator/src/main.ts",
+    "worker": "node packages/worker/src/main.ts",
+    "up": "node bin/agent-team.ts up",
+    "demo": "node bin/agent-team-demo.ts",
+    "test:e2e": "playwright test",
+    "pilot": "node scripts/pilot-turn.ts"
   },
   "workspaces": [
     "packages/*",
@@ -37,6 +34,7 @@
     "zod": "^4.6.5"
   },
   "devDependencies": {
+    "@playwright/test": "^1.63.0",
     "@types/node": "^26.6.2",
     "typescript": "^7.0.2"
   }

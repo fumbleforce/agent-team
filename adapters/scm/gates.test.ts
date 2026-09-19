@@ -59,3 +59,15 @@ for (const [name, host] of Object.entries(HOSTS)) {
     assert.deepEqual([after.state, after.mergeCommit], ['MERGED', MERGE]);
   });
 }
+
+test('gitlab: forks are not the same repository, allowed failures pass, and a missing head pipeline fails closed', async () => {
+  const gate = SCM_GATES.gitlab!, host = HOSTS.gitlab;
+  const context = { url: host.url, repository: host.repository, cwd: '.' };
+  const mr = host.answers(false)[1]![1] as Record<string, unknown>;
+  const answer = (change: unknown, jobs: unknown): Exec => async (_bin, args) => JSON.stringify(/jobs/.test(args.join(' ')) ? jobs : change);
+  assert.equal((await gate.view(answer({ ...mr, source_project_id: 2 }, []), context)).sameRepository, false);
+  const checks = await gate.checks(answer(mr, [{ name: 'lint', status: 'skipped', allow_failure: true }, { name: 'flaky', status: 'failed', allow_failure: true }, { name: 'docs', status: 'skipped' }]), context, { includeProtected: false });
+  assert.deepEqual(checks.all.map(check => check.passed), [true, true, false]);
+  await assert.rejects(gate.checks(answer({ ...mr, head_pipeline: null }, []), context, { includeProtected: false }), /no head pipeline/);
+  await assert.rejects(gate.view(answer(mr, []), { ...context, url: 'https://gitlab.com/g/p/merge_requests/1' }), /Not a merge request URL/);
+});

@@ -14,14 +14,11 @@ import { createSlackInbound, createSlackMirror } from './sync/slack.ts';
 import { createVersionedDocs } from './repos/versionedDocs.ts';
 import { readFileSync } from 'node:fs';
 import { createTrackerSync, type TrackerClient } from './sync/tracker.ts';
-import { pathToFileURL } from 'node:url';
+import { trackerClient } from '../../../adapters/tracker/index.ts';
 
 export type TrackerFactory = (kind: string) => Promise<TrackerClient | null>;
 // The tracker clients are adapters; a project without a credential for its tracker is simply not polled.
-const adapterTrackers: TrackerFactory = async kind => {
-  const index = await import(pathToFileURL(path.join(packageRoot(), 'adapters', 'tracker', 'index.mjs')).href) as { TRACKER_KINDS: string[]; trackerCredentialPresent(kind: string): boolean; trackerClient(kind: string): TrackerClient };
-  return index.TRACKER_KINDS.includes(kind) && index.trackerCredentialPresent(kind) ? index.trackerClient(kind) : null;
-};
+const adapterTrackers: TrackerFactory = async kind => trackerClient(kind);
 
 export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; webRoot?: string | null; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; trackerPollMs?: number; knowledgeMirror?: string }
 

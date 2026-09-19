@@ -2,6 +2,7 @@ import { newId, type MessageKind, type TaskState } from '@agent-team/protocol';
 import { hashPassword } from '../auth/secrets.ts';
 import type { Context } from '../context.ts';
 import { createKnowledge } from '../knowledge/knowledge.ts';
+import { createProposals } from '../runtime/proposals.ts';
 
 export const DEMO_LOGIN = { email: 'demo@example.com', password: 'demo-password-1234' };
 
@@ -78,4 +79,13 @@ export async function seedDemo(context: Context): Promise<void> {
     const day = new Date(at - (spend.length - 1 - index) * 86_400_000).toISOString().slice(0, 10);
     return spenders.map((agent, share) => ({ day, project_id: checkout.id, agent_id: agent.id, amount_minor: Math.round(amount * 100 * [0.5, 0.35, 0.15][share]!), tokens: amount * 90_000 }));
   })).execute();
+
+  // Two team proposals through the real voting path: one inside the delegated bounds (applied by the team), one above them (waits for the owner).
+  const proposals = createProposals(context);
+  const voters = (await db.selectFrom('agents').select('id').where('team_id', '=', bram.team_id).where('status', '=', 'active').execute()).map(row => row.id);
+  for (const [capMinor, title, why] of [[1200, 'Raise Cleo’s daily cap to 12', 'Regression sweeps stop at the cap mid-afternoon twice a week.'], [4000, 'Move Ada to the larger model for design reviews, cap 40', 'Three of the last five design decisions were revised after review found gaps the smaller model missed.']] as const) {
+    const target = capMinor > 1500 ? ada : cleo;
+    const { proposalId } = await proposals.create({ agent_id: bram.id, project_id: checkout.id }, { category: 'limits', title, why, whatChanges: `Daily cap for ${capMinor > 1500 ? 'Ada' : 'Cleo'} becomes ${capMinor / 100}.`, change: { kind: 'set_daily_cap', agentId: target.id, capMinor }, evidence: [{ label: 'Turns deferred by the cap, 14 days', value: capMinor > 1500 ? '9' : '6' }] });
+    for (const id of voters.filter(id => id !== bram.id)) await proposals.vote({ agent_id: id }, proposalId, { stance: 'for', note: 'Agreed; the numbers support it.' });
+  }
 }

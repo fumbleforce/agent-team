@@ -4,7 +4,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { packageRoot } from '@agent-team/protocol';
 
-const FILES = ['adapters/hosting/fly/v2/fly.toml', 'adapters/hosting/fly/v2/Dockerfile', 'adapters/hosting/aws/v2/control-plane-user-data.sh'];
+const FILES = ['adapters/hosting/fly/fly.toml', 'adapters/hosting/fly/Dockerfile', 'adapters/hosting/aws/control-plane-user-data.sh'];
 
 // Every hosted target starts an entrypoint that exists, serves one port, and knows nothing of the old dashboard.
 test('hosting files point at real entrypoints on the single port', () => {

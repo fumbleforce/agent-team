@@ -1,7 +1,0 @@
-{
-  "coordinatorUrl": "http://127.0.0.1:4310",
-  "workerId": "x3d",
-  "concurrency": 2,
-  "stateDir": ".agent-team-worker",
-  "projects": { "my-project": "/absolute/path/to/project" }
-}
