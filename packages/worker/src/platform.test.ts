@@ -18,7 +18,7 @@ test('elsewhere a command passes through unchanged; on Windows the file behind t
 
 test('a package-manager launcher runs its script with this runtime; any other script goes through the shell, quoted', () => {
   const shim = '@ECHO off\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & "%_prog%" --no-warnings "%dp0%\\node_modules\\tool\\cli.js" %*\r\n';
-  assert.deepEqual(launcherTarget('C:\\bin\\tool.cmd', () => shim), { script: path.join('C:\\bin', 'node_modules\\tool\\cli.js'), flags: ['--no-warnings'] });
+  assert.deepEqual(launcherTarget('C:\\bin\\tool.cmd', () => shim), { script: 'C:\\bin\\node_modules\\tool\\cli.js', flags: ['--no-warnings'] });
   assert.equal(launcherTarget('C:\\bin\\other.cmd', () => 'echo hello'), null);
   assert.equal(shellQuote('Bash(git push:*)'), '^^^"Bash^^^(git^^^ push:^^^*^^^)^^^"');
   const dir = mkdtempSync(path.join(os.tmpdir(), 'agent-team-platform-'));
