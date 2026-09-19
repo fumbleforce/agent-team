@@ -17,10 +17,12 @@ import { forbidden, HttpError, type Context } from '../context.ts';
 import { mountSetupRoutes } from './setupRoutes.ts';
 import { mountSsoSetupRoutes } from './ssoSetupRoutes.ts';
 import { mountOnboardingRoutes } from './onboardingRoutes.ts';
+import { mountWorkerSetupRoutes } from './workerSetupRoutes.ts';
+import { ENGINES } from '../../../../adapters/engine/index.ts';
 import { createControls } from '../runtime/controls.ts';
 import { createNeedsYou, type NeedsYouKind } from '../runtime/needsYou.ts';
 import { mountProviderRoutes } from './providerSetupRoutes.ts';
-import { SCM_KINDS } from '../../../../adapters/scm/index.ts';
+import { SCM_KINDS, scmAdapter } from '../../../../adapters/scm/index.ts';
 import { TRACKER_KINDS } from '../../../../adapters/tracker/index.ts';
 import { createWorkspace } from '../repos/workspace.ts';
 import { createTurns } from '../runtime/turns.ts';
@@ -400,6 +402,10 @@ export function createApp(context: Context) {
     return c.json(await captures.request(c.get('viewer').userId, project, await workspace.pm(project.id), c.req.param('envId'), input.viewport));
   });
 
+  const workerSetup = mountWorkerSetupRoutes(app, { context, engines: ENGINES.filter(name => name !== 'fake' || context.demoLogin !== null), tokens: machineTokens, body: (c, schema) => body(c as Hc<Env>, schema),
+    cloneUrl: async projectId => { const row = await context.storage.db.selectFrom('projects').select('manifest').where('id', '=', projectId).executeTakeFirst(); const manifest = row ? JSON.parse(row.manifest) as { scm?: { kind?: string }; delivery?: { repository?: string } } : {}; return manifest.scm?.kind && manifest.delivery?.repository && SCM_KINDS.includes(manifest.scm.kind) ? scmAdapter(manifest.scm.kind).cloneUrl(manifest.delivery.repository) : null; },
+    configuring: async c => ({ project: (await projectFor(c as Hc<Env>, 'project.configure')).project, viewer: (c as Hc<Env>).get('viewer') }) });
+  process.once('exit', () => workerSetup.stop());
   mountOnboardingRoutes(app, { context, canAdmin: c => can((c as Hc<Env>).get('viewer'), 'org.members'), userId: c => (c as Hc<Env>).get('viewer').userId });
   mountSetupRoutes(app, { context, integrations, projectFor: (c, action) => projectFor(c as Hc<Env>, action), body: (c, schema) => body(c as Hc<Env>, schema), userId: c => (c as Hc<Env>).get('viewer').userId });
   // What the installed adapters offer, so the app never has to name a provider itself.

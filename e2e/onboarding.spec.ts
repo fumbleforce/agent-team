@@ -9,7 +9,7 @@ test('a new organization is guided from nothing to a connected project, one step
   // With nothing set up, the app opens on the guide instead of an empty board.
   await expect(page).toHaveURL(/\/welcome/);
   await expect(page.getByRole('heading', { name: /welcome/i })).toBeVisible();
-  await expect(page.getByText(/0 of 5 done/)).toBeVisible();
+  await expect(page.getByText(/0 of 4 done/)).toBeVisible();
   await page.screenshot({ path: info.outputPath('welcome-start.png'), fullPage: true });
 
   const project = page.getByRole('region', { name: 'Create your first project' });
@@ -17,10 +17,10 @@ test('a new organization is guided from nothing to a connected project, one step
   await page.getByPlaceholder('Web shop').fill('Web shop');
   await page.getByRole('button', { name: 'Create project' }).click();
   await expect(page).toHaveURL(/\/welcome\?project=web-shop/);
-  await expect(page.getByText(/1 of 5 done/)).toBeVisible();
+  await expect(page.getByText(/1 of 4 done/)).toBeVisible();
 
-  // The next open step is the code host, through the same guided dialog as everywhere else.
-  const code = page.getByRole('region', { name: 'Connect where the code lives' });
+  // One step for the code: first the repository, through the same guided dialog as everywhere else…
+  const code = page.getByRole('region', { name: 'Connect the code' });
   await code.getByRole('button', { name: 'Connect a code host' }).click();
   const flow = page.getByRole('dialog');
   await expect(flow.getByText('Task boards')).toHaveCount(0);
@@ -28,19 +28,22 @@ test('a new organization is guided from nothing to a connected project, one step
   await flow.getByPlaceholder('owner/name').fill('acme/web-shop');
   await flow.getByRole('button', { name: 'Connect GitHub' }).click();
   await expect(flow).toBeHidden();
-  await expect(code.getByText(/Connected: acme\/web-shop/)).toBeVisible();
+  await expect(code.getByText('acme/web-shop is connected.')).toBeVisible();
 
-  // The worker step writes the exact command, with a token made here and shown once.
-  const worker = page.getByRole('region', { name: 'Start a worker next to the code' });
-  await worker.getByText('Do this now').click();
-  await worker.getByRole('button', { name: 'Make a token for this worker' }).click();
-  await expect(worker.locator('pre')).toContainText(/AGENT_TEAM_TOKEN.*mt_/);
-  await expect(worker.locator('pre')).toContainText('work "');
-  await expect(worker.locator('pre')).toContainText('--project web-shop --url http://127.0.0.1:4392');
+  // …then something to work on it. On this machine that is one button; a folder or another machine are the ways out.
+  await expect(code.getByRole('button', { name: 'Start working on it here' })).toBeVisible();
+  await code.getByRole('button', { name: 'I already have it in a folder' }).click();
+  await code.getByRole('textbox').fill('/no/such/folder');
+  await code.getByRole('button', { name: 'Start working from that folder' }).click();
+  await expect(code.getByText('There is no folder at that path on this machine')).toBeVisible();
+  await code.getByRole('button', { name: 'Back' }).click();
+  await code.getByRole('button', { name: 'Use another machine' }).click();
+  await code.getByRole('button', { name: /Get the command/ }).click();
+  await expect(code.locator('pre')).toHaveText(/^agent-team connect http:\/\/127\.0\.0\.1:4392\/pair\/[A-Z2-9]{4}-[A-Z2-9]{4}$/);
   await page.screenshot({ path: info.outputPath('welcome-progress.png'), fullPage: true });
 
   // The sidebar keeps the way back, with progress, on every screen.
   await page.goto(`${EMPTY}/p/web-shop/tasks`);
-  await expect(page.getByRole('navigation').first().getByRole('link', { name: /get started/i })).toContainText('2 of 5');
+  await expect(page.getByRole('navigation').first().getByRole('link', { name: /get started/i })).toContainText('1 of 4');
   expect(errors).toEqual([]);
 });

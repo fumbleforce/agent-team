@@ -24,16 +24,18 @@ export interface Context {
   secureCookies: boolean;
   // The request header a loopback identity proxy sets to the signed-in email; null keeps the mode off.
   trustedHeader: string | null;
+  // True when the coordinator listens on this machine only; some conveniences (starting a worker from the app) exist only then.
+  local: boolean;
   // Set only by the demo command: the account that /demo/enter signs in.
   demoLogin: { email: string; password: string } | null;
 }
 
-export function createContext(options: { storage: StorageAdapter; machineToken: string; webRoot?: string | null; dataDir?: string; artifacts?: ArtifactsConfig; traceRetentionDays?: number; secureCookies?: boolean; trustedHeader?: string | null; now?: () => number; demoLogin?: Context['demoLogin'] }): Context {
+export function createContext(options: { storage: StorageAdapter; machineToken: string; webRoot?: string | null; dataDir?: string; artifacts?: ArtifactsConfig; traceRetentionDays?: number; secureCookies?: boolean; trustedHeader?: string | null; local?: boolean; now?: () => number; demoLogin?: Context['demoLogin'] }): Context {
   const now = options.now ?? Date.now;
   const dataDir = options.dataDir ?? mkdtempSync(path.join(os.tmpdir(), 'agent-team-data-'));
   const { kind, dir, ...rest } = options.artifacts ?? {};
   const artifacts = createArtifacts(kind, { ...rest, root: dir ?? path.join(dataDir, 'artifacts') });
-  return { storage: options.storage, artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, demoLogin: options.demoLogin ?? null };
+  return { storage: options.storage, artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, demoLogin: options.demoLogin ?? null };
 }
 
 export class HttpError extends Error {

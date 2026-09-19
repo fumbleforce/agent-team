@@ -14,6 +14,7 @@ const github: ScmProvider = {
   isChangeUrl: url => github.gate.parseChangeUrl(url) !== null,
   linkText: url => github.isChangeUrl(url) ? `#${number(url)}` : url.replace(/^https:\/\/github\.com\//, ''),
   commitUrl: (repository, sha) => `https://github.com/${repository}/commit/${sha}`,
+  cloneUrl: repository => `https://github.com/${repository}.git`,
   auth: (exec, cwd) => exec('gh', ['auth', 'status'], { cwd }),
   api: options => SCM_APIS.github!(options ?? {}),
 };
@@ -27,6 +28,7 @@ const gitlab: ScmProvider = {
   isChangeUrl: url => gitlab.gate.parseChangeUrl(url) !== null,
   linkText: url => gitlab.isChangeUrl(url) ? `!${number(url)}` : url.replace(/^https:\/\/[^/]+\//, ''),
   commitUrl: (repository, sha, env = process.env) => `${gitlabHost(env)}/${repository}/-/commit/${sha}`,
+  cloneUrl: (repository, env = process.env) => `${gitlabHost(env)}/${repository}.git`,
   auth: (exec, cwd) => exec('glab', ['auth', 'status'], { cwd }),
   api: options => SCM_APIS.gitlab!(options ?? {}),
 };

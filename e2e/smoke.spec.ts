@@ -51,7 +51,6 @@ test('a post to the discussion appears in the thread', async ({ page }) => {
   const composer = page.getByRole('textbox').last();
   await composer.fill(text);
   await composer.press('Control+Enter');
-  if (!(await page.getByText(text).count())) await page.getByRole('button', { name: /post|send/i }).last().click();
   await expect(page.getByText(text)).toBeVisible();
 });
 

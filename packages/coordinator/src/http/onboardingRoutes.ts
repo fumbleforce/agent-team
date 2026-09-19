@@ -24,15 +24,16 @@ export function mountOnboardingRoutes(app: Hono<any>, deps: { context: Context; 
     const org = await db.selectFrom('org').select('settings').executeTakeFirst();
     const steps: OnboardingStep[] = [
       { key: 'project', optional: false, done: Boolean(project), detail: project?.name ?? null },
-      { key: 'code', optional: false, done: Boolean(manifest.scm?.kind && manifest.delivery?.repository), detail: manifest.delivery?.repository ?? null },
+      // One step for the code: it is connected, and a worker on some machine has it and reports in.
+      { key: 'code', optional: false, done: Boolean(manifest.scm?.kind && manifest.delivery?.repository) && workers.length > 0, detail: manifest.delivery?.repository ? `${manifest.delivery.repository}${workers.length ? `, worked on from ${workers.map(worker => worker.name).join(', ')}` : ''}` : null },
       { key: 'board', optional: true, done: Boolean(manifest.tracker?.kind), detail: null },
       { key: 'provider', optional: false, done: providers.length > 0, detail: providers.map(row => row.name).join(', ') || null },
-      { key: 'worker', optional: false, done: workers.length > 0, detail: workers.length ? `${workers.map(worker => worker.name).join(', ')}${engines.length ? ` can run ${engines.join(', ')}` : ''}` : null },
+      { key: 'worker', optional: true, done: workers.length > 0, detail: workers.length ? `${workers.map(worker => worker.name).join(', ')}${engines.length ? ` can run ${engines.join(', ')}` : ''}` : null },
       { key: 'task', optional: false, done: Number(tasks.n) > 0, detail: null },
       { key: 'people', optional: true, done: Number(people.n) + Number(invites.n) > 1, detail: null },
     ];
     const required = steps.filter(step => !step.optional);
-    return c.json({ project: project ? { slug: project.slug, name: project.name } : null, steps, done: required.filter(step => step.done).length, total: required.length, complete: required.every(step => step.done),
+    return c.json({ repository: manifest.delivery?.repository ?? null, project: project ? { slug: project.slug, name: project.name } : null, steps, done: required.filter(step => step.done).length, total: required.length, complete: required.every(step => step.done),
       dismissed: Boolean((org ? JSON.parse(org.settings) as { onboardingDismissed?: boolean } : {}).onboardingDismissed), canAdmin: deps.canAdmin(c), url: new URL(c.req.url).origin });
   });
 

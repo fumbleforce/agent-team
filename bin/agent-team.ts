@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { setupLink, startLocal, writeLocalConfigs } from '../adapters/hosting/local/up.ts';
@@ -10,7 +10,8 @@ import { createStorage, type StorageConfig } from '@agent-team/storage';
 
 const USAGE = `agent-team <command>
   up [checkout] [--engine NAME] [--port N]   start the coordinator and a worker for a checkout on this machine
-  work <checkout> --project NAME [--url URL] [--engine NAME]   run a worker for a project made in the app (needs AGENT_TEAM_TOKEN)
+  connect <link> [checkout] [--engine NAME]  pair this machine with a project using the link from the app, then work for it
+  work [checkout]                            work again for the project this checkout was connected to
   demo                                       serve the sample organization on an in-memory database
   setup-link [--url URL]                     print a one-time link for creating the owner (needs AGENT_TEAM_TOKEN)
   migrate --config FILE                      bring the database named in a coordinator config up to date
@@ -41,24 +42,35 @@ else if (command === 'up') {
   if (!registered.ok) { console.error(`Registering the project failed (${registered.status})`); services.stop(); process.exit(1); }
   console.log(link ? `First run: create the owner account at ${link}` : `Open ${configs.url}`);
   await services.finished;
-} else if (command === 'work') {
-  // One worker on this machine for a project that already exists in the app. The token is read from the environment, never from the command line.
-  const checkout = path.resolve(rest.find(item => !item.startsWith('--') && ![flag('--project'), flag('--url'), flag('--engine')].includes(item)) ?? '.');
-  const project = flag('--project'), url = (flag('--url') ?? `http://127.0.0.1:${DEFAULT_PORT}`).replace(/\/$/, ''), token = process.env.AGENT_TEAM_TOKEN, engine = flag('--engine') ?? 'claude';
-  if (!project || !token) { console.error('Usage: agent-team work <checkout> --project NAME [--url URL] [--engine NAME], with AGENT_TEAM_TOKEN set to a machine token from Settings → Sign-in'); process.exit(1); }
-  if (!existsSync(path.join(checkout, '.git'))) { console.error(`${checkout} is not a git checkout`); process.exit(1); }
-  if (!ENGINES.includes(engine)) { console.error(`Engine "${engine}" is not available here; choose one of: ${ENGINES.join(', ')}`); process.exit(1); }
-  const found = await fetch(`${url}/machine/projects/${encodeURIComponent(project)}`, { headers: { authorization: `Bearer ${token}` } }).catch(() => null);
-  if (!found) { console.error(`Nothing answers at ${url}`); process.exit(1); }
-  if (found.status === 401) { console.error('The coordinator refused the token. Create a new machine token in the app under Settings → Sign-in.'); process.exit(1); }
-  if (!found.ok) { console.error(`There is no project called "${project}" at ${url}`); process.exit(1); }
-  const { id } = await found.json() as { id: string };
-  const dir = path.join(configDir(), 'workers', project);
-  mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const config = path.join(dir, 'worker.json');
-  writeFileSync(config, `${JSON.stringify({ coordinatorUrl: url, workerId: os.hostname().slice(0, 32), stateDir: path.join(dir, 'state'), engine, projects: { [id]: checkout } }, null, 2)}\n`, { mode: 0o600 });
-  console.log(`Working for "${project}" from ${checkout}. Leave this running; stop it with Ctrl+C.`);
-  const child = spawn(process.execPath, [path.join(packageRoot(), ENTRYPOINTS.worker), '--config', config], { env: process.env, stdio: 'inherit', windowsHide: true });
+} else if (command === 'connect' || command === 'work') {
+  // A worker for a project made in the app. `connect` trades the app's single-use link for a token of this machine's own and
+  // remembers it; `work` starts again from what was remembered. The token never appears on a command line.
+  const positional = rest.filter(item => !item.startsWith('--') && item !== flag('--engine'));
+  const link = command === 'connect' ? positional[0] : undefined;
+  const checkout = path.resolve((command === 'connect' ? positional[1] : positional[0]) ?? '.');
+  if (!existsSync(path.join(checkout, '.git'))) { console.error(`${checkout} is not a git checkout. Run this inside the project's folder, or give the folder as the last argument.`); process.exit(1); }
+  const home = path.join(configDir(), 'workers');
+  if (command === 'connect') {
+    const parsed = /^(https?:\/\/[^/]+)\/pair\/([A-Za-z0-9-]{6,20})\/?$/.exec(link ?? '');
+    if (!parsed) { console.error('Usage: agent-team connect <link from the app> [checkout]'); process.exit(1); }
+    const engine = flag('--engine') ?? 'claude';
+    if (!ENGINES.includes(engine)) { console.error(`Engine "${engine}" is not available here; choose one of: ${ENGINES.join(', ')}`); process.exit(1); }
+    const response = await fetch(`${parsed[1]}/machine/pair`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: parsed[2], name: os.hostname().slice(0, 40) }) }).catch(() => null);
+    if (!response) { console.error(`Nothing answers at ${parsed[1]}`); process.exit(1); }
+    const paired = await response.json().catch(() => null) as { token?: string; projectId?: string; slug?: string; error?: { message?: string } } | null;
+    if (!response.ok || !paired?.token || !paired.projectId || !paired.slug) { console.error(paired?.error?.message ?? 'The link was not accepted. Make a new one in the app.'); process.exit(1); }
+    const dir = path.join(home, paired.slug);
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
+    writeFileSync(path.join(dir, 'worker.json'), `${JSON.stringify({ coordinatorUrl: parsed[1], workerId: os.hostname().slice(0, 32), stateDir: path.join(dir, 'state'), engine, projects: { [paired.projectId]: checkout } }, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(path.join(dir, 'worker.env'), `AGENT_TEAM_TOKEN=${paired.token}\n`, { mode: 0o600 });
+    console.log(`Connected to "${paired.slug}". Next time, run "agent-team work" in this folder.`);
+  }
+  const known = existsSync(home) ? readdirSync(home).map(name => path.join(home, name)).find(dir => { try { return Object.values((JSON.parse(readFileSync(path.join(dir, 'worker.json'), 'utf8')) as { projects: Record<string, string> }).projects).some(folder => path.resolve(folder) === checkout); } catch { return false; } }) : undefined;
+  if (!known) { console.error('This folder is not connected to a project yet. In the app, open Get started and copy the connect command.'); process.exit(1); }
+  const token = /^AGENT_TEAM_TOKEN=(.+)$/m.exec(readFileSync(path.join(known, 'worker.env'), 'utf8'))?.[1];
+  if (!token) { console.error(`${path.join(known, 'worker.env')} holds no token; connect again with a new link from the app.`); process.exit(1); }
+  console.log(`Working from ${checkout}. Leave this running; stop it with Ctrl+C.`);
+  const child = spawn(process.execPath, [path.join(packageRoot(), ENTRYPOINTS.worker), '--config', path.join(known, 'worker.json')], { env: { ...process.env, AGENT_TEAM_TOKEN: token }, stdio: 'inherit', windowsHide: true });
   process.on('SIGINT', () => child.kill('SIGTERM'));
   process.exitCode = await new Promise<number>(resolve => child.on('exit', code => resolve(code ?? 0)));
 } else if (command === 'setup-link') {

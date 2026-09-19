@@ -15,6 +15,8 @@ export interface ScmProvider {
   isChangeUrl(url: string): boolean;
   linkText(url: string): string;
   commitUrl(repository: string, sha: string, env?: Record<string, string | undefined>): string;
+  // Where `git clone` gets the repository from, over HTTPS so the machine's ordinary git credentials apply.
+  cloneUrl(repository: string, env?: Record<string, string | undefined>): string;
   // Rejects when the CLI holds no usable login.
   auth(exec: Exec, cwd: string): Promise<string>;
   // What the coordinator polls over HTTP: review state, test reports and environments. Null without the host's token.

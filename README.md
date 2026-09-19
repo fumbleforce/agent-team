@@ -20,7 +20,7 @@ To run a team on a checkout of your own:
 node bin/agent-team.ts up /path/to/checkout --engine claude
 ```
 
-The first time you sign in, the app opens on a guide that takes you through it step by step: create a project, connect where the code lives and your task board, choose how the models are paid for, and start a worker on the machine that has the checkout (the guide writes the exact `agent-team work …` command and makes its token). Anything that later needs a person — a decision outside the team's bounds, work whose outcome is unknown, a merge that was cut off — waits under **Needs you**.
+The first time you sign in, the app opens on a guide that takes you through it step by step: create a project, connect where the code lives and your task board, connect the code and choose how the models are paid for. When the app runs on the machine that has the code, one button clones the repository and starts the worker; for any other machine the guide gives one short command with a single-use link (`agent-team connect <link>`, and `agent-team work` from then on), so no token is ever copied by hand. Anything that later needs a person — a decision outside the team's bounds, work whose outcome is unknown, a merge that was cut off — waits under **Needs you**.
 
 You can also create a project in the app (the button under the project list) and connect its code host, task board, chat and documents from its Integrations page, which walks through each product's setup.
 

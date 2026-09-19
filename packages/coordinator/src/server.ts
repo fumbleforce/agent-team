@@ -52,7 +52,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   await storage.migrate();
   const built = path.join(packageRoot(), 'packages', 'web', 'dist');
   const webRoot = config.webRoot === undefined ? (existsSync(built) ? built : null) : config.webRoot;
-  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null });
+  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), local: isLoopback(host), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null });
   // The shipped role library is seeded once; an owner's edits are never overwritten.
   await createVersionedDocs(context).seed('role', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'roles.json'), 'utf8')) as Record<string, unknown>);
   // So is the agent library, from the seats of the default team; the PM seat belongs to a team, not to the library.
