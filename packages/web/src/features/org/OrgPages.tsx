@@ -1,9 +1,10 @@
 import { useState } from 'react';
 import { Link } from 'wouter';
 import type { Agent, Me, ProjectNode } from '../../data/client';
+import { api } from '../../data/client';
 import { useResource } from '../../data/useResource';
 import { KeyValueList, ListLink, SidePanel } from '../../patterns';
-import { OrgShell } from './OrgShell';
+import { ActionError, isOrgAdmin, OrgShell, useAction } from './OrgShell';
 import { LinkForm, ProjectStructure, type Structure } from './Structure';
 import { RoleEditor, type EditableRole } from './RoleEditor';
 import { Avatar, Button, Card, Chip, Meter, SectionLabel, StatusDot, Text } from '../../ui';
@@ -11,6 +12,32 @@ import { Avatar, Button, Card, Chip, Meter, SectionLabel, StatusDot, Text } from
 interface OrgProject extends ProjectNode { roster: Agent[]; openTasks: number; spendMinor: number }
 interface Grant { repoRead: unknown; codeWrite: unknown; shell: string; browser: string; issues: string; comms: string; deploy: string; secrets: string[]; spendDailyCapMinor: number }
 interface RoleDoc { slug: string; version: number; author: string; doc: { summary: string; perspective: string; skills: string[]; permissions: Grant; knowledgeFirst: string[]; approvalKinds: string[] }; wornBy: { id: string; name: string; initials: string; tint: string }[] }
+
+interface ArchivedProject { id: string; slug: string; name: string; kind: string; parentName: string | null }
+
+// Projects taken off every board. Restoring one brings it back as it was: its board, threads and team are kept while it is archived.
+function ArchivedProjects() {
+  const archived = useResource<{ projects: ArchivedProject[] }>('/api/org/archived');
+  const action = useAction();
+  if (!archived.data?.projects.length) return null;
+  return (
+    <section aria-label="Archived projects" className="flex flex-col gap-2 px-5 pb-5">
+      <SectionLabel>Archived projects</SectionLabel>
+      <Text size="small" tone="muted">Archived projects are hidden everywhere else. Restore one to bring back its board, threads and team as they were.</Text>
+      <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-4">
+        {archived.data.projects.map(project => (
+          <Card key={project.id} tone="raised" pad="sm" className="flex items-center gap-2">
+            <StatusDot tone="off" />
+            <span className="flex min-w-0 grow flex-col"><Text size="small" weight="medium" truncate>{project.name}</Text>{project.parentName && <Text size="caption" tone="muted" truncate>Part of {project.parentName}</Text>}</span>
+            {/* The sidebar and every list read the project tree once, so the page is loaded again with the project in it. */}
+            <Button size="sm" disabled={action.busy} onClick={() => { void action.run(() => api(`/api/projects/${project.slug}/status`, { status: 'active' })).then(ok => { if (ok) window.location.reload(); }); }}>Restore</Button>
+          </Card>
+        ))}
+      </div>
+      <ActionError error={action.error} />
+    </section>
+  );
+}
 
 const scope = (value: unknown) => (typeof value === 'string' ? value : (value as { paths: string[] }).paths.join(', '));
 
@@ -21,21 +48,24 @@ export function OrgPage({ me, projects }: { me: Me; projects: ProjectNode[] }) {
   return (
     <OrgShell me={me} projects={projects} title="Organization" active="/org">
       <LinkForm me={me} projects={projects} onChanged={structure.reload} />
-      <div className="grid min-h-0 grow auto-rows-min grid-cols-1 gap-3 overflow-y-auto px-5 pt-4 pb-5 md:grid-cols-2 xl:grid-cols-4">
-        {org.data?.projects.map(project => (
-          <Card key={project.id} as="article" className="flex flex-col gap-2.5">
-            <div className="flex items-center gap-1.5"><StatusDot tone={project.status === 'paused' ? 'idle' : 'working'} /><Text weight="semibold">{project.name}</Text><span className="ml-auto"><Chip>{project.kind}</Chip></span></div>
-            <Text size="caption" tone="muted">{project.subprojects.length ? `Sub-projects: ${project.subprojects.map(sub => sub.name).join(' · ')}` : 'No sub-projects'}</Text>
-            <Meter thin value={project.progress} />
-            <Card tone="raised" pad="sm" className="flex flex-col gap-1.5">
-              <Text size="small" weight="medium">{project.team?.name ?? 'No team'}</Text>
-              <div className="flex flex-wrap gap-1">{project.roster.map(agent => <Avatar key={agent.id} initials={agent.initials} tint={agent.tint} size="sm" />)}</div>
+      <div className="flex min-h-0 grow flex-col overflow-y-auto">
+        <div className="grid auto-rows-min grid-cols-1 gap-3 px-5 pt-4 pb-5 md:grid-cols-2 xl:grid-cols-4">
+          {org.data?.projects.map(project => (
+            <Card key={project.id} as="article" className="flex flex-col gap-2.5">
+              <div className="flex items-center gap-1.5"><StatusDot tone={project.status === 'paused' ? 'idle' : 'working'} /><Text weight="semibold">{project.name}</Text><span className="ml-auto"><Chip>{project.kind}</Chip></span></div>
+              <Text size="caption" tone="muted">{project.subprojects.length ? `Sub-projects: ${project.subprojects.map(sub => sub.name).join(' · ')}` : 'No sub-projects'}</Text>
+              <Meter thin value={project.progress} />
+              <Card tone="raised" pad="sm" className="flex flex-col gap-1.5">
+                <Text size="small" weight="medium">{project.team?.name ?? 'No team'}</Text>
+                <div className="flex flex-wrap gap-1">{project.roster.map(agent => <Avatar key={agent.id} initials={agent.initials} tint={agent.tint} size="sm" />)}</div>
+              </Card>
+              <ProjectStructure projectId={project.id} projects={projects} structure={structure.data} onChanged={structure.reload} />
+              <KeyValueList items={[['Open tasks', String(project.openTasks)], ['Spend this month', money(project.spendMinor)]]} />
+              <Link href={`/p/${project.subprojects[0]?.slug ?? project.slug}/tasks`}><Button block>Open</Button></Link>
             </Card>
-            <ProjectStructure projectId={project.id} projects={projects} structure={structure.data} onChanged={structure.reload} />
-            <KeyValueList items={[['Open tasks', String(project.openTasks)], ['Spend this month', money(project.spendMinor)]]} />
-            <Link href={`/p/${project.subprojects[0]?.slug ?? project.slug}/tasks`}><Button block>Open</Button></Link>
-          </Card>
-        ))}
+          ))}
+        </div>
+        {isOrgAdmin(me) && <ArchivedProjects />}
       </div>
     </OrgShell>
   );

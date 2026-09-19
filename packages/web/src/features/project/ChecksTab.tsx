@@ -8,15 +8,16 @@ interface Matrix { suites: string[]; branches: { branch: string; lastRunAt: numb
 
 const ago = (ms: number) => { const minutes = Math.round((Date.now() - ms) / 60_000); return minutes < 60 ? `${minutes} min` : minutes < 1440 ? `${Math.round(minutes / 60)} h` : `${Math.round(minutes / 1440)} d`; };
 
-export function ChecksTab({ slug }: { slug: string }) {
+// `code` says whether the project is a repository: its runs are per branch and come from pipelines; elsewhere they are per version of the work.
+export function ChecksTab({ slug, code = true }: { slug: string; code?: boolean }) {
   const matrix = useResource<Matrix>(`/api/projects/${slug}/checks`);
   useStream(event => event.type.startsWith('check.'), matrix.reload);
   const data = matrix.data;
   if (!data) return <div className="p-5"><Text tone="muted">Loading…</Text></div>;
-  if (data.branches.length === 0) return <div className="p-5"><Text tone="muted">No runs reported yet. Agents report them with test.report; a pipeline can upload JUnit XML.</Text></div>;
+  if (data.branches.length === 0) return <div className="p-5"><Text tone="muted">{code ? 'No runs reported yet. Agents report them with test.report; a pipeline can upload JUnit XML.' : 'No checks reported yet. The team reports them as it reviews its work.'}</Text></div>;
   return (
     <div className="flex min-h-0 grow flex-col gap-3.5 overflow-y-auto px-5 pt-4 pb-5">
-      <MatrixTable rowLabel="Branch"
+      <MatrixTable rowLabel={code ? 'Branch' : 'Version'}
         columns={data.suites}
         rows={data.branches.map(row => ({ label: row.branch, aside: ago(row.lastRunAt), cells: data.suites.map(suite => { const run = row.runs.find(item => item.suite === suite); return run ? { tone: run.status === 'failed' ? 'stop' as const : run.status === 'passed' ? 'working' as const : 'off' as const, text: `${run.passed} / ${run.total}` } : null; }) }))}
       />

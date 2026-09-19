@@ -9,6 +9,9 @@ const PATHS = {
   link: 'M6.5 9.5l3-3M5 11l-1.5 1.5a2.1 2.1 0 0 1-3-3L3 8M11 5l1.5-1.5a2.1 2.1 0 0 1 3 3L13 8',
   search: 'M11.5 7a4.5 4.5 0 1 1-9 0 4.5 4.5 0 0 1 9 0zM10.5 10.5L14 14',
   menu: 'M2 4h12M2 8h12M2 12h12',
+  up: 'M8 13V3M4 7l4-4 4 4',
+  down: 'M8 3v10M4 9l4 4 4-4',
+  more: 'M3 8h.01M8 8h.01M13 8h.01',
 } as const;
 export type IconName = keyof typeof PATHS;
 

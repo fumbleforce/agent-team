@@ -1,6 +1,8 @@
 import { execFile } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { engineAdapter, ENGINES } from '../../../adapters/engine/index.ts';
+import { PROVIDER_VARIABLES } from '../../../adapters/engine/providers.ts';
+import { readiness } from './platform.ts';
 import { createWorker, type WorkerConfig } from './worker.ts';
 
 interface FileConfig { coordinatorUrl: string; workerId: string; stateDir: string; engine: string; lanes?: WorkerConfig['lanes']; projects: Record<string, string>; worktrees?: WorkerConfig['worktrees']; isolation?: 'strict' | 'isolated'; publish?: { scm: string; repository: string; base: string } }
@@ -16,6 +18,7 @@ const exec: NonNullable<WorkerConfig['publish']>['exec'] = (bin, args, { cwd }) 
 const worker = createWorker({
   coordinatorUrl: file.coordinatorUrl, token, workerId: file.workerId, stateDir: file.stateDir, engine: engineAdapter(file.engine),
   engines: Object.fromEntries(ENGINES.map(name => [name, engineAdapter(name)])),
+  ready: readiness(Object.fromEntries(ENGINES.map(name => [name, engineAdapter(name)])), PROVIDER_VARIABLES),
   lanes: file.lanes ?? { work: 1, bounded: 1, deliver: 1 }, projects: file.projects,
   ...(file.publish ? { publish: { ...file.publish, exec } } : {}), ...(file.isolation ? { isolation: file.isolation } : {}),
   worktrees: file.worktrees === undefined ? { branchPrefix: 'agents/', base: 'HEAD' } : file.worktrees,

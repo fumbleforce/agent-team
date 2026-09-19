@@ -7,7 +7,7 @@ const Slug = z.string().regex(/^[a-z0-9][a-z0-9-]{0,62}$/);
 export const ProjectSettings = z.object({
   description: z.string().max(2000).default(''),
   // Tools the team serves itself, shown as extra project tabs.
-  customTabs: z.array(z.object({ label: z.string().min(1).max(40), url: z.url().max(500) })).max(8).default([]),
+  customTabs: z.array(z.object({ label: z.string().trim().min(1).max(40), url: z.url({ protocol: /^https?$/, error: 'An address starts with https:// or http://' }).max(500) })).max(8).default([]),
 });
 export type ProjectSettings = z.infer<typeof ProjectSettings>;
 
@@ -29,6 +29,11 @@ export const UserPatch = z.object({ orgRole: OrgRole.optional(), status: z.enum(
 export const MachineTokenBody = z.object({ name: z.string().min(1).max(60), kind: z.enum(['worker', 'cli']).default('worker') });
 export const SaveTemplateBody = z.object({ slug: Slug, name: z.string().min(1).max(80), summary: z.string().max(400).default('') });
 export const FromTemplateBody = z.object({ template: Slug, mode: z.enum(['create', 'append']).default('create') });
+// A seat made or changed by hand. The PM flag is not part of it: a team has exactly one PM and moving it is its own, explicit action.
+const AgentFields = { name: z.string().trim().min(1).max(60), title: z.string().trim().max(80), persona: z.string().trim().max(2000), roles: z.array(Slug).max(12), providerId: z.string().nullable(), model: z.string().max(120).nullable() };
+export const AgentBody = z.object({ ...AgentFields, title: AgentFields.title.default(''), persona: AgentFields.persona.default(''), roles: AgentFields.roles.default([]), providerId: AgentFields.providerId.default(null), model: AgentFields.model.default(null) });
+export const AgentPatch = z.object(AgentFields).partial().extend({ status: z.enum(['active', 'paused', 'retired']).optional() });
+export const TeamOrderBody = z.object({ agentIds: z.array(z.string()).min(1).max(80) });
 export const HireBody = z.object({ library: Slug, name: z.string().min(1).max(60).optional() });
 
 // Single sign-on as an owner sets it; the client secret is named by environment variable, never stored.

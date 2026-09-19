@@ -65,11 +65,12 @@ export function SubHeader({ children }: { children: ReactNode }) {
   return <div className="flex items-center gap-2.5 border-b border-line px-6 py-3">{children}</div>;
 }
 
-// An uploaded image, shown at a readable size; the full image opens in a new tab.
-export function Attachment({ id, onRemove }: { id: string; onRemove?: () => void }) {
+// An uploaded image, shown at a readable size; the full image opens in a new tab. `src` names an image kept somewhere other than the attachments.
+export function Attachment({ id, src, alt = 'Attached screenshot', onRemove }: { id?: string; src?: string; alt?: string; onRemove?: () => void }) {
+  const href = src ?? `/api/attachments/${id}`;
   return (
     <div className="flex items-start gap-2">
-      <a href={`/api/attachments/${id}`} target="_blank" rel="noreferrer"><img src={`/api/attachments/${id}`} alt="Attached screenshot" className="max-h-60 max-w-100 rounded-control border border-line-strong" /></a>
+      <a href={href} target="_blank" rel="noreferrer"><img src={href} alt={alt} className="max-h-60 max-w-100 rounded-control border border-line-strong" /></a>
       {onRemove && <button type="button" aria-label="Remove attachment" onClick={onRemove} className="cursor-pointer rounded-control px-1.5 text-ink-muted hover:bg-active"><Text size="small" tone="inherit">×</Text></button>}
     </div>
   );

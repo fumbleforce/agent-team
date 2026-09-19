@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { newId } from '@agent-team/protocol';
+import { PROVIDERS } from '../../../../adapters/engine/providers.ts';
 import { effectiveProjects } from '../repos/org.ts';
 import { boot } from './testing.ts';
 
@@ -192,8 +193,18 @@ test('milestones, project links and status', async () => {
 
     assert.equal((await call('/api/projects/shop/status', { cookie, body: { status: 'archived' } })).status, 200);
     assert.deepEqual((await call('/api/projects', { cookie })).json.projects.map((node: any) => node.slug), ['site']);
+    // An archived project is found again on the Org page and restored from there.
+    assert.deepEqual((await call('/api/org/archived', { cookie })).json.projects, [{ id: shop, slug: 'shop', name: 'shop', kind: 'repo', parentName: null }]);
+    assert.equal((await call('/api/projects/shop/status', { cookie, body: { status: 'active' } })).status, 200);
+    assert.deepEqual([(await call('/api/org/archived', { cookie })).json.projects, (await call('/api/projects', { cookie })).json.projects.map((node: any) => node.slug).sort()], [[], ['shop', 'site']]);
+    assert.equal((await call('/api/projects/shop/status', { cookie, body: { status: 'archived' } })).status, 200);
+
+    // Extra tabs are web addresses kept in the project's settings; the project view carries them to the tab bar.
+    assert.equal((await call('/api/projects/site/settings', { cookie, body: { doc: { customTabs: [{ label: 'Calendar', url: 'javascript:alert(1)' }] } } })).status, 400);
+    assert.equal((await call('/api/projects/site/settings', { cookie, body: { doc: { customTabs: [{ label: 'Calendar', url: 'https://calendar.example.com/site' }] } } })).status, 200);
+    assert.deepEqual((await call('/api/projects/site', { cookie })).json.customTabs, [{ label: 'Calendar', url: 'https://calendar.example.com/site' }]);
     const events = await db.selectFrom('events').select(['type', 'user_id']).where('type', 'in', ['milestone.created', 'milestone.updated', 'milestone.deleted', 'project.linked', 'project.unlinked', 'project.status_changed']).execute();
-    assert.equal(events.length, 6);
+    assert.equal(events.length, 8);
     assert.ok(events.every(event => event.user_id));
   } finally { await coordinator.close(); }
 });
@@ -308,7 +319,7 @@ test('RBAC matrix over the organization routes', async () => {
       ['GET', '/api/projects/shop/members', 'projectAdmin'], ['POST', '/api/projects/shop/members', 'projectAdmin', { userId: target.id, role: 'viewer' }],
       ['GET', '/api/settings/auth', 'orgAdmin'], ['POST', '/api/settings/auth', 'owner', { oidc: null }],
       ['GET', '/api/machine-tokens', 'orgAdmin'], ['POST', '/api/machine-tokens', 'orgAdmin', { name: 'x' }], ['POST', `/api/machine-tokens/${machineToken}/revoke`, 'orgAdmin'],
-      ['GET', '/api/audit', 'orgAdmin'], ['GET', '/api/events', 'signed'], ['GET', '/api/org/structure', 'signed'],
+      ['GET', '/api/audit', 'orgAdmin'], ['GET', '/api/events', 'signed'], ['GET', '/api/org/structure', 'signed'], ['GET', '/api/org/archived', 'orgAdmin'],
       ['GET', '/api/projects/shop/settings', 'read'], ['POST', '/api/projects/shop/settings', 'projectAdmin', { doc: {} }],
       ['POST', '/api/projects/shop/status', 'projectAdmin', { status: 'active' }], ['POST', '/api/projects/shop/status', 'orgAdmin', { status: 'archived' }], ['POST', '/api/projects/shop/status', 'orgAdmin', { status: 'active' }],
       ['GET', '/api/projects/shop/milestones', 'read'], ['POST', '/api/projects/shop/milestones', 'projectAdmin', { label: 'N' }], ['POST', `/api/milestones/${milestone}`, 'projectAdmin', { label: 'O' }], ['POST', `/api/milestones/${milestone}/delete`, 'projectAdmin'],
@@ -317,6 +328,11 @@ test('RBAC matrix over the organization routes', async () => {
       ['GET', '/api/templates', 'signed'], ['GET', '/api/templates/t', 'signed'], ['GET', '/api/templates/t/export', 'signed'], ['POST', '/api/templates/t', 'orgAdmin', { doc: { name: 'T', seats: [{ name: 'Ada' }] } }],
       ['GET', '/api/library/agents', 'signed'], ['GET', '/api/library/agents/a', 'signed'], ['POST', '/api/library/agents/a', 'orgAdmin', { doc: { name: 'Ada' } }],
       ['POST', '/api/projects/shop/team/save-template', 'projectAdmin', { slug: 'fresh', name: 'Fresh' }], ['POST', '/api/projects/shop/team/from-template', 'projectAdmin', { template: 't', mode: 'append' }], ['POST', '/api/projects/shop/team/hire', 'projectAdmin', { library: 'a' }],
+      // Team editing by hand, and the organization's model providers.
+      ['GET', '/api/projects/shop/team', 'read'], ['POST', '/api/projects/shop/team/agents', 'projectAdmin', { name: 'Noor' }], ['POST', `/api/agents/${agent.id}`, 'projectAdmin', { title: 'Lead' }], ['POST', `/api/agents/${agent.id}/pm`, 'projectAdmin'],
+      ['POST', '/api/projects/shop/team/order', 'projectAdmin', { agentIds: [agent.id] }],
+      ['GET', '/api/providers', 'signed'], ['GET', '/api/providers/catalog', 'signed'], ['POST', '/api/providers', 'orgAdmin', { name: 'P', kind: 'local', engine: 'fake', models: ['m'] }],
+      ['POST', '/api/providers/setup', 'orgAdmin', { kind: PROVIDERS[0]!.kind, values: { models: 'm' } }], ['POST', '/api/providers/none/remove', 'orgAdmin'],
     ];
     for (const [method, path, level, body] of ROUTES) {
       assert.equal((await call(path, { method, ...(body !== undefined ? { body } : {}) })).status, 401, `${method} ${path} without a session`);

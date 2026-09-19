@@ -3,7 +3,8 @@ import path from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { DEFAULT_PORT, packageRoot } from '@agent-team/protocol';
 import { createStorage, type StorageConfig } from '@agent-team/storage';
-import { createContext, type Context } from './context.ts';
+import { createContext, type ArtifactsConfig, type Context } from './context.ts';
+import { createTraceStore } from './runtime/traceStore.ts';
 import { createApp } from './http/app.ts';
 import { createDeliberation } from './runtime/deliberation.ts';
 import { createTurns } from './runtime/turns.ts';
@@ -22,7 +23,7 @@ export type TrackerFactory = (kind: string) => Promise<TrackerClient | null>;
 // The tracker clients are adapters; a project without a credential for its tracker is simply not polled.
 const adapterTrackers: TrackerFactory = async kind => trackerClient(kind);
 
-export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; webRoot?: string | null; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string }
+export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; webRoot?: string | null; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string; /* Where large step artifacts are kept: `{ kind: 'local', dir }` by default, in a folder under the data directory. */ artifacts?: ArtifactsConfig; /* Days a trace outlives its terminal task; 30 by default. */ traceRetentionDays?: number }
 
 export const isLoopback = (host: string): boolean => host === '127.0.0.1' || host === '::1' || host === 'localhost';
 
@@ -43,7 +44,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   await storage.migrate();
   const built = path.join(packageRoot(), 'packages', 'web', 'dist');
   const webRoot = config.webRoot === undefined ? (existsSync(built) ? built : null) : config.webRoot;
-  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), machineToken: config.machineToken, webRoot, secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null });
+  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null });
   // The shipped role library is seeded once; an owner's edits are never overwritten.
   await createVersionedDocs(context).seed('role', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'roles.json'), 'utf8')) as Record<string, unknown>);
   // So is the agent library, from the seats of the default team; the PM seat belongs to a team, not to the library.
@@ -51,8 +52,8 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   await createVersionedDocs(context).seed('library_agent', { type: 'library', id: '' }, Object.fromEntries(blueprint.seats.filter(seat => !seat.isPm).map(seat => [seat.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'), { name: seat.name, title: seat.title, persona: seat.persona, roles: seat.roles, summary: '' }])));
   const app = createApp(context);
   // Lease expiry and feedback windows are time-driven; everything else reacts to requests.
-  const turns = createTurns(context), deliberation = createDeliberation(context, turns), retro = createRetro(context, turns);
-  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).catch(error => console.error(error)); }, 15_000);
+  const turns = createTurns(context), deliberation = createDeliberation(context, turns), retro = createRetro(context, turns), traceStore = createTraceStore(context);
+  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).catch(error => console.error(error)); }, 15_000);
   timer.unref();
 
   const sync = createTrackerSync(context), trackers = config.trackers === undefined ? adapterTrackers : config.trackers;

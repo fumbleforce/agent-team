@@ -1,12 +1,20 @@
 import { useRef, useState, type ClipboardEvent, type FormEvent, type KeyboardEvent } from 'react';
 import type { Agent, Message as MessageData } from '../data/client';
 import { Avatar, Button, Card, Chip, cx, Icon, Text, Textarea, type ChipTone } from '../ui';
+import { Attachment } from './Lanes';
 import { Markdown } from './Markdown';
 
 export interface Author { name: string; initials: string; tint: string | 'accent'; role: string }
 
 const time = (ms: number) => new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 const STANCE: Record<string, ChipTone> = { for: 'working', against: 'stop', neutral: 'neutral' };
+
+// The images stored with a message: those attached in the composer, and the one an issue or a handoff was raised with.
+// A marked-up product snapshot is left to the view that can draw its markers.
+export function attachmentsOf(payload: Record<string, unknown>): string[] {
+  const many = Array.isArray(payload.attachmentIds) ? payload.attachmentIds : [], one = Array.isArray(payload.markers) ? null : payload.attachmentId;
+  return [...new Set([...many, one].filter((id): id is string => typeof id === 'string' && /^[\w-]{1,80}$/.test(id)))];
+}
 
 export function resolveAuthor(message: MessageData, roster: Agent[], me: { id: string; name: string }): Author {
   if (message.authorKind === 'agent') {
@@ -20,6 +28,7 @@ export function resolveAuthor(message: MessageData, roster: Agent[], me: { id: s
 // One message of a thread. Decisions are the highlighted card; feedback blocks carry a stance chip. Bodies are markdown.
 export function Message({ message, author }: { message: MessageData; author: Author }) {
   const stance = typeof message.payload.stance === 'string' ? message.payload.stance : null;
+  const images = attachmentsOf(message.payload);
   const content = (
     <div className="flex items-start gap-2.5">
       <Avatar initials={author.initials} tint={author.tint} size="sm" />
@@ -33,6 +42,7 @@ export function Message({ message, author }: { message: MessageData; author: Aut
         {message.kind === 'decision' && <span className="flex items-center gap-1"><Text size="label" tone="accent"><Icon name="check" size={11} /></Text><Text size="label" tone="accent">Decision</Text></span>}
         {message.kind === 'proposal' && <Text size="label">Proposal</Text>}
         <Markdown size="small">{message.body}</Markdown>
+        {images.length > 0 && <div className="flex flex-wrap gap-2 pt-1">{images.map(id => <Attachment key={id} id={id} />)}</div>}
       </div>
     </div>
   );

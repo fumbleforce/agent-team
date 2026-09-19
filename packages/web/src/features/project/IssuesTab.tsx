@@ -57,7 +57,7 @@ export function IssuesTab({ slug, number, roster, me, navigate }: { slug: string
             {thread.data?.messages.map(message => (
               <div key={message.id} className="flex flex-col gap-2">
                 <Message message={message} author={resolveAuthor(message, roster, me.user)} />
-                {typeof message.payload.attachmentId === 'string' && (Array.isArray(message.payload.markers) ? <MarkerCanvas src={`/api/attachments/${message.payload.attachmentId}`} markers={message.payload.markers as Marker[]} /> : <Attachment id={message.payload.attachmentId} />)}
+                {typeof message.payload.attachmentId === 'string' && Array.isArray(message.payload.markers) && <MarkerCanvas src={`/api/attachments/${message.payload.attachmentId}`} markers={message.payload.markers as Marker[]} />}
               </div>
             ))}
           </div>

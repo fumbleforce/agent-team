@@ -37,17 +37,18 @@ export function createIssues(context: Context, blobDir: string) {
 
     // Raised by a person, or by an agent from its turn: then there is no user and the source says so.
     async create(userId: string | null, projectId: string, input: z.infer<typeof CreateIssueBody>, agentId: string | null = null) {
-      const id = newId(now()), threadId = newId(now());
+      const id = newId(now()), threadId = newId(now()), messageId = newId(now());
       const result = await storage.transaction(async tx => {
         const last = await tx.selectFrom('issues').select(eb => eb.fn.max('number').as('n')).where('project_id', '=', projectId).executeTakeFirst();
         const number = Number(last?.n ?? 0) + 1;
         await tx.insertInto('threads').values({ id: threadId, project_id: projectId, kind: 'issue', subject_type: 'issue', subject_id: id, title: input.title, visibility: 'team', owner_user_id: null, created_at: now() }).execute();
         await tx.insertInto('issues').values({ id, project_id: projectId, number, title: input.title, body: input.body, state: 'open', priority: 'normal', source: agentId ? 'agent' : input.source, owner_agent_id: null, author_user_id: userId, thread_id: threadId, attachment_id: input.attachmentId ?? null, created_at: now(), closed_at: null }).execute();
-        await tx.insertInto('messages').values({ id: newId(now()), thread_id: threadId, author_kind: agentId ? 'agent' : 'user', author_id: agentId ?? userId, kind: 'note', body: input.body, payload: JSON.stringify({ ...(input.attachmentId ? { attachmentId: input.attachmentId } : {}), ...(input.markers.length ? { markers: input.markers } : {}), ...(input.environment ? { environment: input.environment } : {}) }), created_at: now() }).execute();
+        await tx.insertInto('messages').values({ id: messageId, thread_id: threadId, author_kind: agentId ? 'agent' : 'user', author_id: agentId ?? userId, kind: 'note', body: input.body, payload: JSON.stringify({ ...(input.attachmentId ? { attachmentId: input.attachmentId } : {}), ...(input.markers.length ? { markers: input.markers } : {}), ...(input.environment ? { environment: input.environment } : {}) }), created_at: now() }).execute();
         return { number, published: await events.append(tx, [{ type: 'issue.created', actorKind: agentId ? 'agent' : 'user', userId, agentId, projectId, threadId, payload: { issueId: id, number } }]) };
       });
       events.published(result.published);
-      return { id, number: result.number, threadId };
+      // The first message is the issue body; whoever it names with @ is mentioned on that message.
+      return { id, number: result.number, threadId, messageId };
     },
 
     // Newest first; `after` is the number of the last issue already seen.

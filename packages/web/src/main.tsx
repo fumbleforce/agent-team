@@ -7,6 +7,7 @@ import { CostsPage } from './features/costs/CostsPage';
 import { IntegrationsPage } from './features/integrations/IntegrationsPage';
 import { AuditPage } from './features/audit/AuditPage';
 import { OrgPage, RolesPage } from './features/org/OrgPages';
+import { LibraryPage } from './features/org/LibraryPage';
 import { ProjectSettingsPage } from './features/settings/ProjectSettingsPage';
 import { AuthPage, MembersPage } from './features/settings/SettingsPages';
 import { ProposalsPage } from './features/proposals/ProposalsPage';
@@ -54,6 +55,7 @@ function Signed() {
       <Route path="/org"><OrgPage me={me.data} projects={tree.data.projects} /></Route>
       <Route path="/roles/:slug">{params => <RolesPage slug={params.slug} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/roles"><RolesPage slug={null} me={me.data} projects={tree.data.projects} /></Route>
+      <Route path="/library"><LibraryPage me={me.data} projects={tree.data.projects} /></Route>
       <Route path="/costs"><CostsPage me={me.data} projects={tree.data.projects} agents={agents.data?.agents ?? []} /></Route>
       <Route path="/proposals/:id">{params => <ProposalsPage id={params.id} me={me.data!} projects={tree.data!.projects} agents={agents.data?.agents ?? []} />}</Route>
       <Route path="/proposals"><ProposalsPage id={null} me={me.data} projects={tree.data.projects} agents={agents.data?.agents ?? []} /></Route>

@@ -1,5 +1,5 @@
 import type { Context as Hc, Hono } from 'hono';
-import { AuthSettingsBody, FromTemplateBody, HireBody, MachineTokenBody, MilestoneBody, MilestonePatch, ProjectLinkBody, ProjectMemberBody, ProjectStatusBody, SaveTemplateBody, SeatLoanBody, UserPatch, VersionedDocBody, type StoredEvent } from '@agent-team/protocol';
+import { AgentBody, AgentPatch, AuthSettingsBody, FromTemplateBody, HireBody, MachineTokenBody, MilestoneBody, MilestonePatch, ProjectLinkBody, ProjectMemberBody, ProjectStatusBody, SaveTemplateBody, SeatLoanBody, TeamOrderBody, UserPatch, VersionedDocBody, type StoredEvent } from '@agent-team/protocol';
 import type { MachineTokens } from '../auth/machineTokens.ts';
 import { createMembers } from '../auth/members.ts';
 import { OidcSettings } from '../auth/oidc.ts';
@@ -116,6 +116,14 @@ export function registerOrgRoutes(app: Hono<Env>, context: Context, deps: { work
   app.post('/api/milestones/:id', async c => { allow(c, 'project.configure', await rootOf((await org.milestone(c.req.param('id'))).project_id)); await org.updateMilestone(me(c), c.req.param('id'), await parseBody(c, MilestonePatch)); return c.json({ ok: true }); });
   app.post('/api/milestones/:id/delete', async c => { allow(c, 'project.configure', await rootOf((await org.milestone(c.req.param('id'))).project_id)); await org.deleteMilestone(me(c), c.req.param('id')); return c.json({ ok: true }); });
 
+  // Archived projects leave every list; this is where an administrator finds them again to restore one.
+  app.get('/api/org/archived', async c => {
+    allow(c, 'org.members');
+    const rows = await db.selectFrom('projects').select(['id', 'slug', 'name', 'kind', 'parent_id']).where('status', '=', 'archived').orderBy('name').execute();
+    const parents = new Map((await db.selectFrom('projects').select(['id', 'name']).execute()).map(row => [row.id, row.name]));
+    return c.json({ projects: rows.map(row => ({ id: row.id, slug: row.slug, name: row.name, kind: row.kind, parentName: row.parent_id ? parents.get(row.parent_id) ?? null : null })) });
+  });
+
   // What the Org page adds to /api/org: the edges between projects and the seats on loan.
   app.get('/api/org/structure', async c => { const visible = await visibleTo(c.get('viewer')); return c.json({ links: await org.links(visible), loans: await org.loans(visible) }); });
   app.post('/api/org/links', async c => {
@@ -178,6 +186,24 @@ export function registerOrgRoutes(app: Hono<Env>, context: Context, deps: { work
     const input = await parseBody(c, FromTemplateBody), template = await docs.get('team_template', LIBRARY, input.template);
     return c.json(await org.teamFromTemplate(me(c), project.id, { slug: template.slug, version: template.version, name: template.doc.name, seats: template.doc.seats }, input.mode));
   });
+  // Team editing by hand: whoever configures the project makes, changes, orders, rests and retires its seats, and says which one is the PM.
+  const roleLibrary = async () => (await docs.list('role', LIBRARY)).map(role => ({ slug: role.slug, summary: String((role.doc as { summary?: unknown }).summary ?? '') }));
+  app.get('/api/projects/:slug/team', async c => {
+    const project = await projectFor(c, 'project.read'), team = await org.team(project.id);
+    return c.json({ seats: team.seats, roles: await roleLibrary(), canEdit: can(c.get('viewer'), 'project.configure', team.rootId) });
+  });
+  app.post('/api/projects/:slug/team/agents', async c => {
+    const project = await projectFor(c, 'project.configure');
+    return c.json({ id: await org.createAgent(me(c), project.id, await parseBody(c, AgentBody), (await roleLibrary()).map(role => role.slug)) });
+  });
+  app.post('/api/projects/:slug/team/order', async c => { const project = await projectFor(c, 'project.configure'); await org.reorder(me(c), project.id, (await parseBody(c, TeamOrderBody)).agentIds); return c.json({ ok: true }); });
+  app.post('/api/agents/:id', async c => {
+    const home = await org.homeProject(c.req.param('id'));
+    allow(c, 'project.configure', home);
+    await org.updateAgent(me(c), c.req.param('id'), home, await parseBody(c, AgentPatch), (await roleLibrary()).map(role => role.slug));
+    return c.json({ ok: true });
+  });
+  app.post('/api/agents/:id/pm', async c => { const home = await org.homeProject(c.req.param('id')); allow(c, 'project.configure', home); await org.makePm(me(c), c.req.param('id'), home); return c.json({ ok: true }); });
   app.post('/api/projects/:slug/team/hire', async c => {
     const project = await projectFor(c, 'project.configure');
     const input = await parseBody(c, HireBody), library = await docs.get('library_agent', LIBRARY, input.library);

@@ -118,15 +118,29 @@ export function createTurns(context: Context) {
   }
 
   // A budget warns once per period: the message goes to the discussion, the event to the log, the mark on the budget.
-  async function notify(tx: Tx, notices: Notice[], snapshot: Snapshot) {
-    const drafts = [], month = day(now()).slice(0, 7);
+  // An agent that moved to the fallback provider is announced the same way, once a day, when a turn of its actually starts there.
+  async function notify(tx: Tx, notices: Notice[], snapshot: Snapshot, started: { agentId: string; providerId: string | null } | null) {
+    const drafts = [], today = day(now()), month = today.slice(0, 7);
+    const discussionOf = async (projectId: string) => {
+      const home = await tx.selectFrom('projects').select(['id', 'parent_id']).where('id', '=', projectId).executeTakeFirstOrThrow();
+      return tx.selectFrom('threads').select('id').where('project_id', 'in', [home.id, ...(home.parent_id ? [home.parent_id] : [])]).where('kind', '=', 'discussion').orderBy('created_at', 'desc').executeTakeFirst();
+    };
     for (const notice of notices) {
-      if (notice.type !== 'budget.threshold') continue;
+      if (notice.type === 'cap.fallback') {
+        if (started?.agentId !== notice.agentId || started.providerId !== notice.providerId) continue;
+        const marked = await tx.updateTable('agents').set({ fallback_noticed_day: today }).where('id', '=', notice.agentId).where(eb => eb.or([eb('fallback_noticed_day', 'is', null), eb('fallback_noticed_day', '!=', today)])).executeTakeFirst();
+        if (Number(marked.numUpdatedRows) === 0) continue;
+        const agent = await tx.selectFrom('agents').select('name').where('id', '=', notice.agentId).executeTakeFirstOrThrow(), provider = snapshot.providers[notice.providerId];
+        const thread = await discussionOf(notice.projectId);
+        if (thread) await tx.insertInto('messages').values({ id: newId(now()), thread_id: thread.id, author_kind: 'system', author_id: null, kind: 'system', body: `${agent.name} has reached today’s spending cap and works on ${provider?.name ?? 'the fallback provider'} for the rest of the day.`, payload: JSON.stringify({ capFallback: { agentId: notice.agentId, providerId: notice.providerId } }), created_at: now() }).execute();
+        drafts.push({ type: 'cap.fallback', actorKind: 'system' as const, projectId: notice.projectId, agentId: notice.agentId, threadId: thread?.id ?? null, payload: { providerId: notice.providerId, day: today } });
+        if (thread) drafts.push({ type: 'message.posted', actorKind: 'system' as const, projectId: notice.projectId, threadId: thread.id, payload: { kind: 'system' } });
+        continue;
+      }
       for (const project of Object.values(snapshot.projects)) if (project.budget?.scope === notice.scope && project.budget.scopeId === notice.scopeId) project.warned = true;
       const marked = await tx.updateTable('budgets').set({ warned_period: month }).where('scope', '=', notice.scope).where('scope_id', '=', notice.scopeId).where('period', '=', 'month').where(eb => eb.or([eb('warned_period', 'is', null), eb('warned_period', '!=', month)])).executeTakeFirst();
       if (Number(marked.numUpdatedRows) === 0) continue;
-      const home = await tx.selectFrom('projects').select(['id', 'parent_id']).where('id', '=', notice.projectId).executeTakeFirstOrThrow();
-      const thread = await tx.selectFrom('threads').select('id').where('project_id', 'in', [home.id, ...(home.parent_id ? [home.parent_id] : [])]).where('kind', '=', 'discussion').orderBy('created_at', 'desc').executeTakeFirst();
+      const thread = await discussionOf(notice.projectId);
       if (thread) await tx.insertInto('messages').values({ id: newId(now()), thread_id: thread.id, author_kind: 'system', author_id: null, kind: 'system', body: `Spend has reached ${notice.percent} % of the ${notice.scope === 'org' ? 'organization' : 'project'} budget for ${month}. At 100 % only replies to people and work that unblocks others will run.`, payload: JSON.stringify({ budget: { scope: notice.scope, scopeId: notice.scopeId, percent: notice.percent } }), created_at: now() }).execute();
       drafts.push({ type: 'budget.threshold', actorKind: 'system' as const, projectId: notice.projectId, threadId: thread?.id ?? null, payload: { scope: notice.scope, scopeId: notice.scopeId, percent: notice.percent, threshold: notice.threshold } });
     }
@@ -140,7 +154,7 @@ export function createTurns(context: Context) {
   }
 
   return {
-    async enqueue(input: { agentId: string; projectId: string; kind: TurnKind; taskId?: string | null; threadId?: string | null; dedupeKey?: string; causeEventId?: string; notBefore?: number; prepare?: (tx: Tx, workItemId: string) => Promise<void> }): Promise<string | null> {
+    async enqueue(input: { agentId: string; projectId: string; kind: TurnKind; taskId?: string | null; threadId?: string | null; dedupeKey?: string; causeEventId?: string; notBefore?: number; priorityClass?: number; prepare?: (tx: Tx, workItemId: string) => Promise<void> }): Promise<string | null> {
       const id = newId(now());
       const published = await storage.transaction(async tx => {
         // An agent works for its own team's projects and for those it is on loan to. Work for a paused project is kept and waits at the claim.
@@ -149,7 +163,7 @@ export function createTurns(context: Context) {
         const task = input.taskId ? await tx.selectFrom('tasks').select(['state', 'assignee_agent_id']).where('id', '=', input.taskId).executeTakeFirst() : undefined;
         const draft = scheduler.enqueue({ kind: input.kind, agentId: input.agentId, dedupeKey: input.dedupeKey }, { liveDedupeKeys: new Set(live.map(row => row.dedupe_key ?? '')), task: task ? { state: task.state, assigneeAgentId: task.assignee_agent_id } : null });
         if (!draft) return null;
-        await tx.insertInto('work_items').values({ id, agent_id: input.agentId, project_id: input.projectId, kind: input.kind, lane: draft.lane, task_id: input.taskId ?? null, thread_id: input.threadId ?? null, priority_class: draft.priorityClass, state: 'queued', defer_reason: null, not_before: input.notBefore ?? null, dedupe_key: input.dedupeKey ?? null, cause_event_id: input.causeEventId ?? null, created_at: now() }).execute();
+        await tx.insertInto('work_items').values({ id, agent_id: input.agentId, project_id: input.projectId, kind: input.kind, lane: draft.lane, task_id: input.taskId ?? null, thread_id: input.threadId ?? null, priority_class: input.priorityClass ?? draft.priorityClass, state: 'queued', defer_reason: null, not_before: input.notBefore ?? null, dedupe_key: input.dedupeKey ?? null, cause_event_id: input.causeEventId ?? null, created_at: now() }).execute();
         // What the turn needs beyond the item itself is written with it, so a claim never sees one without the other.
         await input.prepare?.(tx, id);
         // Having work again ends the idle period, so the next one is announced.
@@ -174,7 +188,7 @@ export function createTurns(context: Context) {
           // Every refusal is written down, once per change, so the Workload page can say why an item waits.
           for (const deferral of deferrals.filter(row => row.reason === 'task-closed')) { await tx.updateTable('work_items').set({ state: 'done', defer_reason: 'task-closed' }).where('id', '=', deferral.id).execute(); snapshot.items = snapshot.items.filter(other => other.id !== deferral.id); stored.set(deferral.id, 'task-closed'); }
           for (const deferral of deferrals) if (stored.get(deferral.id) !== deferral.reason) { await tx.updateTable('work_items').set({ defer_reason: deferral.reason }).where('id', '=', deferral.id).execute(); stored.set(deferral.id, deferral.reason); }
-          expired.push(...await notify(tx, notices, snapshot));
+          expired.push(...await notify(tx, notices, snapshot, picked ? { agentId: picked.item.agentId, providerId: picked.route.providerId } : null));
           if (!picked) return { expired, claimed: null };
           const { item, route } = picked, kind = item.kind, access = accessOf(kind);
           const wanted = kind === 'capture' ? await tx.selectFrom('snapshots').select(['url', 'viewport']).where('work_item_id', '=', item.id).where('state', '=', 'requested').executeTakeFirst() : undefined;

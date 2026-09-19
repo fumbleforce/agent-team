@@ -50,7 +50,7 @@ export function TeamExtras({ slug, roster, onChanged }: { slug: string; roster: 
       {canEdit && (
         <section className="flex flex-col gap-2">
           <SectionLabel>Hire from the library</SectionLabel>
-          {library.data?.items.length === 0 && <Text size="small" tone="muted">The library is empty. An organization admin adds agents to it with POST /api/library/agents/:slug.</Text>}
+          {library.data?.items.length === 0 && <Text size="small" tone="muted">The library is empty. An organization admin adds agents to it under Organization → Agent library.</Text>}
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
             {library.data?.items.map(item => (
               <Card key={item.slug} tone="raised" pad="sm" className="flex items-center gap-2.5">
@@ -75,9 +75,8 @@ export function TeamExtras({ slug, roster, onChanged }: { slug: string; roster: 
         {templates.data?.items.length === 0 && <Text size="small" tone="muted">No templates yet. Save this team as the first one.</Text>}
         <ActionError error={stamp.error} />
         {canEdit && roster.length > 0 && (
-          <form className="flex flex-wrap items-end gap-2.5" onSubmit={save.submit(async form => { await api(`/api/projects/${slug}/team/save-template`, { slug: form.get('slug'), name: form.get('name') }); templates.reload(); })}>
+          <form className="flex flex-wrap items-end gap-2.5" onSubmit={save.submit(async form => { await api(`/api/projects/${slug}/team/save-template`, { slug: String(form.get('name') ?? '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40), name: form.get('name') }); templates.reload(); })}>
             <Field label="Template name"><Input name="name" required maxLength={80} placeholder="Product team" /></Field>
-            <Field label="Slug" error={save.error?.fields.slug}><Input name="slug" required pattern="[a-z0-9][a-z0-9-]*" placeholder="product-team" /></Field>
             <Button type="submit" disabled={save.busy}>Save this team as a template</Button>
           </form>
         )}
@@ -89,7 +88,7 @@ export function TeamExtras({ slug, roster, onChanged }: { slug: string; roster: 
             templates.reload(); setImporting(false);
           })}>
             <Field label="Exported template (JSON)"><Textarea name="json" required rows={6} /></Field>
-            <div className="flex flex-wrap items-end gap-2.5"><Field label="Slug (defaults to the one in the file)"><Input name="slug" pattern="[a-z0-9][a-z0-9-]*" /></Field><Button type="submit" disabled={bring.busy}>Import</Button></div>
+            <div className="flex flex-wrap items-end gap-2.5"><Field label="Save it under another name (optional)" help="Leave empty to keep the name in the file."><Input name="slug" pattern="[a-z0-9][a-z0-9-]*" placeholder="product-team" /></Field><Button type="submit" disabled={bring.busy}>Import</Button></div>
             <ActionError error={bring.error} />
           </form>
         )}

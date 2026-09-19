@@ -31,17 +31,28 @@ export function createActions(context: Context, turns: Turns) {
       const result = await storage.transaction(async tx => {
         const owner = input.ownerAgentId ? await teammate(tx, turn.project_id, input.ownerAgentId) : null;
         if (input.outcome === 'accept' && !owner) throw refuse('triage', 'Accepting needs an owner: pass ownerAgentId');
-        const issue = await tx.selectFrom('issues').select(['id', 'state']).where('thread_id', '=', input.threadId).executeTakeFirst();
+        const issue = await tx.selectFrom('issues').select(['id', 'state', 'number', 'title', 'body', 'project_id']).where('thread_id', '=', input.threadId).executeTakeFirst();
         const needsHuman = input.outcome === 'escalate', decisionId = newId(now());
         const messageId = await post(tx, input.threadId, turn.agent_id, 'decision', input.decision, { triage: true, outcome: input.outcome, ownerAgentId: owner?.id ?? null, priority: input.priority ?? null });
         await tx.insertInto('decisions').values({ id: decisionId, project_id: turn.project_id, thread_id: input.threadId, message_id: messageId, deliberation_id: null, kind: 'triage', outcome: input.outcome, summary: input.decision, needs_human: needsHuman, resolved_by_user: null, resolved_at: null, created_at: now() }).execute();
         const closes = input.outcome === 'decline' || input.outcome === 'duplicate';
         if (issue) await tx.updateTable('issues').set({ ...(owner ? { owner_agent_id: owner.id } : {}), ...(input.priority ? { priority: input.priority } : {}), ...(closes && issue.state === 'open' ? { state: 'closed', closed_at: now() } : {}) }).where('id', '=', issue.id).execute();
+        // An accepted issue becomes work: one task for its owner, linked to the issue. Accepting twice keeps the first task.
+        let taskId: string | null = null;
+        if (issue && owner && input.outcome === 'accept' && !await tx.selectFrom('links').select('to_id').where('from_type', '=', 'issue').where('from_id', '=', issue.id).where('to_type', '=', 'task').where('rel', '=', 'fixes').executeTakeFirst()) {
+          taskId = newId(now());
+          const lowest = await tx.selectFrom('tasks').select(eb => eb.fn.max('priority').as('n')).where('project_id', '=', issue.project_id).executeTakeFirst();
+          await tx.insertInto('tasks').values({ id: taskId, project_id: issue.project_id, key: `ISSUE-${issue.number}`, source: 'internal', title: issue.title, brief: issue.body, tag: null, priority: Number(lowest?.n ?? -1) + 1, milestone_id: null, state: 'assigned', assignee_agent_id: owner.id, author_agent_id: turn.agent_id, branch: null, head_sha: null, pr_url: null, blocked_reason: null, created_at: now(), updated_at: now() }).execute();
+          await tx.insertInto('links').values({ from_type: 'issue', from_id: issue.id, to_type: 'task', to_id: taskId, rel: 'fixes', created_at: now() }).execute();
+        }
         const drafts = [{ type: 'decision.recorded', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, turnId: turn.id, payload: { decisionId, outcome: input.outcome, needsHuman, issueId: issue?.id ?? null } }, { type: 'message.posted', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, payload: { messageId, kind: 'decision' } }];
-        return { decisionId, messageId, published: await events.append(tx, issue && closes && issue.state === 'open' ? [...drafts, { type: 'issue.closed', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, payload: { issueId: issue.id } }] : drafts) };
+        const more = [...(issue && closes && issue.state === 'open' ? [{ type: 'issue.closed', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, payload: { issueId: issue.id } }] : []), ...(taskId && issue && owner ? [{ type: 'task.assigned', actorKind: 'agent' as const, agentId: owner.id, projectId: issue.project_id, taskId, turnId: turn.id, payload: { fromIssue: issue.id } }, { type: 'link.added', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: issue.project_id, turnId: turn.id, payload: { from: { type: 'issue', id: issue.id }, to: { type: 'task', id: taskId }, rel: 'fixes' } }] : [])];
+        return { decisionId, messageId, taskId, ownerId: owner?.id ?? null, projectId: issue?.project_id ?? turn.project_id, published: await events.append(tx, [...drafts, ...more]) };
       });
       events.published(result.published);
-      return { decisionId: result.decisionId, messageId: result.messageId };
+      // The owner starts on it like on any assigned task.
+      if (result.taskId && result.ownerId) await turns.enqueue({ agentId: result.ownerId, projectId: result.projectId, kind: 'work', taskId: result.taskId, dedupeKey: `work:${result.taskId}` });
+      return { decisionId: result.decisionId, messageId: result.messageId, taskId: result.taskId };
     },
 
     // One structured note per seat in the retro thread; the PM reads them and turns at most three into proposals.

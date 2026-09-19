@@ -70,8 +70,36 @@ function ProjectMembers({ slug }: { slug: string }) {
   );
 }
 
-const tabsText = (tabs: { label: string; url: string }[]) => tabs.map(tab => `${tab.label} | ${tab.url}`).join('\n');
-const parseTabs = (text: string) => text.split('\n').map(line => line.split('|').map(part => part.trim())).filter(parts => parts[0]).map(parts => ({ label: parts[0] ?? '', url: parts.slice(1).join('|') }));
+interface ExtraTab { label: string; url: string }
+const MAX_TABS = 8;
+
+// Pages the team serves itself, shown as extra tabs of the project. Adding or removing one saves the settings straight away.
+function ExtraTabs({ tabs, canEdit, onSave }: { tabs: ExtraTab[]; canEdit: boolean; onSave(tabs: ExtraTab[], note: string): Promise<void> }) {
+  const action = useAction();
+  const save = (next: ExtraTab[], note: string) => action.run(() => onSave(next, note));
+  return (
+    <SettingsSection title="Extra tabs" note="A dashboard, a calendar or any other page your team runs can sit beside Tasks and Issues. Choosing the tab opens that page in a new browser tab.">
+      <DataTable rows={tabs} rowKey={tab => `${tab.label} ${tab.url}`} empty={<Text size="small" tone="muted">No extra tabs yet.</Text>} columns={[
+        { label: 'Name on the tab', cell: tab => <Text size="small" weight="medium" truncate>{tab.label}</Text> },
+        { label: 'Opens', width: 'grow', cell: tab => <Text size="caption" tone="muted" truncate>{tab.url}</Text> },
+        { label: '', width: 'sm', cell: tab => (canEdit ? <Button size="sm" variant="ghost" disabled={action.busy} onClick={() => { void save(tabs.filter(other => other !== tab), `Removed the ${tab.label} tab`); }}>Remove</Button> : null) },
+      ]} />
+      {canEdit && tabs.length < MAX_TABS && (
+        <form className="flex flex-wrap items-end gap-2.5" onSubmit={event => {
+          event.preventDefault();
+          const target = event.currentTarget, form = new FormData(target), label = String(form.get('label') ?? '').trim(), url = String(form.get('url') ?? '').trim();
+          void save([...tabs, { label, url }], `Added the ${label} tab`).then(ok => { if (ok) target.reset(); });
+        }}>
+          <Field label="Name on the tab" help="One or two words, such as Calendar."><Input name="label" required maxLength={40} placeholder="Calendar" /></Field>
+          <Field label="Web address of the page" help="Starts with https://. It must be reachable from your browser."><Input name="url" type="url" required maxLength={500} pattern="https?://.+" placeholder="https://calendar.example.com" /></Field>
+          <Button type="submit" disabled={action.busy}>Add tab</Button>
+        </form>
+      )}
+      {canEdit && tabs.length >= MAX_TABS && <Text size="caption" tone="muted">A project has room for {MAX_TABS} extra tabs. Remove one to add another.</Text>}
+      <ActionError error={action.error} />
+    </SettingsSection>
+  );
+}
 
 export function ProjectSettingsPage({ id, me, projects }: { id: string; me: Me; projects: ProjectNode[] }) {
   const view = useResource<SettingsView>(`/api/projects/${id}/settings`);
@@ -100,15 +128,15 @@ export function ProjectSettingsPage({ id, me, projects }: { id: string; me: Me; 
             </SettingsSection>
 
             <SettingsSection title="Settings" aside={<Text size="caption" tone="muted">{data.version ? `v${data.version} · saved by ${data.author}` : 'never saved'}</Text>}>
-              <form key={data.version} className="flex flex-col gap-2.5" onSubmit={event => { event.preventDefault(); const form = new FormData(event.currentTarget); void save.run(() => api(`/api/projects/${id}/settings`, { doc: { description: form.get('description'), customTabs: parseTabs(String(form.get('tabs'))) }, note: form.get('note') || undefined }, { 'if-match': String(data.version) })).then(ok => { if (ok) view.reload(); }); }}>
+              <form key={data.version} className="flex flex-col gap-2.5" onSubmit={event => { event.preventDefault(); const form = new FormData(event.currentTarget); void save.run(() => api(`/api/projects/${id}/settings`, { doc: { description: form.get('description'), customTabs: data.settings.customTabs }, note: form.get('note') || undefined }, { 'if-match': String(data.version) })).then(ok => { if (ok) view.reload(); }); }}>
                 <Field label="What this project is for" error={save.error?.fields.description}><Textarea name="description" rows={4} maxLength={2000} disabled={!data.can.configure} defaultValue={data.settings.description} /></Field>
-                <Field label="Custom tabs, one per line: Label | https://address the team serves"><Textarea name="tabs" rows={3} disabled={!data.can.configure} defaultValue={tabsText(data.settings.customTabs)} /></Field>
                 {data.can.configure && <div className="flex flex-wrap items-end gap-2.5"><Field label="Note for the history"><Input name="note" maxLength={200} /></Field><Button type="submit" variant="primary" disabled={save.busy}>Save settings</Button>{save.error?.status === 412 && <Button onClick={view.reload}>Reload</Button>}</div>}
                 <ActionError error={save.error} />
               </form>
               {data.history.length > 0 && <div className="flex flex-col gap-1">{data.history.map(entry => <Text key={entry.version} size="caption" tone="muted">v{entry.version} · {entry.author} · {new Date(Number(entry.created_at)).toLocaleString()}{entry.note ? ` · ${entry.note}` : ''}</Text>)}</div>}
             </SettingsSection>
 
+            <ExtraTabs tabs={data.settings.customTabs} canEdit={data.can.configure} onSave={async (customTabs, note) => { await api(`/api/projects/${id}/settings`, { doc: { description: data.settings.description, customTabs }, note }, { 'if-match': String(data.version) }); view.reload(); }} />
             <Milestones slug={data.project.slug} canEdit={data.can.configure} />
             {data.can.members && <ProjectMembers slug={data.project.slug} />}
           </>

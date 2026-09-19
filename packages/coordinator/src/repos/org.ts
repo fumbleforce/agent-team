@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { newId, type FromTemplateBody, type HireBody, type MilestoneBody, type MilestonePatch, type ProjectLinkBody, type SeatLoanBody, type TemplateSeat } from '@agent-team/protocol';
+import { newId, type AgentBody, type AgentPatch, type FromTemplateBody, type HireBody, type MilestoneBody, type MilestonePatch, type ProjectLinkBody, type SeatLoanBody, type TemplateSeat } from '@agent-team/protocol';
 import type { Db, Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 
@@ -32,6 +32,15 @@ export function createOrg(context: Context) {
     await tx.insertInto('agents').values({ id, team_id: teamId, name: input.name, initials, tint: String((sort % 8) + 1), title: input.title, persona: input.persona, status: 'active', provider_id: null, model: null, daily_cap_minor: null, is_pm: input.isPm, doing: null, sort, created_at: now() }).execute();
     for (const role of new Set(input.roles)) await tx.insertInto('agent_roles').values({ agent_id: id, role_slug: role }).execute();
     return id;
+  }
+  // What a hand-made seat may name: roles from the library, and a model its provider offers. Refusals say which field.
+  async function checkSeat(tx: Tx, input: { roles?: string[] | undefined; providerId?: string | null | undefined; model?: string | null | undefined }, knownRoles: string[]) {
+    const unknown = (input.roles ?? []).filter(role => !knownRoles.includes(role));
+    if (unknown.length) throw new HttpError(400, 'invalid', 'Some fields need another look', { roles: `${unknown.join(', ')} is not in the role library` });
+    if (!input.providerId) return;
+    const provider = await tx.selectFrom('providers').select(['name', 'models']).where('id', '=', input.providerId).executeTakeFirst();
+    if (!provider) throw new HttpError(400, 'invalid', 'Some fields need another look', { provider: 'That provider is no longer there. Pick another.' });
+    if (input.model && !(JSON.parse(provider.models) as string[]).includes(input.model)) throw new HttpError(400, 'invalid', 'Some fields need another look', { provider: `${provider.name} does not offer ${input.model}` });
   }
   // The team a project runs with is its own or its parent's.
   async function teamOf(executor: Db | Tx, projectId: string) {
@@ -217,7 +226,83 @@ export function createOrg(context: Context) {
       return { teamId: result.teamId, agentIds: result.agentIds };
     },
 
-    async hire(userId: string, projectId: string, library: { slug: string; doc: Omit<Seat, 'isPm'> }, input: z.infer<typeof HireBody>) {
+    // The seats of a project's team with the roles each wears, in seat order; retired seats are gone from it.
+    async team(projectId: string) {
+      const { root, teamId } = await teamOf(db, projectId);
+      const agents = teamId ? await db.selectFrom('agents').select(['id', 'name', 'initials', 'tint', 'title', 'persona', 'status', 'provider_id', 'model', 'is_pm']).where('team_id', '=', teamId).where('status', '!=', 'retired').orderBy('sort').execute() : [];
+      const roles = agents.length ? await db.selectFrom('agent_roles').select(['agent_id', 'role_slug']).where('agent_id', 'in', agents.map(agent => agent.id)).execute() : [];
+      return { rootId: root.id, seats: agents.map(agent => ({ id: agent.id, name: agent.name, initials: agent.initials, tint: agent.tint, title: agent.title, persona: agent.persona, status: agent.status, providerId: agent.provider_id, model: agent.model, isPm: agent.is_pm === true, roles: roles.filter(role => role.agent_id === agent.id).map(role => role.role_slug) })) };
+    },
+
+    // A seat made by hand. A project without a team gets one, and the first seat of a team is its PM: a team always has exactly one.
+    async createAgent(userId: string, projectId: string, input: z.infer<typeof AgentBody>, knownRoles: string[]) {
+      const result = await storage.transaction(async tx => {
+        const { root, teamId: current } = await teamOf(tx, projectId);
+        await checkSeat(tx, input, knownRoles);
+        const teamId = current ?? newId(now());
+        if (!current) {
+          await tx.insertInto('teams').values({ id: teamId, scope: 'project', project_id: null, name: `${root.name} team`, template_slug: null, template_version: null }).execute();
+          await tx.updateTable('projects').set({ team_id: teamId }).where('id', '=', root.id).execute();
+        }
+        const existing = await tx.selectFrom('agents').select(['sort', 'is_pm', 'status']).where('team_id', '=', teamId).execute();
+        const isPm = !existing.some(agent => agent.is_pm === true && agent.status !== 'retired');
+        const agentId = await seat(tx, teamId, { name: input.name, title: input.title, persona: input.persona, roles: input.roles, isPm }, existing.reduce((max, agent) => Math.max(max, agent.sort + 1), 0));
+        if (input.providerId) await tx.updateTable('agents').set({ provider_id: input.providerId, model: input.model }).where('id', '=', agentId).execute();
+        return { agentId, published: await events.append(tx, [{ type: 'agent.created', category: 'audit', ...user(userId), agentId, projectId: root.id, payload: { name: input.name, title: input.title, roles: input.roles, isPm, providerId: input.providerId, model: input.providerId ? input.model : null } }]) };
+      });
+      events.published(result.published);
+      return result.agentId;
+    },
+
+    // Name, title, persona, roles, provider and model, and whether the seat works, rests or is gone. A running turn keeps what it was claimed with.
+    async updateAgent(userId: string, agentId: string, projectId: string, input: z.infer<typeof AgentPatch>, knownRoles: string[]) {
+      const published = await storage.transaction(async tx => {
+        const agent = await tx.selectFrom('agents').select(['id', 'name', 'is_pm', 'status', 'provider_id']).where('id', '=', agentId).executeTakeFirst();
+        if (!agent || agent.status === 'retired') throw notFound('Agent');
+        // A team is never left without the one who decides ties.
+        if (input.status === 'retired' && agent.is_pm === true) throw new HttpError(409, 'pm_needed', `${agent.name} is the team's PM. Make someone else the PM first, then retire this seat.`);
+        await checkSeat(tx, { ...input, ...(input.model !== undefined && input.providerId === undefined ? { providerId: agent.provider_id } : {}) }, knownRoles);
+        const initials = input.name ? input.name.split(/\s+/).map(word => word[0] ?? '').join('').slice(0, 2).toUpperCase() : undefined;
+        const set = { ...(input.name !== undefined ? { name: input.name, initials: initials! } : {}), ...(input.title !== undefined ? { title: input.title } : {}), ...(input.persona !== undefined ? { persona: input.persona } : {}), ...(input.status !== undefined ? { status: input.status } : {}),
+          ...(input.providerId !== undefined ? { provider_id: input.providerId, model: input.providerId ? input.model ?? null : null } : input.model !== undefined ? { model: agent.provider_id ? input.model : null } : {}) };
+        if (Object.keys(set).length) await tx.updateTable('agents').set(set).where('id', '=', agentId).execute();
+        if (input.roles) {
+          await tx.deleteFrom('agent_roles').where('agent_id', '=', agentId).execute();
+          for (const role of new Set(input.roles)) await tx.insertInto('agent_roles').values({ agent_id: agentId, role_slug: role }).execute();
+        }
+        const type = input.status === 'retired' ? 'agent.retired' : input.status === 'paused' && agent.status !== 'paused' ? 'agent.paused' : input.status === 'active' && agent.status !== 'active' ? 'agent.resumed' : 'agent.updated';
+        return events.append(tx, [{ type, category: 'audit', ...user(userId), agentId, projectId, payload: { name: input.name ?? agent.name, changed: Object.keys(input) } }]);
+      });
+      events.published(published);
+    },
+
+    // Exactly one PM per team: giving the flag to one seat takes it from whoever held it, in the same transaction.
+    async makePm(userId: string, agentId: string, projectId: string) {
+      const published = await storage.transaction(async tx => {
+        const agent = await tx.selectFrom('agents').select(['id', 'name', 'team_id', 'status', 'is_pm']).where('id', '=', agentId).executeTakeFirst();
+        if (!agent || agent.status === 'retired') throw notFound('Agent');
+        if (agent.status !== 'active') throw new HttpError(409, 'pm_paused', `${agent.name} is paused. Resume the seat before making it the PM.`);
+        const previous = await tx.selectFrom('agents').select(['id', 'name']).where('team_id', '=', agent.team_id).where('is_pm', '=', true).where('id', '!=', agentId).execute();
+        await tx.updateTable('agents').set({ is_pm: false }).where('team_id', '=', agent.team_id).where('id', '!=', agentId).execute();
+        await tx.updateTable('agents').set({ is_pm: true }).where('id', '=', agentId).execute();
+        return events.append(tx, [{ type: 'team.pm_changed', category: 'audit', ...user(userId), agentId, projectId, payload: { name: agent.name, previous: previous.map(row => row.name) } }]);
+      });
+      events.published(published);
+    },
+
+    // The order seats are shown and listed in. Every current seat is named once; anything else is refused rather than guessed.
+    async reorder(userId: string, projectId: string, agentIds: string[]) {
+      const published = await storage.transaction(async tx => {
+        const { root, teamId } = await teamOf(tx, projectId);
+        const seats = teamId ? await tx.selectFrom('agents').select('id').where('team_id', '=', teamId).where('status', '!=', 'retired').execute() : [];
+        if (seats.length !== agentIds.length || new Set(agentIds).size !== agentIds.length || !seats.every(row => agentIds.includes(row.id))) throw new HttpError(409, 'stale', 'The team changed while you were reordering it. Reload and try again.');
+        for (const [sort, id] of agentIds.entries()) await tx.updateTable('agents').set({ sort }).where('id', '=', id).execute();
+        return events.append(tx, [{ type: 'team.reordered', category: 'audit', ...user(userId), projectId: root.id, payload: { agentIds } }]);
+      });
+      events.published(published);
+    },
+
+    async hire(userId: string,projectId: string, library: { slug: string; doc: Omit<Seat, 'isPm'> }, input: z.infer<typeof HireBody>) {
       const result = await storage.transaction(async tx => {
         const { root, teamId } = await teamOf(tx, projectId);
         if (!teamId) throw new HttpError(409, 'no_team', 'Create a team for this project before hiring into it');

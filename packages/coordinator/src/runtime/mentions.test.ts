@@ -57,6 +57,16 @@ test('who a mention wakes, by target', async () => {
   }
 });
 
+test('a teammate’s mention queues behind a person’s: class 3 against class 1', async () => {
+  const { storage, db, mentions, projectId, threadId, agents, userId } = await boot();
+  try {
+    await mentions.mention({ projectId, threadId, message: { body: 'Ada, does the retry keep the key?' }, author: { kind: 'agent', id: agents.Bram! }, targets: [{ type: 'agent', id: 'ada' }], expects: 'reply' });
+    await mentions.mention({ projectId, threadId, message: { body: 'Cleo, is staging green?' }, author: { kind: 'user', id: userId }, targets: [{ type: 'agent', id: 'cleo' }], expects: 'reply' });
+    const queued = await db.selectFrom('work_items').innerJoin('agents', 'agents.id', 'work_items.agent_id').select(['agents.name', 'work_items.kind', 'work_items.lane', 'work_items.priority_class']).orderBy('work_items.priority_class').execute();
+    assert.deepEqual(queued.map(item => ({ ...item })), [{ name: 'Cleo', kind: 'reply', lane: 'bounded', priority_class: 1 }, { name: 'Ada', kind: 'reply', lane: 'bounded', priority_class: 3 }]);
+  } finally { await storage.close(); }
+});
+
 test('the whole team is every seat but the author', async () => {
   const { storage, mentions, projectId, threadId, agents } = await boot();
   try {

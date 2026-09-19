@@ -27,8 +27,10 @@ for (const seed of SEEDS) test(`seeded run ${seed}: invariants hold and every ta
     const context = createContext({ storage, machineToken: 'x'.repeat(24), now: () => clock });
     await seedDemo(context);
     const db = storage.db, turns = createTurns(context);
-    const project = await db.selectFrom('projects').select('id').where('slug', '=', 'checkout-v2').executeTakeFirstOrThrow();
-    const agents = (await db.selectFrom('agents').select('id').execute()).map(row => row.id);
+    const project = await db.selectFrom('projects').select(['id', 'parent_id']).where('slug', '=', 'checkout-v2').executeTakeFirstOrThrow();
+    // The seats of the project's own team: the demo has other teams, and their agents take no work here.
+    const team = await db.selectFrom('projects').select('team_id').where('id', '=', project.parent_id).executeTakeFirstOrThrow();
+    const agents = (await db.selectFrom('agents').select('id').where('team_id', '=', team.team_id).execute()).map(row => row.id);
     await db.deleteFrom('cost_daily').execute();
     await db.deleteFrom('cost_entries').execute();
     await db.deleteFrom('budgets').execute();

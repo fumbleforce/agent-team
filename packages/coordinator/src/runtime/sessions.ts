@@ -1,5 +1,5 @@
 import type { z } from 'zod';
-import { newId, STEP_ARTIFACT_LIMITS, type FinishBody, type SessionBody, type StepArtifactKind } from '@agent-team/protocol';
+import { newId, type FinishBody, type SessionBody } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import type { Context } from '../context.ts';
 import { buildResumeDelta, buildResumePacket, type Packet } from './packet.ts';
@@ -93,13 +93,6 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
 
     // An orphan found at worker start: its lease is given up at once, so the ordinary expiry marks it uncertain and quarantines what it could have changed.
     async orphaned(tx: Tx, turn: TurnRow) { await tx.updateTable('turns').set({ lease_until: now() - 1 }).where('id', '=', turn.id).execute(); },
-
-    // The text a trace step carries: stored once per step, clipped again here whatever the worker sent.
-    async stepArtifact(tx: Tx, turn: TurnRow, input: { seq: number; kind: StepArtifactKind; body: string; truncated: boolean }) {
-      const limit = STEP_ARTIFACT_LIMITS[input.kind], body = input.body.slice(0, limit);
-      await tx.insertInto('step_artifacts').values({ turn_id: turn.id, seq: input.seq, kind: input.kind, body, bytes: Buffer.byteLength(body), truncated: input.truncated || body.length < input.body.length ? 1 : 0, created_at: now() }).onConflict(oc => oc.columns(['turn_id', 'seq']).doNothing()).execute();
-      return events.append(tx, [{ type: 'turn.steps', category: 'trace', actorKind: 'worker', projectId: turn.project_id, agentId: turn.agent_id, turnId: turn.id, payload: { from: input.seq, to: input.seq, artifact: input.kind } }]);
-    },
   };
 }
 export type Sessions = ReturnType<typeof createSessions>;

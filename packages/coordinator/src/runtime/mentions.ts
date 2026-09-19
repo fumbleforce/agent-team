@@ -5,6 +5,8 @@ import type { Turns } from './turns.ts';
 
 export const MAX_MENTION_DEPTH = 2;
 export const MAX_WAKES_PER_HOUR = 2;
+// A reply owed to a person is class 1; one owed to a teammate waits with reviews and feedback.
+export const AGENT_MENTION_CLASS = 3;
 const HOUR_MS = 3600_000;
 const refuse = (message: string) => new HttpError(409, 'mention', message);
 
@@ -77,7 +79,7 @@ export function createMentions(context: Context, turns: Turns) {
     });
     events.published(result.published);
     // The work item and the mention that caused it are written together, so a reply turn always finds its mention.
-    for (const outcome of result.outcomes) if (outcome.state === 'woken' && outcome.agentId) await turns.enqueue({ agentId: outcome.agentId, projectId: input.projectId, kind: 'reply', threadId: input.threadId, dedupeKey: `mention:${outcome.mentionId}`, prepare: async (tx, workItemId) => { await tx.updateTable('mentions').set({ state: 'woken', work_item_id: workItemId }).where('id', '=', outcome.mentionId).execute(); } });
+    for (const outcome of result.outcomes) if (outcome.state === 'woken' && outcome.agentId) await turns.enqueue({ agentId: outcome.agentId, projectId: input.projectId, kind: 'reply', threadId: input.threadId, dedupeKey: `mention:${outcome.mentionId}`, ...(input.author.kind === 'agent' ? { priorityClass: AGENT_MENTION_CLASS } : {}), prepare: async (tx, workItemId) => { await tx.updateTable('mentions').set({ state: 'woken', work_item_id: workItemId }).where('id', '=', outcome.mentionId).execute(); } });
     if (result.pm && result.outcomes.some(outcome => outcome.state === 'overflow')) await turns.enqueue({ agentId: result.pm, projectId: input.projectId, kind: 'triage', threadId: input.threadId, dedupeKey: `triage:${input.threadId}` });
     return { messageId: result.messageId, mentions: result.outcomes };
   }

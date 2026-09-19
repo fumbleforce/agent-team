@@ -29,8 +29,23 @@ test('raising an issue with a screenshot numbers it, opens its thread and hands 
   const triage = await coordinator.context.storage.db.selectFrom('work_items').innerJoin('agents', 'agents.id', 'work_items.agent_id').select(['agents.name', 'work_items.kind']).where('work_items.thread_id', '=', created.body.threadId).executeTakeFirstOrThrow();
   assert.deepEqual([triage.name, triage.kind], ['Maren', 'triage']);
 
+  // @name in the body of a new issue is a mention on its first message: the one named is asked directly and the PM still triages.
+  const named = await json('/api/projects/checkout-v2/issues', { title: 'Webhook retries', body: 'Signature check fails on retry. @ada can you look? Not for @nobody.' });
+  const db = coordinator.context.storage.db;
+  const first = (await json(`/api/threads/${named.body.threadId}/messages`)).body.messages[0];
+  assert.equal(first.id, named.body.messageId);
+  assert.deepEqual((await db.selectFrom('mentions').innerJoin('agents', 'agents.id', 'mentions.agent_id').select(['mentions.message_id', 'agents.name', 'mentions.state', 'mentions.author_kind']).where('mentions.thread_id', '=', named.body.threadId).execute()).map(row => ({ ...row })), [{ message_id: first.id, name: 'Ada', state: 'woken', author_kind: 'user' }]);
+  assert.deepEqual((await db.selectFrom('work_items').innerJoin('agents', 'agents.id', 'work_items.agent_id').select(['agents.name', 'work_items.kind', 'work_items.priority_class']).where('work_items.thread_id', '=', named.body.threadId).orderBy('work_items.kind').execute()).map(row => ({ ...row })), [{ name: 'Ada', kind: 'reply', priority_class: 1 }, { name: 'Maren', kind: 'triage', priority_class: 3 }]);
+
+  // Images attached in a composer are stored on the message, not written into its text.
+  const posted = await json(`/api/threads/${named.body.threadId}/messages`, { body: 'This is what it looks like.', attachmentIds: [attachmentId, attachmentId] });
+  assert.equal(posted.status, 200);
+  const stored = (await json(`/api/threads/${named.body.threadId}/messages`)).body.messages.at(-1);
+  assert.deepEqual([stored.body, stored.payload], ['This is what it looks like.', { attachmentIds: [attachmentId] }]);
+  assert.equal((await json(`/api/threads/${named.body.threadId}/messages`, { body: 'Missing image.', attachmentIds: ['no-such-image'] })).status, 400);
+
   await json('/api/projects/checkout-v2/issues/1/close', {});
   const listed = await json('/api/projects/checkout-v2/issues');
-  assert.deepEqual(listed.body.issues.map((issue: any) => [issue.number, issue.state]), [[2, 'open'], [1, 'closed']]);
+  assert.deepEqual(listed.body.issues.map((issue: any) => [issue.number, issue.state]), [[3, 'open'], [2, 'open'], [1, 'closed']]);
   await coordinator.close();
 });

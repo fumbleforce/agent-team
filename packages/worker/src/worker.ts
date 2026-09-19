@@ -1,13 +1,13 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { outsideWriteScope, turnToken, type Lane, type PermissionGrant, type TraceStepInput, type TurnKind, type Viewport } from '@agent-team/protocol';
+import { outsideWriteScope, STEP_ARTIFACT_LIMITS, STREAM_ARTIFACT_SEQ, turnToken, type Lane, type PermissionGrant, type TraceStepInput, type TurnKind, type Viewport } from '@agent-team/protocol';
 import { enforcesToolPolicy, type EngineAdapter } from '../../../adapters/engine/contract.ts';
 import { publish as publishChange, type Exec } from '../../../adapters/scm/publish.ts';
 import { SCM_GATES } from '../../../adapters/scm/gates.ts';
 import { deliver as gate, type Approvals, type DeliveryConfig } from './deliver/gate.ts';
 import { capturePage, type CaptureFn } from './capture.ts';
 import { executeTurn, turnDirectory } from './execute.ts';
-import { clearRun, recordRun, sweepOrphans } from './orphans.ts';
+import { clearRun, identifyRun, recordRun, sweepOrphans } from './orphans.ts';
 import { createRedactor } from './redact.ts';
 import { createTracer, type StepArtifact } from './trace.ts';
 import { cappedBy, changedPaths, committedCeiling, ensureWorktree, headSha, worktreeFor } from './worktree.ts';
@@ -36,6 +36,8 @@ export interface WorkerConfig {
   engines?: Record<string, EngineAdapter>;
   // A strict worker runs a restricted turn only on an engine that enforces the restriction itself; instructions are not isolation.
   isolation?: 'strict' | 'isolated';
+  // What this machine can run, sent with every claim so the app can say which providers are ready here. Names only.
+  ready?: { engines: string[]; variables: string[] };
 }
 interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
 interface Lease { workerId: string; leaseToken: string }
@@ -117,9 +119,13 @@ export function createWorker(config: WorkerConfig) {
       }
       // Whatever leaves this worker is stripped of its secrets first.
       const redact = createRedactor(env, [config.token, turn.leaseToken, platformToken]);
-      const artifact = (item: StepArtifact) => lost() ? Promise.resolve() : fetch(`${config.coordinatorUrl}/worker/turns/${turn.turnId}/artifacts`, { method: 'POST', headers: { 'content-type': 'text/plain; charset=utf-8', authorization: `Bearer ${config.token}`, 'x-worker-id': lease.workerId, 'x-lease-token': lease.leaseToken, 'x-step-seq': String(item.seq), 'x-step-kind': item.kind, 'x-step-truncated': item.truncated ? '1' : '0' }, body: item.body, signal: AbortSignal.timeout(30_000) }).then(() => {});
-      const tracer = createTracer({ worktree: worktree?.path ?? null, turnDir, redact, onSteps: steps => { pending.push(...steps); }, onArtifact: artifact });
+      const artifact = (item: StepArtifact) => lost() ? Promise.resolve() : fetch(`${config.coordinatorUrl}/worker/turns/${turn.turnId}/artifacts`, { method: 'POST', headers: { 'content-type': item.mime, authorization: `Bearer ${config.token}`, 'x-worker-id': lease.workerId, 'x-lease-token': lease.leaseToken, 'x-step-seq': String(item.seq), 'x-step-kind': item.kind, 'x-step-truncated': item.truncated ? '1' : '0' }, body: item.body, signal: AbortSignal.timeout(30_000) }).then(() => {});
+      const tracer = createTracer({ worktree: worktree?.path ?? null, turnDir, redact, screenshotDir: path.join(turnDir, 'browser'), onSteps: steps => { pending.push(...steps); }, onArtifact: artifact });
       tracer.start();
+      // The raw engine stream, redacted line by line as it arrives and archived as one artifact when the turn ends.
+      const stream: string[] = [];
+      let streamBytes = 0, streamCut = false;
+      const keepLine = (line: string) => { const clean = redact(line); streamBytes += Buffer.byteLength(clean) + 1; if (streamBytes <= STEP_ARTIFACT_LIMITS.stream) stream.push(clean); else streamCut = true; };
       // Only an engine that can resume gets the session and the delta; every other one starts from the packet, which carries the same history.
       const resume = turn.resume && adapter.capabilities.resume === 'id' ? turn.resume : null;
       const moved = resume?.baseSha && worktree && resume.baseSha !== worktree.baseCommit ? `\n\n# The base moved\nThe base branch was at ${resume.baseSha.slice(0, 10)} when this session last ran and is at ${worktree.baseCommit.slice(0, 10)} now. Bring your branch up to date before you continue.` : '';
@@ -127,12 +133,15 @@ export function createWorker(config: WorkerConfig) {
         adapter, turnDir, env, timeoutMs: config.timeoutMs ?? 45 * 60_000, signal,
         spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
         onSteps: steps => tracer.steps(steps),
+        onLine: keepLine,
         // What a crash leaves behind is found by the next start of this worker.
-        onSpawn: pid => recordRun(turnDir, { turnId: turn.turnId, leaseToken: turn.leaseToken, pid: pid ?? null, startedAt: Date.now() }),
+        // The record also says who that pid is, so a later sweep never ends a stranger that inherited the number.
+        onSpawn: pid => { const record = { turnId: turn.turnId, leaseToken: turn.leaseToken, pid: pid ?? null, startedAt: Date.now() }; recordRun(turnDir, record); void identifyRun(turnDir, record).catch(() => {}); },
         // Posted at once: a session named only at the end of a turn is lost with the turn.
         onSession: sessionId => { if (turn.kind === 'work' && !lost()) void call(`/worker/turns/${turn.turnId}/session`, { ...lease, sessionId, ...(worktree ? { baseSha: worktree.baseCommit } : {}) }).catch(() => {}); },
       });
       await tracer.finish();
+      if (stream.length) await artifact({ seq: STREAM_ARTIFACT_SEQ, kind: 'stream', body: stream.map(line => `${line}\n`).join(''), mime: 'text/plain; charset=utf-8', truncated: streamCut }).catch(() => {});
       await flush();
       const summary = result.summary ? redact(result.summary) : null;
       // The diff gate: whatever tool made a change, a path outside the write scope means nothing is published or reviewed.
@@ -172,7 +181,7 @@ export function createWorker(config: WorkerConfig) {
     // Claims one turn if a lane is free; returns whether anything was claimed.
     async tick(): Promise<boolean> {
       const free = Object.fromEntries((Object.keys(busy) as Lane[]).map(lane => [lane, config.lanes[lane] - busy[lane]]));
-      const { turn } = await call<{ turn: Claimed | null }>('/worker/claim', { workerId: config.workerId, free, projects: Object.keys(config.projects) });
+      const { turn } = await call<{ turn: Claimed | null }>('/worker/claim', { workerId: config.workerId, free, projects: Object.keys(config.projects), isolation: config.isolation ?? 'isolated', ...(config.ready ? { ready: config.ready } : {}) });
       if (!turn) return false;
       const lane: Lane = turn.kind === 'work' ? 'work' : turn.kind === 'deliver' || turn.kind === 'publish' ? 'deliver' : 'bounded';
       busy[lane]++;

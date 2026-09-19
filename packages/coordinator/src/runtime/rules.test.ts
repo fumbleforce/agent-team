@@ -23,7 +23,7 @@ test('daily cap: defer, fall back to the named provider, or stand aside when swi
   assert.deepEqual(evaluate(draft('work', 5), world()), { allow: true, route: { providerId: 'main', model: 'seat-model' }, notices: [] });
   assert.deepEqual(evaluate(draft('work', 5), over(world())), { allow: false, deferReason: 'over-cap', notices: [] });
   const fallen = evaluate(draft('work', 5), over(world({ dailyCap: { fallbackProvider: 'Cheap lane' } })));
-  assert.deepEqual([fallen.allow, fallen.route, fallen.notices], [true, { providerId: 'cheap', model: 'cheap-default' }, [{ type: 'cap.fallback', agentId: 'a', providerId: 'cheap' }]]);
+  assert.deepEqual([fallen.allow, fallen.route, fallen.notices], [true, { providerId: 'cheap', model: 'cheap-default' }, [{ type: 'cap.fallback', agentId: 'a', projectId: 'p', providerId: 'cheap' }]]);
   assert.equal(evaluate(draft('work', 5), over(world({ dailyCap: { fallbackProvider: 'nowhere' } }))).deferReason, 'over-cap');
   assert.equal(evaluate(draft('work', 5), over(world({ dailyCap: { enabled: false } }))).allow, true);
   assert.equal(evaluate(draft('reply', 1), over(world())).allow, true);
@@ -144,6 +144,40 @@ test('stored rules drive the claim: cap fallback, sticky route, one budget warni
     assert.equal(await turns.claim(worker(projectId)), null);
     assert.equal((await storage.db.selectFrom('work_items').select('defer_reason').where('state', '=', 'queued').executeTakeFirstOrThrow()).defer_reason, 'over-budget');
     assert.equal((await warnings()).length, 1);
+  } finally { await storage.close(); }
+});
+
+test('moving to the fallback provider is said once a day, in the discussion, when a turn actually starts there', async () => {
+  const { storage, turns, docs, projectId, agent, tick } = await boot();
+  try {
+    const db = storage.db, bram = agent('Bram');
+    await docs.save('cost_rules', RULES_SCOPE, RULES_SLUG, { dailyCap: { fallbackProvider: 'spare' } }, { author: 'test' });
+    await db.updateTable('agents').set({ daily_cap_minor: 100 }).where('id', '=', bram).execute();
+    await db.insertInto('cost_daily').values({ day: '2026-05-10', project_id: projectId, agent_id: bram, amount_minor: 150, tokens: 10 }).execute();
+    const said = async () => (await db.selectFrom('messages').select('body').where('kind', '=', 'system').execute()).map(row => row.body).filter(body => body.includes('spending cap'));
+    const noticed = async () => (await db.selectFrom('events').select('type').where('type', '=', 'cap.fallback').where('agent_id', '=', bram).execute()).length;
+
+    // A reply to a person ignores the cap, so nothing is said about it.
+    await turns.enqueue({ agentId: bram, projectId, kind: 'reply' });
+    const reply = (await turns.claim(worker(projectId)))!;
+    assert.equal(reply.model, 'main-model');
+    await turns.finish(reply.turnId, 'w1', reply.leaseToken, { state: 'completed' });
+    assert.deepEqual([await said(), await noticed()], [[], 0]);
+
+    for (const round of [1, 2]) {
+      await turns.enqueue({ agentId: bram, projectId, kind: 'feedback' });
+      const turn = (await turns.claim(worker(projectId)))!;
+      assert.equal(turn.model, 'spare-model', `round ${round}`);
+      await turns.finish(turn.turnId, 'w1', turn.leaseToken, { state: 'completed' });
+      assert.deepEqual([await said(), await noticed()], [['Bram has reached today’s spending cap and works on spare for the rest of the day.'], 1], `round ${round}`);
+    }
+
+    // The next day it is over its cap again, and that is said again.
+    tick(24 * 3600_000);
+    await db.insertInto('cost_daily').values({ day: '2026-05-11', project_id: projectId, agent_id: bram, amount_minor: 150, tokens: 10 }).execute();
+    await turns.enqueue({ agentId: bram, projectId, kind: 'feedback' });
+    assert.equal((await turns.claim(worker(projectId)))?.model, 'spare-model');
+    assert.deepEqual([(await said()).length, await noticed()], [2, 2]);
   } finally { await storage.close(); }
 });
 

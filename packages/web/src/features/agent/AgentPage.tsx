@@ -2,11 +2,11 @@ import { useState } from 'react';
 import type { Me, ProjectNode } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
-import { AppShell, DiffView, Disclosure, OutputView, PageHeader, Sidebar, TraceRow } from '../../patterns';
+import { AppShell, Attachment, DiffView, Disclosure, OutputView, PageHeader, Sidebar, TraceRow } from '../../patterns';
 import { Avatar, Card, Chip, SectionLabel, Text, type ChipTone } from '../../ui';
 
 interface Turn { id: string; kind: string; state: string; summary: string | null; tokens_in: number; tokens_out: number; cost_minor: number; started_at: number }
-type ArtifactKind = 'diff' | 'output' | 'think';
+type ArtifactKind = 'diff' | 'output' | 'think' | 'image';
 interface Step { seq: number; at: number; kind: string; title: string; detail: string | null; artifact_kind?: ArtifactKind | null }
 interface Trace { steps: Step[] }
 interface Artifact { artifact: { kind: ArtifactKind; body: string; truncated: boolean } }
@@ -14,16 +14,18 @@ interface View { agent: { id: string; name: string; initials: string; tint: stri
 
 const STATE: Record<string, ChipTone> = { running: 'working', completed: 'neutral', deferred: 'attention', failed: 'stop', timed_out: 'stop', uncertain: 'stop', interrupted: 'attention' };
 
-// A step that produced something opens onto it: an edit onto its diff as git saw it, a run onto its output or the files its shell changed.
+// A step that produced something opens onto it: an edit onto its diff as git saw it, a run onto its output or the files its shell changed,
+// a screenshot onto the image the browser tool left behind.
 function StepRow({ turnId, step }: { turnId: string; step: Step }) {
   const [open, setOpen] = useState(false);
-  const loaded = useResource<Artifact>(open ? `/api/turns/${turnId}/steps?seq=${step.seq}` : null);
+  const image = step.artifact_kind === 'image';
+  const loaded = useResource<Artifact>(open && !image ? `/api/turns/${turnId}/steps?seq=${step.seq}` : null);
   const row = <TraceRow at={step.at} kind={step.kind} title={step.title} detail={step.detail} />;
   if (!step.artifact_kind) return row;
   const artifact = loaded.data?.artifact;
   return (
-    <Disclosure open={open} onToggle={() => setOpen(value => !value)} label={`${open ? 'Hide' : 'Show'} the ${step.artifact_kind === 'diff' ? 'diff' : 'output'} of: ${step.title}`} row={row}>
-      {!artifact ? <Text size="caption" tone="muted">{loaded.error?.message ?? 'Loading…'}</Text> : artifact.kind === 'diff' ? <DiffView text={artifact.body} truncated={artifact.truncated} /> : <OutputView text={artifact.body} truncated={artifact.truncated} />}
+    <Disclosure open={open} onToggle={() => setOpen(value => !value)} label={`${open ? 'Hide' : 'Show'} the ${image ? 'image' : step.artifact_kind === 'diff' ? 'diff' : 'output'} of: ${step.title}`} row={row}>
+      {image ? <Attachment src={`/api/turns/${turnId}/steps?seq=${step.seq}&raw=1`} alt={step.title} /> : !artifact ? <Text size="caption" tone="muted">{loaded.error?.message ?? 'Loading…'}</Text> : artifact.kind === 'diff' ? <DiffView text={artifact.body} truncated={artifact.truncated} /> : <OutputView text={artifact.body} truncated={artifact.truncated} />}
     </Disclosure>
   );
 }

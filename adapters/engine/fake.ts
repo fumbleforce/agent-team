@@ -10,7 +10,7 @@ export const fake: EngineAdapter = {
   bin: process.execPath,
   capabilities: { resume: 'id', mcp: 'none', toolPolicy: 'prompt', bounded: true, structuredOutput: false, usageLimits: 'detect', cost: 'usd' },
   environment: env => allowlistedEnvironment(env, ['FAKE_SCENARIO']),
-  prepare: (spec, _turnDir, env) => ({ bin: process.execPath, args: [SCRIPT, spec.kind, ...(spec.sessionId ? ['--resume', spec.sessionId] : ['--session', `fake-${spec.turnId}`])], input: spec.prompt, env, files: [] }),
+  prepare: (spec, turnDir, env) => ({ bin: process.execPath, args: [SCRIPT, spec.kind, '--turn-dir', turnDir, ...(spec.sessionId ? ['--resume', spec.sessionId] : ['--session', `fake-${spec.turnId}`])], input: spec.prompt, env, files: [] }),
   parse(line, state) {
     let event: { type?: string; kind?: string; title?: string; detail?: string; target?: string; body?: string; session?: string; tokensIn?: number; tokensOut?: number; costUsd?: number; summary?: string };
     try { event = JSON.parse(line); } catch { return []; }

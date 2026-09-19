@@ -20,15 +20,15 @@ export async function uploadImage(file: File): Promise<{ id: string; name: strin
   return { id: (json as { id: string }).id, name };
 }
 
-// Posts to a thread. Attached images travel as markdown images in the body, so every reader of the thread sees them.
+// Posts to a thread. Attached images are stored on the message and shown under it.
 export const postToThread = (threadId: string, body: string, attachmentIds: string[] = []): Promise<void> =>
-  api(`/api/threads/${threadId}/messages`, { body: [body, ...attachmentIds.map(id => `![attached image](/api/attachments/${id})`)].join('\n\n'), attachmentIds }).then(() => undefined);
+  api(`/api/threads/${threadId}/messages`, { body, attachmentIds }).then(() => undefined);
 
 export interface Me { user: { id: string; email: string; name: string; orgRole: string }; org: { name: string; accent: string; currency: string } | null; seq: number }
 export interface ProjectNode { id: string; slug: string; name: string; kind: string; status: string; team: { id: string; name: string; seats: number } | null; progress: number; subprojects: { id: string; slug: string; name: string; progress: number }[] }
 export interface Agent { id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; provider_id: string | null; model: string | null; is_pm: boolean; doing: string | null }
 export interface TaskCardData { id: string; key: string; title: string; tag: string | null; state: string; assignee_agent_id: string | null }
 export type Board = Record<'backlog' | 'in_progress' | 'review' | 'done', TaskCardData[]>;
-export interface ProjectView { project: { id: string; slug: string; name: string; kind: string; status: string; parent: { slug: string; name: string } | null }; roster: Agent[]; board: Board; discussionThreadId: string | null; seq: number }
+export interface ProjectView { project: { id: string; slug: string; name: string; kind: string; status: string; parent: { slug: string; name: string } | null }; roster: Agent[]; board: Board; discussionThreadId: string | null; customTabs?: { label: string; url: string }[]; seq: number }
 export interface Message { id: string; seq: number; authorKind: 'user' | 'agent' | 'system'; authorId: string | null; kind: string; body: string; payload: Record<string, unknown>; createdAt: number }
 export interface StreamEvent { seq: number; type: string; projectId: string | null; threadId: string | null; taskId: string | null; payload: Record<string, unknown> }

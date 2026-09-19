@@ -40,3 +40,35 @@ test('s3 copies through the AWS CLI and links to the console, or presigns when a
   assert.deepEqual(calls.at(-1), ['s3', 'presign', 's3://team-runs/p/j/journal.md', '--expires-in', '600']);
   fs.rmSync(dir, { recursive: true, force: true });
 });
+
+// One contract for single bodies, passed by every kind: what is put comes back byte for byte, a missing key is null, removing twice is fine.
+function fakeBucket() {
+  const objects = new Map<string, Buffer>();
+  const run = async (args: string[]) => {
+    if (args[1] === 'cp' && args[3]!.startsWith('s3://')) objects.set(args[3]!, fs.readFileSync(args[2]!));
+    else if (args[1] === 'cp') { const found = objects.get(args[2]!); if (!found) throw new Error('aws s3 cp: fatal error: An error occurred (404) when calling the HeadObject operation: Key does not exist'); fs.writeFileSync(args[3]!, found); }
+    else if (args[1] === 'rm') objects.delete(args[2]!);
+    return '';
+  };
+  return { run, objects };
+}
+const bucket = fakeBucket();
+const STORES = { local: () => createArtifacts('local', { root: fs.mkdtempSync(path.join(os.tmpdir(), 'artifacts-store-')) }), s3: () => createArtifacts('s3', { bucket: 'team-runs', run: bucket.run }) };
+
+for (const [kind, create] of Object.entries(STORES)) {
+  test(`${kind} keeps single bodies by key: put, get, remove, and never leaves its root`, async () => {
+    const store = create(), bytes = new Uint8Array([0, 1, 2, 250, 255]);
+    await store.put('steps/turn-1/3-output', bytes);
+    assert.deepEqual(await store.get('steps/turn-1/3-output'), bytes);
+    assert.equal(await store.get('steps/turn-1/4-output'), null);
+    await store.remove('steps/turn-1/3-output');
+    await store.remove('steps/turn-1/3-output');
+    assert.equal(await store.get('steps/turn-1/3-output'), null);
+    for (const key of ['../escape', 'a//b', '/rooted', 'a/../../b', 'a\\b', '']) await assert.rejects(async () => store.put(key, bytes), /Invalid artifact key/, key);
+  });
+}
+
+test('s3 addresses single bodies under the prefix', async () => {
+  await createArtifacts('s3', { bucket: 'team-runs', prefix: 'p', run: bucket.run }).put('steps/t/1-image', new Uint8Array([1]));
+  assert.ok(bucket.objects.has('s3://team-runs/p/steps/t/1-image'));
+});

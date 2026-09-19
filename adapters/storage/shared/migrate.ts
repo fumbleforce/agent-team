@@ -18,9 +18,11 @@ import * as mentions from '../migrations/0014_mentions.ts';
 import * as rules from '../migrations/0015_rules.ts';
 import * as orgAuth from '../migrations/0016_org_auth.ts';
 import * as agentSessions from '../migrations/0017_sessions.ts';
+import * as gaps from '../migrations/0019_gaps.ts';
+import * as artifacts from '../migrations/0020_artifacts.ts';
 
 type ContextMigration = { up(db: Kysely<unknown>, context: MigrationContext): Promise<void> };
-const MIGRATIONS: Record<string, ContextMigration> = { '0001_init': init, '0002_runtime': runtime, '0003_costs_knowledge': knowledge, '0004_deliberation': deliberation, '0005_delivery': delivery, '0006_checks': checks, '0007_proposals': proposals, '0008_issues': issues, '0009_integrations': integrations, '0010_product': product, '0011_schedules': schedules, '0012_embeddings': embeddings, '0013_snapshots': snapshots, '0014_mentions': mentions, '0015_rules': rules, '0016_org_auth': orgAuth, '0017_sessions': agentSessions };
+const MIGRATIONS: Record<string, ContextMigration> = { '0001_init': init, '0002_runtime': runtime, '0003_costs_knowledge': knowledge, '0004_deliberation': deliberation, '0005_delivery': delivery, '0006_checks': checks, '0007_proposals': proposals, '0008_issues': issues, '0009_integrations': integrations, '0010_product': product, '0011_schedules': schedules, '0012_embeddings': embeddings, '0013_snapshots': snapshots, '0014_mentions': mentions, '0015_rules': rules, '0016_org_auth': orgAuth, '0017_sessions': agentSessions, '0019_gaps': gaps, '0020_artifacts': artifacts };
 
 // Forward-only, each in its own transaction, recorded in Kysely's migration table.
 export async function runMigrations(db: Kysely<never> | Kysely<any>, context: MigrationContext): Promise<void> {

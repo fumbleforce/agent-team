@@ -6,7 +6,7 @@ import { LaneCell, LaneRow } from '../../patterns';
 import { Button, Card, SectionLabel, Text } from '../../ui';
 
 interface Item { id: string; kind: string; key: string | null; title: string; deferReason: string | null }
-interface Workload { lanes: { agent: Agent & { limitedUntil: number | null }; now: Item[]; queued: Item[]; owed: Item[] }[]; busy: number }
+interface Workload { lanes: { agent: Agent & { limitedUntil: number | null; onFallbackToday?: boolean }; now: Item[]; queued: Item[]; owed: Item[] }[]; busy: number }
 interface Move { workItemId: string; fromAgentId: string; toAgentId: string; fromName: string; toName: string; key: string | null; title: string }
 
 const clock = (ms: number) => new Date(ms).toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
@@ -60,7 +60,7 @@ export function WorkloadTab({ slug }: { slug: string }) {
         </Card>
       )}
       {data.lanes.map(lane => (
-        <LaneRow key={lane.agent.id} agent={lane.agent} load={lane.agent.limitedUntil ? `provider-limited until ${clock(lane.agent.limitedUntil)}` : `${lane.queued.length} queued · ${lane.owed.length} owed`}>
+        <LaneRow key={lane.agent.id} agent={lane.agent} load={lane.agent.limitedUntil ? `provider-limited until ${clock(lane.agent.limitedUntil)}` : `${lane.queued.length} queued · ${lane.owed.length} owed${lane.agent.onFallbackToday ? ' · over today’s cap, on the fallback provider' : ''}`}>
           <LaneCell items={lane.now} empty="idle" emphasis />
           <LaneCell items={lane.queued} empty="nothing queued" />
           <LaneCell items={lane.owed} empty="nothing owed" />

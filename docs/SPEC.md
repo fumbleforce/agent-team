@@ -379,7 +379,7 @@ Three-pane app shell: sidebar (organization, project tree with progress, team ro
 - Processes: `packages/coordinator/src/main.ts` and `packages/worker/src/main.ts`. `up` starts those two.
 - Every hosting adapter is rewritten in TypeScript against one port (4310) and those two entrypoints: `adapters/hosting/local/up.ts`, `fly/entrypoint.ts` and `fly.toml` (one service), `aws/{entrypoint,deploy}.ts`, the control-plane user-data script, the ECS task definition (health check on 4310), `systemd/install.ts` and the unit files. Launch paths come from one `packageRoot()` helper and one exported `ENTRYPOINTS` map, never from `dirname` chains or literals.
 - One `configDir()` helper in `packages/protocol/src/paths.ts` is the only place the config directory is derived.
-- Coordinator config gains `storage: {kind, url | path}` and `artifacts`. New CLI commands in `bin/agent-team.ts`: `demo`, `setup-link`, `migrate`, `call` (agent shim).
+- Coordinator config gains `storage: {kind, url | path}` and `artifacts` (`{kind: 'local', dir}` by default, a folder under the data directory; any other artifacts adapter kind with its options) plus `traceRetentionDays` (30). New CLI commands in `bin/agent-team.ts`: `demo`, `setup-link`, `migrate`, `call` (agent shim).
 - Docker images use `node:24-slim`, build the web assets in a build stage and copy `packages/`, `adapters/`, `blueprints/`, `bin/`. The worker image bake installs Node 24.
 
 ## 17. Legacy code: what carries over and where it lands

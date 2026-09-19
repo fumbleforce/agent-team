@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from '@testing-library/react';
 import { useState } from 'react';
 import { describe, expect, it, vi } from 'vitest';
-import { Button, Card, Checkbox, Chip, Dialog, Field, IconButton, Input, KeyValue, ListRow, Menu, Meter, Popover, Segmented, Select, SelectMenu, StatTile, Text, Tooltip } from './index';
+import { Button, Card, Checkbox, Chip, Dialog, Field, IconButton, Input, KeyValue, ListRow, Menu, Meter, Popover, Segmented, Select, SelectMenu, StatTile, Tabs, Text, Tooltip } from './index';
 
 // Radix opens its menus on pointer and key events rather than click.
 const open = (trigger: HTMLElement) => { trigger.focus(); fireEvent.keyDown(trigger, { key: 'Enter' }); };
@@ -69,6 +69,13 @@ describe('primitives', () => {
     expect(screen.getByRole('radio', { name: '7 days' }).getAttribute('aria-checked')).toBe('true');
     fireEvent.click(screen.getByRole('radio', { name: 'Today' }));
     expect(change).toHaveBeenCalledWith('today');
+  });
+
+  it('Tabs mark the current page; an external tab opens its address in a new browser tab', () => {
+    render(<Tabs items={[{ label: 'Tasks', href: '/p/x/tasks', active: true }, { label: 'Issues', href: '/p/x/issues' }, { label: 'Calendar', href: 'https://calendar.example.com', external: true }]} />);
+    expect(screen.getByRole('link', { name: 'Tasks' }).getAttribute('aria-current')).toBe('page');
+    const outside = screen.getByRole('link', { name: /Calendar/ });
+    expect([outside.getAttribute('href'), outside.getAttribute('target'), outside.getAttribute('rel'), outside.getAttribute('aria-current')]).toEqual(['https://calendar.example.com', '_blank', 'noreferrer noopener', null]);
   });
 
   it('ListRow is a link, a button or plain depending on what it is given', () => {

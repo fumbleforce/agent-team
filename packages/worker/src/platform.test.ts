@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { commandLine, launcherTarget, resolveBinary, shellQuote } from './platform.ts';
+import { commandLine, installed, launcherTarget, readiness, resolveBinary, shellQuote } from './platform.ts';
 
 test('elsewhere a command passes through unchanged; on Windows the file behind the name is found through PATHEXT', () => {
   assert.deepEqual(commandLine('engine', ['--print'], { platform: 'linux' }), { file: 'engine', args: ['--print'], verbatim: false });
@@ -26,4 +26,14 @@ test('a package-manager launcher runs its script with this runtime; any other sc
   const line = commandLine('plain', ['a&b'], { env: { PATH: dir, ComSpec: 'cmd.exe' }, platform: 'win32' });
   assert.deepEqual([line.file, line.args.slice(0, 3), line.verbatim], ['cmd.exe', ['/d', '/s', '/c'], true]);
   assert.match(line.args[3]!, /\^\^\^&/);
+});
+
+test('a worker reports which engines it can start and which credential variables are set, by name only', () => {
+  const dir = mkdtempSync(path.join(os.tmpdir(), 'agent-team-ready-'));
+  writeFileSync(path.join(dir, 'engine'), '');
+  writeFileSync(path.join(dir, 'other.cmd'), '');
+  const engines = { one: { bin: 'engine' }, two: { bin: 'other' }, three: { bin: 'missing' } };
+  assert.deepEqual(readiness(engines, ['A_KEY', 'B_KEY'], { platform: 'linux', env: { PATH: `/nowhere:${dir}`, A_KEY: 'secret' } }), { engines: ['one'], variables: ['A_KEY'] });
+  assert.deepEqual(readiness(engines, ['A_KEY'], { platform: 'win32', env: { PATH: dir, PATHEXT: '.CMD', A_KEY: '' } }), { engines: ['two'], variables: [] });
+  assert.equal(installed('engine', { platform: 'linux', env: {} }), false);
 });

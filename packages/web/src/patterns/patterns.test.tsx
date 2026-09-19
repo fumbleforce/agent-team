@@ -51,6 +51,12 @@ describe('Message', () => {
     expect(screen.getByText('against')).toBeTruthy();
     expect(screen.getByText('Decision')).toBeTruthy();
   });
+
+  it('shows the images stored with a message under it, each once, and leaves a marked-up snapshot to the issue view', () => {
+    const { container } = render(<><Message author={author} message={message('note', 'Looks like this', { attachmentIds: ['img-1', 'img-2', 'img-1', '../etc'], attachmentId: 'img-3' })} /><Message author={author} message={message('question', 'Marked', { attachmentId: 'img-4', markers: [] })} /></>);
+    expect([...container.querySelectorAll('img')].map(image => image.getAttribute('src'))).toEqual(['/api/attachments/img-1', '/api/attachments/img-2', '/api/attachments/img-3']);
+    expect(container.querySelector('a[href="/api/attachments/img-1"]')?.getAttribute('target')).toBe('_blank');
+  });
 });
 
 describe('Composer', () => {

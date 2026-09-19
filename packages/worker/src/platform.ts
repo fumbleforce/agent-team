@@ -25,6 +25,18 @@ export function resolveBinary(name: string, { env = process.env, platform = proc
   return null;
 }
 
+// Whether a command can be started here. Windows is answered by the search above; elsewhere the same walk over PATH, because the kernel
+// only searches when the program is started. What a worker reports about itself is built on this: names, never values.
+export function installed(name: string, { env = process.env, platform = process.platform }: Host = {}): boolean {
+  if (platform === 'win32') return resolveBinary(name, { env, platform }) !== null;
+  if (name.includes('/')) return existsSync(name);
+  return searchPath(env).split(':').some(directory => { try { return directory !== '' && statSync(path.posix.join(directory, name)).isFile(); } catch { return false; } });
+}
+export function readiness(engines: Record<string, { bin: string }>, variables: readonly string[], host: Host = {}): { engines: string[]; variables: string[] } {
+  const env = host.env ?? process.env;
+  return { engines: Object.keys(engines).filter(name => installed(engines[name]!.bin, host)), variables: variables.filter(name => Boolean(env[name])) };
+}
+
 // A `.cmd` launcher written by a package manager runs one script with the host's own runtime, or hands its arguments
 // to a native program beside it. Starting either directly avoids the shell, its quoting and its command-line limit.
 export function launcherTarget(file: string, read: (file: string) => string = file => readFileSync(file, 'utf8')): { file?: string; script?: string; flags: string[] } | null {
@@ -68,4 +80,38 @@ export function killTree(pid: number | undefined, signal: NodeJS.Signals = 'SIGT
     if (platform === 'win32') spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true });
     else process.kill(-pid, signal);
   } catch { /* already gone */ }
+}
+
+// Who a process id belongs to right now: the name of its program, and a token for when it started where the system tells cheaply.
+// A pid is reused after its process ends, so a pid alone never says that a process is still the one that was started.
+export interface ProcessIdentity { command: string; started: string | null }
+type Probe = (file: string, args: string[]) => Promise<string>;
+const probeCommand: Probe = (file, args) => new Promise((resolve, reject) => {
+  const child = spawn(file, args, { windowsHide: true, stdio: ['ignore', 'pipe', 'ignore'] });
+  let out = '';
+  const timer = setTimeout(() => { child.kill(); reject(new Error('timeout')); }, 5000);
+  child.stdout!.on('data', chunk => { out += String(chunk); });
+  child.on('error', error => { clearTimeout(timer); reject(error); });
+  child.on('close', () => { clearTimeout(timer); resolve(out); });
+});
+
+export async function processIdentity(pid: number, host: { platform?: NodeJS.Platform; run?: Probe; read?: (file: string) => string } = {}): Promise<ProcessIdentity | null> {
+  const { platform = process.platform, run = probeCommand, read = (file: string) => readFileSync(file, 'utf8') } = host;
+  if (!Number.isInteger(pid) || pid <= 0) return null;
+  try {
+    if (platform === 'linux') {
+      // Field 22 of the stat line is the start time in clock ticks since boot; the name in parentheses may itself hold spaces and parentheses.
+      const stat = read(`/proc/${pid}/stat`), fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      return { command: stat.slice(stat.indexOf('(') + 1, stat.lastIndexOf(')')), started: fields[19] ?? null };
+    }
+    if (platform === 'win32') {
+      // The task list names the image and nothing about its start; asking the management interface would cost seconds, so the name is what is compared.
+      const line = (await run('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'])).split(/\r?\n/).find(row => row.startsWith('"'));
+      const cells = line ? [...line.matchAll(/"([^"]*)"/g)].map(match => match[1]!) : [];
+      return cells[0] && Number(cells[1]) === pid ? { command: cells[0].toLowerCase(), started: null } : null;
+    }
+    const line = (await run('ps', ['-o', 'lstart=,comm=', '-p', String(pid)])).trim();
+    const match = /^(\w{3}\s+\w{3}\s+\d+\s+[\d:]+\s+\d{4})\s+(.+)$/.exec(line);
+    return match ? { command: path.posix.basename(match[2]!.trim()), started: match[1]!.replace(/\s+/g, ' ') } : null;
+  } catch { return null; }
 }

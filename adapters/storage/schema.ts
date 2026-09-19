@@ -17,7 +17,7 @@ export interface ProjectsTable { id: string; slug: string; name: string; kind: s
 export interface MilestonesTable { id: string; project_id: string; label: string; due_at: Ms | null; state: string }
 
 export interface TeamsTable { id: string; scope: string; project_id: string | null; name: string; template_slug: string | null; template_version: number | null }
-export interface AgentsTable { id: string; team_id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; provider_id: string | null; model: string | null; daily_cap_minor: number | null; is_pm: boolean; doing: string | null; sort: number; created_at: Ms; idle_at: Ms | null }
+export interface AgentsTable { id: string; team_id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; provider_id: string | null; model: string | null; daily_cap_minor: number | null; is_pm: boolean; doing: string | null; sort: number; created_at: Ms; idle_at: Ms | null; fallback_noticed_day: string | null }
 export interface AgentRolesTable { agent_id: string; role_slug: string }
 export interface ProvidersTable { id: string; name: string; kind: string; engine: string; billing: string; engine_config: Json; models: Json; limits: Json; status: string; status_detail: string | null; limited_until: Ms | null }
 
@@ -92,7 +92,7 @@ export interface IssuesTable { id: string; project_id: string; number: number; t
 export interface IssuesSchema { issues: IssuesTable }
 
 export interface ConnectionsTable { id: string; project_id: string | null; kind: string; name: string; category: string; mode: string; config: Json; status: string; status_detail: string | null; credential_ref: string | null; last_sync_at: Ms | null; created_at: Ms }
-export interface HandoffsTable { id: string; project_id: string; direction: string; source: string; title: string; summary: string; context: Json; attachment_id: string | null; target_task_id: string | null; state: string; picked_by_agent_id: string | null; created_by: string | null; created_at: Ms }
+export interface HandoffsTable { id: string; project_id: string; direction: string; source: string; title: string; summary: string; context: Json; attachment_id: string | null; target_task_id: string | null; target_type: string | null; target_id: string | null; state: string; picked_by_agent_id: string | null; created_by: string | null; created_at: Ms }
 
 export interface IntegrationsSchema { connections: ConnectionsTable; handoffs: HandoffsTable }
 
@@ -109,7 +109,7 @@ export interface SchedulesSchema { schedules: SchedulesTable }
 export interface EmbeddingsTable { doc_type: string; doc_id: string; model: string; vector: Json }
 
 export interface AgentSessionsTable { id: string; agent_id: string; task_id: string | null; purpose: string; engine: string | null; provider_id: string | null; model: string | null; engine_session_id: string | null; worker_id: string; state: string; context_tokens: number; turn_count: number; rotated_from: string | null; base_sha: string | null; created_at: Ms; last_turn_at: Ms }
-export interface StepArtifactsTable { turn_id: string; seq: number; kind: string; body: string; bytes: number; truncated: number; created_at: Ms }
+export interface StepArtifactsTable { turn_id: string; seq: number; kind: string; body: string; bytes: number; truncated: number; created_at: Ms; storage_key: string | null; mime: string | null }
 export interface SessionsSchema { agent_sessions: AgentSessionsTable; step_artifacts: StepArtifactsTable }
 export interface EmbeddingsSchema { embeddings: EmbeddingsTable }
 

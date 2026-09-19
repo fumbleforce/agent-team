@@ -156,6 +156,8 @@ export function createMcp(context: Context, deps: McpDeps) {
       // Like an issue a person raises, it goes to the PM, unless the PM filed it.
       const pm = await workspace.pm(turn.project_id);
       if (pm && pm !== turn.agent_id) await turns.enqueue({ agentId: pm, projectId: turn.project_id, kind: 'triage', threadId: created.threadId, dedupeKey: `triage:${created.threadId}` });
+      // @name and @role in the body are directed requests like anywhere else; naming nobody reachable is not an error here.
+      await mentions.fromText({ projectId: turn.project_id, threadId: created.threadId, message: { id: created.messageId }, author: { kind: 'agent', id: turn.agent_id }, body: input.body, turnId: turn.id }).catch(() => []);
       return created;
     },
     'issue.comment': async (turn, input) => {

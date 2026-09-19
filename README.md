@@ -20,6 +20,8 @@ To run a team on a checkout of your own:
 node bin/agent-team.ts up /path/to/checkout --engine claude
 ```
 
+You can also create a project in the app (the button under the project list) and connect its code host, task board, chat and documents from its Integrations page, which walks through each product's setup.
+
 `up` starts the coordinator and one worker on this machine, registers the checkout as a project with the default team, and prints a one-time link for creating the owner account. Everything is served from `http://127.0.0.1:4310`.
 
 ## Architecture
@@ -75,7 +77,8 @@ Provider names appear only under `adapters/`. `npm run lint` enforces that, the 
 
 ```sh
 npm test               # node --test over packages, adapters and scripts
-npm run check          # tsc --noEmit and the three lints
+npm run check          # type checks, Biome, the three lints and the web component tests
+npm run test:sim       # a seeded long run of the scheduler against its safety invariants
 AGENT_TEAM_TEST_STORAGE=postgres npm run test:postgres   # the package suite again, on the Postgres adapter (in-process, no server)
 npm run test:e2e       # Playwright smoke over the demo (needs `npx playwright install chromium` once)
 ```

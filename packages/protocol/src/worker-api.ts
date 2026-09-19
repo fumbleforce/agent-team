@@ -7,6 +7,10 @@ export const ClaimBody = z.object({
   workerId: WorkerId,
   free: z.object({ work: z.number().int().min(0), bounded: z.number().int().min(0), deliver: z.number().int().min(0) }).partial(),
   projects: z.array(z.string()).max(100),
+  // From the worker's own config file: a strict worker refuses a restricted turn its engine cannot enforce.
+  isolation: z.enum(['strict', 'isolated']).optional(),
+  // What this worker can run: engines whose command-line tool it found, and which credential variables are set. Names only, never values.
+  ready: z.object({ engines: z.array(z.string().max(40)).max(20), variables: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/)).max(40) }).optional(),
 });
 export const TraceStepInput = z.object({ seq: z.number().int().min(0), kind: TraceKind, title: z.string().min(1).max(400), detail: z.string().max(200).optional(), status: z.enum(['running', 'ok', 'error']) });
 export type TraceStepInput = z.infer<typeof TraceStepInput>;
@@ -27,6 +31,12 @@ export const FinishBody = LeaseBody.extend({
 // Posted the moment the engine names its session, so the next turn of the same agent and task can resume it.
 export const SessionBody = LeaseBody.extend({ sessionId: z.string().min(1).max(200), baseSha: z.string().regex(/^[0-9a-f]{40}$/).optional() });
 // Text a trace step carries beside its title: a git diff, run output or think text, already redacted and clipped by the worker.
-export const StepArtifactKind = z.enum(['diff', 'output', 'think']);
+export const StepArtifactKind = z.enum(['diff', 'output', 'think', 'image', 'stream']);
 export type StepArtifactKind = z.infer<typeof StepArtifactKind>;
-export const STEP_ARTIFACT_LIMITS: Record<StepArtifactKind, number> = { diff: 64 * 1024, output: 16 * 1024, think: 2 * 1024 };
+// The most a worker sends and the coordinator keeps, per kind. An image is a screenshot the engine's browser tool left behind and
+// a stream is the raw engine stream of the whole turn, archived once when the turn ends.
+export const STEP_ARTIFACT_LIMITS: Record<StepArtifactKind, number> = { diff: 64 * 1024, output: 1024 * 1024, think: 2 * 1024, image: 8 * 1024 * 1024, stream: 4 * 1024 * 1024 };
+// Text up to this size stays in the database row; anything larger, and everything that is not text, goes to the artifact store.
+export const STEP_ARTIFACT_INLINE_BYTES = 16 * 1024;
+// The raw stream belongs to the turn, not to a step: it is filed under this sequence number, which no step has.
+export const STREAM_ARTIFACT_SEQ = -1;

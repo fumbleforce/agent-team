@@ -4,7 +4,10 @@ const PROJECT = '/p/checkout-v2';
 const SCREENS: [string, string][] = [
   ['task board', `${PROJECT}/tasks`], ['issues', `${PROJECT}/issues`], ['product view', `${PROJECT}/product`], ['tests and checks', `${PROJECT}/tests`],
   ['workload', `${PROJECT}/workload`], ['knowledge', `${PROJECT}/knowledge`], ['team', `${PROJECT}/team`], ['integrations', `${PROJECT}/integrations`],
-  ['organization', '/org'], ['roles', '/roles'], ['proposals', '/proposals'], ['cost center', '/costs'],
+  ['organization', '/org'], ['roles', '/roles'], ['agent library', '/library'], ['proposals', '/proposals'], ['cost center', '/costs'],
+  // The studio: a project that is not software, with checks, its own connections and a tab of its own.
+  ...['tasks', 'issues', 'product', 'checks', 'workload', 'knowledge', 'team', 'integrations'].map((tab): [string, string] => [`studio ${tab}`, `/p/nordlys-studio/${tab}`]),
+  ['studio settings', '/settings/project/nordlys-studio'],
 ];
 
 // The demo signs its sample owner in without a form, so no test ever types a password.
@@ -178,4 +181,117 @@ test('a new project can be created from the sidebar, given a connection, and lef
   await expect(page).toHaveURL(/\/p\/pilot-\d+\/tasks/);
   await page.locator('header').getByRole('link', { name: 'Acme' }).click();
   await expect(page).toHaveURL(/\/org/);
+});
+
+test('a model provider is added through its guided setup, and an agent is created, given it, reordered and retired', async ({ page }, info) => {
+  const errors = await enter(page);
+  await page.goto(`${PROJECT}/team`);
+  await page.getByRole('button', { name: /add a model provider/i }).click();
+  const flow = page.getByRole('dialog');
+  for (const title of ['Claude subscription (Pro or Max)', 'Anthropic API (pay per use)', 'OpenRouter', 'Local models (Ollama)', 'Cursor agent']) await expect(flow.getByText(title, { exact: true })).toBeVisible();
+  await page.screenshot({ path: info.outputPath('provider-pick.png') });
+  await flow.getByText('OpenRouter', { exact: true }).click();
+  await expect(flow.getByText('On each worker machine', { exact: true })).toBeVisible();
+  await expect(flow.getByText(/No worker is running yet/)).toBeVisible();
+  await expect(flow.getByText(/lives on the worker machines as OPENROUTER_API_KEY; it is never entered here/)).toBeVisible();
+  await page.screenshot({ path: info.outputPath('provider-openrouter.png') });
+
+  // What was typed is answered in plain words, next to the field.
+  const models = flow.getByLabel('Models the team may use');
+  await expect(models).toHaveValue(/openrouter\//);
+  await models.fill('two words');
+  await flow.getByLabel(/Agents working at the same time/).fill('lots');
+  await flow.getByRole('button', { name: 'Add this provider' }).click();
+  await expect(flow.getByText(/each model goes on its own line, without spaces/)).toBeVisible();
+  await expect(flow.getByText(/should be a whole number between 1 and 64/)).toBeVisible();
+  await flow.locator('form').evaluate(form => { form.scrollTop = form.scrollHeight; });
+  await page.screenshot({ path: info.outputPath('provider-errors.png') });
+  await models.fill('openrouter/vendor/model-a\nopenrouter/vendor/model-b');
+  await flow.getByLabel(/Agents working at the same time/).fill('3');
+  await flow.getByRole('button', { name: 'Add this provider' }).click();
+  await expect(flow).toBeHidden();
+  const card = page.locator('article, div').filter({ hasText: /^OpenRouterPay per use/ }).first();
+  await expect(card).toBeVisible();
+  await expect(page.getByText('No agent uses it yet · 3 at a time')).toBeVisible();
+
+  // A new seat, in the product's words: name, what they do, persona, roles with their summaries, and what it runs on.
+  await page.getByRole('button', { name: /add an agent/i }).click();
+  const dialog = page.getByRole('dialog');
+  await dialog.getByLabel('Name').fill('Noor Hale');
+  await dialog.getByLabel(/What they do on the team/).fill('Release tester');
+  await dialog.getByLabel(/Personality and way of working/).fill('Careful. Tries the unhappy path first.');
+  await dialog.getByRole('checkbox').first().check();
+  await dialog.getByLabel('Runs on').selectOption({ label: 'OpenRouter · openrouter/vendor/model-b' });
+  await page.screenshot({ path: info.outputPath('agent-new.png') });
+  await dialog.getByRole('button', { name: 'Add to the team' }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page.getByLabel('Provider and model for Noor Hale')).toHaveValue(/model-b$/);
+  await expect(page.getByText('1 agent · 3 at a time')).toBeVisible();
+
+  // Up one seat, then out again: a provider in use cannot be removed, and says so.
+  await page.getByRole('button', { name: 'Move Noor Hale up' }).click();
+  await expect(page.getByRole('button', { name: 'Move Noor Hale down' })).toBeEnabled();
+  await page.screenshot({ path: info.outputPath('team-with-provider.png'), fullPage: true });
+  page.once('dialog', dialog => { void dialog.accept(); });
+  await page.getByRole('button', { name: 'Remove', exact: true }).first().click();
+  await expect(page.getByText(/Noor Hale still runs on OpenRouter/)).toBeVisible();
+  await page.getByRole('button', { name: 'More for Noor Hale' }).click();
+  await page.screenshot({ path: info.outputPath('seat-menu.png') });
+  page.once('dialog', dialog => { void dialog.accept(); });
+  await page.getByRole('menuitem', { name: 'Retire…' }).click();
+  await expect(page.getByLabel('Provider and model for Noor Hale')).toHaveCount(0);
+  page.once('dialog', dialog => { void dialog.accept(); });
+  await page.getByRole('button', { name: 'Remove', exact: true }).first().click();
+  await expect(page.getByText('No provider yet.', { exact: false })).toBeVisible();
+
+  // The agent library has its own small editor: what is kept there can be hired into any team.
+  await page.goto('/library');
+  await page.getByRole('button', { name: /add an agent to the library/i }).click();
+  const library = page.getByRole('dialog');
+  await library.getByLabel('Name').fill('Sol Reyes');
+  await library.getByLabel(/What they do/).fill('Security reviewer');
+  await library.getByRole('checkbox').nth(2).check();
+  await page.screenshot({ path: info.outputPath('library-new.png') });
+  await library.getByRole('button', { name: 'Add to the library' }).click();
+  await expect(library).toBeHidden();
+  await expect(page.getByText('Sol Reyes')).toBeVisible();
+  await page.screenshot({ path: info.outputPath('library.png') });
+  expect(errors).toEqual([]);
+});
+
+test('the studio is a project that is not software: checks, a tab of its own, handoffs in both directions', async ({ page }) => {
+  const errors = await enter(page);
+  await page.goto('/p/nordlys-studio/tasks');
+  const tabs = page.locator('header nav');
+  await expect(tabs.getByRole('link', { name: 'Checks' })).toBeVisible();
+  await expect(tabs.getByRole('link', { name: 'Tests' })).toHaveCount(0);
+  const calendar = tabs.getByRole('link', { name: /Editorial calendar/ });
+  await expect(calendar).toHaveAttribute('target', '_blank');
+  await expect(calendar).toHaveAttribute('href', 'https://calendar.nordlys.example/editorial');
+  await tabs.getByRole('link', { name: 'Checks' }).click();
+  await expect(page.getByText('Fact check').first()).toBeVisible();
+
+  // An incoming handoff goes onto a task; the outbound one waits until its result is written down.
+  await page.goto('/p/nordlys-studio/integrations');
+  const panel = page.getByRole('complementary', { name: 'Handoffs' });
+  await panel.getByRole('button', { name: 'Attach to a task' }).click();
+  await panel.getByLabel('Which task is this for?').selectOption({ label: 'NS-12 · Check the ferry timetable piece' });
+  await panel.getByRole('button', { name: 'Attach', exact: true }).click();
+  await expect(panel.getByText('Attached to NS-12 · Check the ferry timetable piece')).toBeVisible();
+  await expect(panel.getByText('Waiting for a result')).toBeVisible();
+  await panel.getByRole('button', { name: 'Record the result' }).click();
+  await panel.getByLabel('What came back?').fill('Proofs approved on the heavier stock.');
+  await panel.getByRole('button', { name: 'Save the result' }).click();
+  await expect(panel.getByText('Result: Proofs approved on the heavier stock.')).toBeVisible();
+  expect(errors).toEqual([]);
+});
+
+test('a project budget is set on the Costs page in the organization currency', async ({ page }) => {
+  const errors = await enter(page);
+  await page.goto('/costs');
+  await page.getByRole('button', { name: 'Set a budget' }).first().click();
+  await page.getByLabel(/Budget per month in EUR/).fill('250');
+  await page.getByRole('button', { name: 'Save', exact: true }).click();
+  await expect(page.getByText(/of €250 this month/)).toBeVisible();
+  expect(errors).toEqual([]);
 });

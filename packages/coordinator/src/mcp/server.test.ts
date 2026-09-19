@@ -205,6 +205,12 @@ test('triage records the decision on the issue; a retro turn submits its one not
     assert.equal(decided.error, false);
     assert.deepEqual({ ...await db.selectFrom('issues').select(['owner_agent_id', 'priority', 'state']).where('id', '=', issue.data.id).executeTakeFirstOrThrow() }, { owner_agent_id: agents.Ada, priority: 'high', state: 'open' });
     assert.deepEqual({ ...await db.selectFrom('decisions').select(['kind', 'outcome', 'needs_human']).where('id', '=', decided.data.decisionId).executeTakeFirstOrThrow() }, { kind: 'triage', outcome: 'accept', needs_human: false });
+    // Accepting made the work: one task for the owner, linked to the issue, with the owner woken to start on it.
+    const task = await db.selectFrom('tasks').select(['id', 'key', 'title', 'brief', 'source', 'state', 'assignee_agent_id', 'author_agent_id']).where('id', '=', decided.data.taskId).executeTakeFirstOrThrow();
+    assert.deepEqual({ ...task }, { id: decided.data.taskId, key: `ISSUE-${issue.data.number}`, title: 'Flaky retry test', brief: 'Fails one run in five.', source: 'internal', state: 'assigned', assignee_agent_id: agents.Ada, author_agent_id: agents.Maren });
+    assert.deepEqual((await db.selectFrom('links').select(['from_type', 'from_id', 'to_type', 'to_id', 'rel']).where('from_id', '=', issue.data.id).execute()).map(link => ({ ...link })), [{ from_type: 'issue', from_id: issue.data.id, to_type: 'task', to_id: task.id, rel: 'fixes' }]);
+    assert.deepEqual((await db.selectFrom('work_items').select(['agent_id', 'kind']).where('task_id', '=', task.id).execute()).map(item => ({ ...item })), [{ agent_id: agents.Ada, kind: 'work' }]);
+    assert.equal((await db.selectFrom('events').select('type').where('task_id', '=', task.id).where('type', '=', 'task.assigned').execute()).length, 1);
     assert.match((await call('triage.decide', { threadId: issue.data.threadId, outcome: 'decline', decision: 'Changed my mind.' })).text, /once per turn/);
   } finally { await triage.coordinator.close(); }
   const retro = await boot('retro');

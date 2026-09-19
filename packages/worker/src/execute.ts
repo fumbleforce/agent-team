@@ -8,7 +8,7 @@ export interface TurnResult { state: 'completed' | 'failed' | 'deferred' | 'inte
 const GRACE_MS = 5000;
 
 // Runs one engine process for one turn. The caller owns the lease; aborting the signal kills the process.
-export function executeTurn(options: { adapter: EngineAdapter; spec: TurnSpec; turnDir: string; env: NodeJS.ProcessEnv; timeoutMs: number; signal: AbortSignal; onSteps(steps: EngineStep[]): void; onSession?(sessionId: string): void; onSpawn?(pid: number | undefined): void }): Promise<TurnResult> {
+export function executeTurn(options: { adapter: EngineAdapter; spec: TurnSpec; turnDir: string; env: NodeJS.ProcessEnv; timeoutMs: number; signal: AbortSignal; onSteps(steps: EngineStep[]): void; onSession?(sessionId: string): void; onSpawn?(pid: number | undefined): void; /* Every line the engine writes, as it came: the raw stream the worker archives. */ onLine?(line: string): void }): Promise<TurnResult> {
   const { adapter, spec, turnDir, signal } = options;
   mkdirSync(turnDir, { recursive: true, mode: 0o700 });
   const prepared = adapter.prepare(spec, turnDir, adapter.environment(options.env));
@@ -26,6 +26,7 @@ export function executeTurn(options: { adapter: EngineAdapter; spec: TurnSpec; t
     child.stderr!.on('data', chunk => { stderrTail = (stderrTail + String(chunk)).slice(-8192); });
     let announced = false;
     createInterface({ input: child.stdout! }).on('line', line => {
+      options.onLine?.(line);
       const steps = adapter.parse(line, state);
       // The session id is passed on the moment the engine names it, before anything else can go wrong.
       if (state.sessionId && !announced) { announced = true; options.onSession?.(state.sessionId); }

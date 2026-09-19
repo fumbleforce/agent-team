@@ -7,23 +7,103 @@ import { Button, Card, Checkbox, ColumnChart, Field, Input, LinkButton, Meter, S
 interface Total { id: string; amountMinor: number; tokens: number }
 interface Summary { totalMinor: number; budgetMinor: number | null; daily: Total[]; byAgent: Total[]; byProject: Total[] }
 interface CostRules { dailyCap: { enabled: boolean; fallbackProvider: string | null }; budgetWarn: { enabled: boolean; percent: number }; windowPause: { enabled: boolean; percent: number } }
-interface RoutingRules { routes: { id: string; enabled: boolean; kinds: string[]; tags: string[]; provider: string; model: string | null }[] }
+interface Route { id: string; enabled: boolean; kinds: string[]; tags: string[]; provider: string; model: string | null }
+interface RoutingRules { routes: Route[] }
+interface Budget { scope: string; scopeId: string; amountMinor: number }
 interface RulesDoc<T> { version: number; doc: T }
-interface ProviderRow { id: string; name: string }
+interface ProviderRow { id: string; name: string; models: string[] }
+
+// The kinds of turn an agent takes, in the words a person would use for them.
+const KIND_WORDS: Record<string, string> = { work: 'work on a task', review: 'a review', feedback: 'feedback on a proposal', revise: 'revising a proposal', conclude: 'deciding a proposal', triage: 'sorting what was raised', reply: 'a reply to a message', retro: 'the weekly retro', ideate: 'ideas for what to do next', publish: 'publishing a change', deliver: 'delivering a change', capture: 'a capture of the product' };
+const list = (words: string[]) => (words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`);
+// A rule read aloud: when it applies, then where the turn runs.
+const ruleWords = (route: Route) => `When a turn is ${route.kinds.length ? list(route.kinds.map(kind => KIND_WORDS[kind] ?? kind)) : 'of any kind'}${route.tags.length ? ` and the task is tagged ${list(route.tags)}` : ''}`;
+
+// Routing rules in plain words: list, switch on and off, remove, and add one from four choices.
+function RoutingEditor({ routes, providers, canEdit, onSave }: { routes: Route[]; providers: ProviderRow[]; canEdit: boolean; onSave(routes: Route[]): void }) {
+  const [kind, setKind] = useState(''), [tag, setTag] = useState(''), [providerId, setProviderId] = useState(''), [model, setModel] = useState('');
+  const provider = providers.find(item => item.id === providerId);
+  const named = (ref: string) => providers.find(item => item.id === ref || item.name === ref)?.name ?? 'a provider that is no longer set up';
+  const add = () => {
+    if (!provider) return;
+    onSave([...routes, { id: crypto.randomUUID().slice(0, 8), enabled: true, kinds: kind ? [kind] : [], tags: tag.trim() ? [tag.trim().toLowerCase()] : [], provider: provider.id, model: model || null }]);
+    setKind(''); setTag(''); setProviderId(''); setModel('');
+  };
+  return (
+    <div className="flex flex-col gap-2.5">
+      <div className="flex flex-col gap-0.5"><Text size="small" weight="semibold">Which provider runs what</Text><Text size="caption" tone="muted">Normally a turn runs on its agent’s own provider. A rule sends some turns elsewhere, for example reviews to a cheaper model. Rules are read from the top and the first one that fits is used; work that has started on a task stays where it started.</Text></div>
+      {routes.map(route => (
+        <div key={route.id} className="flex items-start gap-2">
+          <div className="min-w-0 grow"><Checkbox disabled={!canEdit} checked={route.enabled} label={ruleWords(route)} note={`use ${named(route.provider)}${route.model ? ` with the model ${route.model}` : ''}${route.enabled ? '' : ' · switched off'}`} onChange={event => onSave(routes.map(other => (other.id === route.id ? { ...other, enabled: event.target.checked } : other)))} /></div>
+          {canEdit && <Button size="sm" variant="ghost" onClick={() => onSave(routes.filter(other => other.id !== route.id))}>Remove</Button>}
+        </div>
+      ))}
+      {routes.length === 0 && <Text size="small" tone="muted">No rules yet: every turn runs on its agent’s own provider.</Text>}
+      {canEdit && providers.length > 0 && (
+        <form className="grid grid-cols-1 items-start gap-2.5 md:grid-cols-2 xl:grid-cols-5" onSubmit={event => { event.preventDefault(); add(); }}>
+          <Field label="When a turn is" help="Leave on any kind to match every turn.">
+            <Select value={kind} onChange={event => setKind(event.target.value)}><option value="">any kind of turn</option>{Object.entries(KIND_WORDS).map(([value, words]) => <option key={value} value={value}>{words}</option>)}</Select>
+          </Field>
+          <Field label="And the task is tagged" help="Optional. The tag shown on the task’s card, such as billing."><Input value={tag} maxLength={40} placeholder="any tag" onChange={event => setTag(event.target.value)} /></Field>
+          <Field label="Use this provider">
+            <Select value={providerId} required onChange={event => { setProviderId(event.target.value); setModel(''); }}><option value="">Choose a provider</option>{providers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</Select>
+          </Field>
+          <Field label="With this model">
+            <Select value={model} disabled={!provider} onChange={event => setModel(event.target.value)}><option value="">the provider’s usual model</option>{provider?.models.map(item => <option key={item} value={item}>{item}</option>)}</Select>
+          </Field>
+          <div className="pt-6"><Button type="submit" disabled={!provider}>Add rule</Button></div>
+        </form>
+      )}
+      {canEdit && providers.length === 0 && <Text size="caption" tone="muted">Set up a provider first; a rule needs somewhere to send turns.</Text>}
+    </div>
+  );
+}
+
+// A monthly budget per project, next to what the project and its sub-projects have spent this month.
+function ProjectBudgets({ projects, budgets, spent, money, currency, canEdit, onSave }: { projects: ProjectNode[]; budgets: Budget[]; spent(project: ProjectNode): number; money(minor: number): string; currency: string; canEdit: boolean; onSave(projectId: string, amountMinor: number | null): void }) {
+  const [editing, setEditing] = useState<string | null>(null), [amount, setAmount] = useState('');
+  return (
+    <Card className="flex flex-col gap-2.5">
+      <SectionLabel>Project budgets</SectionLabel>
+      <Text size="caption" tone="muted">A project’s budget covers its sub-projects too. When both a project budget and the organization budget apply, the fuller one decides. Near the limit the team is warned once in its discussion; at the limit only replies to people and work that unblocks others keep running.</Text>
+      {projects.map(project => {
+        const budget = budgets.find(item => item.scope === 'project' && item.scopeId === project.id) ?? null, total = spent(project);
+        return (
+          <div key={project.id} className="flex flex-wrap items-center gap-x-3 gap-y-1.5">
+            <Text size="small" weight="medium" truncate className="w-44 shrink-0">{project.name}</Text>
+            {editing === project.id ? (
+              <form className="flex grow flex-wrap items-end gap-2" onSubmit={event => { event.preventDefault(); onSave(project.id, amount.trim() === '' ? null : Math.round(Number(amount) * 100)); setEditing(null); }}>
+                <Field label={`Budget per month in ${currency}`} help="Leave empty for no budget."><Input type="number" min={0} step="0.01" value={amount} autoFocus onChange={event => setAmount(event.target.value)} /></Field>
+                <Button type="submit" variant="primary">Save</Button>
+                <Button onClick={() => setEditing(null)}>Cancel</Button>
+              </form>
+            ) : (
+              <>
+                <div className="flex min-w-40 grow basis-0 items-center gap-2">{budget ? <Meter thin tone="review" value={budget.amountMinor > 0 ? total / budget.amountMinor : 1} /> : null}</div>
+                <Text size="caption" tone="muted" className="whitespace-nowrap">{budget ? `${money(total)} of ${money(budget.amountMinor)} this month` : `${money(total)} this month · no budget`}</Text>
+                {canEdit && <Button size="sm" variant="ghost" onClick={() => { setEditing(project.id); setAmount(budget ? String(budget.amountMinor / 100) : ''); }}>{budget ? 'Change' : 'Set a budget'}</Button>}
+              </>
+            )}
+          </div>
+        );
+      })}
+      {projects.length === 0 && <Text size="small" tone="muted">No projects yet.</Text>}
+    </Card>
+  );
+}
 
 const compact = (tokens: number) => (tokens >= 1e6 ? `${(tokens / 1e6).toFixed(1)}M` : tokens >= 1e3 ? `${Math.round(tokens / 1e3)}k` : String(tokens));
 
 export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectNode[]; agents: Agent[] }) {
   const summary = useResource<Summary>('/api/costs');
   const costRules = useResource<RulesDoc<CostRules>>('/api/rules/cost_rules'), routing = useResource<RulesDoc<RoutingRules>>('/api/rules/routing_rules');
-  const providers = useResource<{ providers: ProviderRow[] }>('/api/providers');
+  const providers = useResource<{ providers: ProviderRow[] }>('/api/providers'), budgets = useResource<{ budgets: Budget[] }>('/api/budgets');
   const [budget, setBudget] = useState<string | null>(null), [problem, setProblem] = useState<string | null>(null);
   const money = (minor: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: me.org?.currency ?? 'EUR', maximumFractionDigits: minor >= 10000 ? 0 : 2 }).format(minor / 100);
   const names = new Map<string, string>(projects.flatMap(project => [[project.id, project.name] as const, ...project.subprojects.map(sub => [sub.id, sub.name] as const)]));
   const data = summary.data, rules = costRules.data;
   const top = (rows: Total[]) => Math.max(1, ...rows.map(row => row.amountMinor));
   const admin = me.user.orgRole === 'owner' || me.user.orgRole === 'admin';
-  const providerName = (ref: string) => providers.data?.providers.find(provider => provider.id === ref || provider.name === ref)?.name ?? ref;
 
   // Every change is one save against the version last read; a lost race reloads and says so.
   const save = <T,>(kind: string, current: RulesDoc<T>, doc: T, reload: () => void) => api(`/api/rules/${kind}`, doc, { 'if-match': String(current.version) })
@@ -31,6 +111,8 @@ export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectN
   const saveCost = (change: Partial<CostRules>) => { if (rules) void save('cost_rules', rules, { ...rules.doc, ...change }, costRules.reload); };
   const saveBudget = () => api('/api/budgets', { scope: 'org', amountMinor: budget === null || budget.trim() === '' ? null : Math.round(Number(budget) * 100) })
     .then(() => { setBudget(null); setProblem(null); summary.reload(); }, (error: ApiError) => setProblem(error.message));
+  const saveProjectBudget = (scopeId: string, amountMinor: number | null) => { void api('/api/budgets', { scope: 'project', scopeId, amountMinor }).then(() => { setProblem(null); budgets.reload(); }, (error: ApiError) => setProblem(error.message)); };
+  const spentBy = (project: ProjectNode) => { const ids = [project.id, ...project.subprojects.map(sub => sub.id)]; return data?.byProject.filter(row => ids.includes(row.id)).reduce((sum, row) => sum + row.amountMinor, 0) ?? 0; };
 
   return (
     <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} teamName={null} links={[]} />}>
@@ -81,19 +163,10 @@ export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectN
                   <Field label="Pause at, % of window"><Input key={rules.version} type="number" min={1} max={100} disabled={!admin || !rules.doc.windowPause.enabled} defaultValue={rules.doc.windowPause.percent} onBlur={event => { const percent = Number(event.target.value); if (percent !== rules.doc.windowPause.percent) saveCost({ windowPause: { ...rules.doc.windowPause, percent } }); }} /></Field>
                 </div>
               </div>
-              {routing.data && routing.data.doc.routes.length > 0 && (
-                <div className="flex flex-col gap-2">
-                  <Text size="caption" tone="muted">Routing, first match wins</Text>
-                  {routing.data.doc.routes.map(route => (
-                    <Checkbox key={route.id} disabled={!admin} checked={route.enabled}
-                      label={`${route.kinds.length ? route.kinds.join(', ') : 'Every turn'}${route.tags.length ? ` tagged ${route.tags.join(', ')}` : ''}`}
-                      note={`runs on ${providerName(route.provider)}${route.model ? ` · ${route.model}` : ''}`}
-                      onChange={event => { const current = routing.data; if (current) void save('routing_rules', current, { routes: current.doc.routes.map(other => (other.id === route.id ? { ...other, enabled: event.target.checked } : other)) }, routing.reload); }} />
-                  ))}
-                </div>
-              )}
+              {routing.data && <RoutingEditor routes={routing.data.doc.routes} providers={providers.data?.providers ?? []} canEdit={admin} onSave={routes => { const current = routing.data; if (current) void save('routing_rules', current, { routes }, routing.reload); }} />}
             </Card>
           )}
+          <ProjectBudgets projects={projects} budgets={budgets.data?.budgets ?? []} spent={spentBy} money={money} currency={me.org?.currency ?? 'EUR'} canEdit={admin} onSave={saveProjectBudget} />
           <div className="grid min-h-0 grow grid-cols-1 gap-3 xl:grid-cols-3">
             <Card className="flex flex-col gap-2.5">
               <SectionLabel>Spend per day</SectionLabel>

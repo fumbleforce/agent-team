@@ -136,9 +136,9 @@ export const TOOLS = {
     permission: null, turnKinds: ['feedback'], mutating: true, rateClass: 'once',
   }),
   'triage.decide': tool({
-    description: 'Record what happens with what was raised in this thread: answer, accept with an owner, decline, duplicate, or escalate to the owner of the project. On an issue this is its decision.',
+    description: 'Record what happens with what was raised in this thread: answer, accept with an owner (an accepted issue becomes a task for that owner, linked to the issue), decline, duplicate, or escalate to the owner of the project. On an issue this is its decision.',
     input: z.object({ threadId: z.string(), outcome: z.enum(['answer', 'accept', 'decline', 'duplicate', 'escalate']), decision: Words(120), ownerAgentId: z.string().optional(), priority: z.enum(['low', 'normal', 'high', 'urgent']).optional() }),
-    output: z.object({ decisionId: z.string(), messageId: z.string() }),
+    output: z.object({ decisionId: z.string(), messageId: z.string(), taskId: z.string().nullable().optional() }),
     permission: null, turnKinds: ['triage'], mutating: true, rateClass: 'once',
   }),
   'retro.submit': tool({

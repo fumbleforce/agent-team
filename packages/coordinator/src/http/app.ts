@@ -14,6 +14,7 @@ import { registerOrgRoutes } from './orgRoutes.ts';
 import { registerRuleRoutes } from './ruleRoutes.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
 import { mountSetupRoutes } from './setupRoutes.ts';
+import { mountProviderRoutes } from './providerSetupRoutes.ts';
 import { SCM_KINDS } from '../../../../adapters/scm/index.ts';
 import { TRACKER_KINDS } from '../../../../adapters/tracker/index.ts';
 import { createWorkspace } from '../repos/workspace.ts';
@@ -30,9 +31,10 @@ import { createProposals } from '../runtime/proposals.ts';
 import { createIssues } from '../repos/issues.ts';
 import { createCaptures } from '../runtime/captures.ts';
 import { createSessions } from '../runtime/sessions.ts';
+import { createTraceStore } from '../runtime/traceStore.ts';
 import { createVersionedDocs } from '../repos/versionedDocs.ts';
-import { ConnectionBody, createIntegrations, HandoffBody } from '../repos/integrations.ts';
-import { ClaimBody, FinishBody, LeaseBody, SessionBody, StepArtifactKind, CreateIssueBody, MemoryActionBody, ProviderBody, RegisterProjectBody, CreateProjectBody, SeatProviderBody, StepsBody, WritePageBody } from '@agent-team/protocol';
+import { AttachHandoffBody, ConnectionBody, createIntegrations, HandoffBody, HandoffResultBody } from '../repos/integrations.ts';
+import { ClaimBody, FinishBody, LeaseBody, SessionBody, StepArtifactKind, STREAM_ARTIFACT_SEQ, CreateIssueBody, MemoryActionBody, RegisterProjectBody, CreateProjectBody, SeatProviderBody, StepsBody, WritePageBody } from '@agent-team/protocol';
 
 type Env = { Variables: { viewer: Viewer } };
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.json': 'application/json', '.png': 'image/png' };
@@ -53,6 +55,7 @@ export function createApp(context: Context) {
   const issues = createIssues(context, path.join(context.dataDir, 'blobs'));
   const captures = createCaptures(context, turns, issues);
   const sessions = createSessions(context);
+  const traceStore = createTraceStore(context);
   const docs = createVersionedDocs(context);
   const integrations = createIntegrations(context, turns);
   const mentions = createMentions(context, turns);
@@ -96,7 +99,7 @@ export function createApp(context: Context) {
   app.post('/worker/claim', async c => {
     const claim = await body(c, ClaimBody);
     // Every poll records the worker as seen, with what it serves: the Team page and the launcher read it.
-    const seen = { name: claim.workerId, lanes: JSON.stringify(claim.free), projects: JSON.stringify(claim.projects), last_seen_at: context.now() };
+    const seen = { name: claim.workerId, lanes: JSON.stringify(claim.free), projects: JSON.stringify(claim.projects), last_seen_at: context.now(), ...(claim.ready ? { providers: JSON.stringify(claim.ready) } : {}), ...(claim.isolation ? { isolation: claim.isolation } : {}) };
     await context.storage.db.insertInto('workers').values({ id: claim.workerId, isolation: 'isolated', providers: '[]', ...seen }).onConflict(oc => oc.column('id').doUpdateSet(seen)).execute();
     return c.json({ turn: await turns.claim(claim) });
   });
@@ -113,9 +116,10 @@ export function createApp(context: Context) {
   app.post('/worker/turns/:id/artifacts', async c => {
     // A trace step's text (a git diff, run output, think text) arrives the same way, named by the step it belongs to.
     const stepKind = StepArtifactKind.safeParse(c.req.header('x-step-kind')), seq = Number(c.req.header('x-step-seq'));
-    if (stepKind.success && Number.isInteger(seq) && seq >= 0) {
-      const text = await c.req.text();
-      context.events.published(await context.storage.transaction(async tx => sessions.stepArtifact(tx, await turns.leased(tx, c.req.param('id'), c.req.header('x-worker-id') ?? '', c.req.header('x-lease-token') ?? ''), { seq, kind: stepKind.data, body: text, truncated: c.req.header('x-step-truncated') === '1' })));
+    if (stepKind.success && Number.isInteger(seq) && (stepKind.data === 'stream' ? seq === STREAM_ARTIFACT_SEQ : seq >= 0)) {
+      // Large bodies, screenshots and the raw stream go to the artifact store; the row keeps the reference and the size.
+      const stored = await traceStore.put(tx => turns.leased(tx, c.req.param('id'), c.req.header('x-worker-id') ?? '', c.req.header('x-lease-token') ?? ''), c.req.param('id'), { seq, kind: stepKind.data, bytes: new Uint8Array(await c.req.arrayBuffer()), mime: (c.req.header('content-type') ?? '').split(';')[0]!.trim(), truncated: c.req.header('x-step-truncated') === '1' });
+      if (!stored) throw new HttpError(415, 'artifact', 'A step image is a PNG, JPEG or WebP within the size limit');
       return c.json({ ok: true });
     }
     const latency = Number(c.req.header('x-latency-ms'));
@@ -201,7 +205,10 @@ export function createApp(context: Context) {
     const parent = project.parent_id ? await context.storage.db.selectFrom('projects').select(['slug', 'name', 'team_id']).where('id', '=', project.parent_id).executeTakeFirst() : null;
     const teamId = project.team_id ?? parent?.team_id ?? null;
     const discussion = await workspace.discussion(project.id).catch(() => null);
+    // Tools the team serves itself, set in the project's settings; only web addresses ever reach a link.
+    const settings = await docs.get('project_settings', { type: 'project', id: root }, 'settings').catch(() => null);
     return c.json({
+      customTabs: (settings?.doc.customTabs ?? []).filter(tab => /^https?:\/\//i.test(tab.url)),
       project: { id: project.id, slug: project.slug, name: project.name, kind: project.kind, status: project.status, parent: parent ? { slug: parent.slug, name: parent.name } : null },
       roster: teamId ? await workspace.roster(teamId) : [],
       board: await workspace.board(project.id),
@@ -244,7 +251,10 @@ export function createApp(context: Context) {
   app.post('/api/threads/:id/messages', async c => {
     const thread = await threadFor(c, 'project.contribute');
     const input = await body(c, PostMessageBody);
-    const id = await workspace.postMessage({ kind: 'user', id: c.get('viewer').userId }, thread, input);
+    // Attached images are named on the message itself, so every reader of the thread gets them with it.
+    const attachmentIds = [...new Set(input.attachmentIds)];
+    if (attachmentIds.length && (await context.storage.db.selectFrom('attachments').select('id').where('id', 'in', attachmentIds).execute()).length !== attachmentIds.length) throw new HttpError(400, 'invalid', 'An attached image was not found; attach it again');
+    const id = await workspace.postMessage({ kind: 'user', id: c.get('viewer').userId }, thread, { body: input.body, kind: input.kind, ...(attachmentIds.length ? { payload: { attachmentIds } } : {}) });
     // @agent and @role are directed requests under the same limits as an agent's; whoever is named answers instead of the PM.
     const named = thread.project_id && thread.visibility === 'team' ? await mentions.fromText({ projectId: thread.project_id, threadId: thread.id, message: { id }, author: { kind: 'user', id: c.get('viewer').userId }, body: input.body }) : [];
     // What a human raises in a team thread otherwise goes to the PM, who answers or opens a deliberation.
@@ -291,9 +301,11 @@ export function createApp(context: Context) {
     const ids = roster.map(agent => agent.id);
     const items = ids.length ? await context.storage.db.selectFrom('work_items').leftJoin('tasks', 'tasks.id', 'work_items.task_id').select(['work_items.id', 'work_items.agent_id', 'work_items.kind', 'work_items.lane', 'work_items.state', 'work_items.defer_reason', 'tasks.key', 'tasks.title']).where('work_items.agent_id', 'in', ids).where('work_items.state', 'in', ['queued', 'leased']).orderBy('work_items.priority_class').orderBy('work_items.created_at').execute() : [];
     const limited = new Map((await context.storage.db.selectFrom('providers').select(['id', 'limited_until']).where('limited_until', '>', context.now()).execute()).map(row => [row.id, Number(row.limited_until)]));
+    // Agents that went over their daily cap today and were moved to the fallback provider.
+    const fellBack = new Set(ids.length ? (await context.storage.db.selectFrom('agents').select('id').where('id', 'in', ids).where('fallback_noticed_day', '=', new Date(context.now()).toISOString().slice(0, 10)).execute()).map(row => row.id) : []);
     const lanes = roster.map(seat => {
       // An agent whose provider hit its usage limit shows provider-limited until the reset.
-      const agent = { ...seat, limitedUntil: seat.provider_id ? limited.get(seat.provider_id) ?? null : null };
+      const agent = { ...seat, limitedUntil: seat.provider_id ? limited.get(seat.provider_id) ?? null : null, onFallbackToday: fellBack.has(seat.id) };
       const mine = items.filter(item => item.agent_id === agent.id);
       const view = (item: (typeof items)[number]) => ({ id: item.id, kind: item.kind, key: item.key, title: item.title ?? item.kind, deferReason: item.defer_reason });
       return { agent, now: mine.filter(item => item.state === 'leased').map(view), queued: mine.filter(item => item.state === 'queued' && item.lane === 'work').map(view), owed: mine.filter(item => item.state === 'queued' && item.lane !== 'work').map(view) };
@@ -334,7 +346,10 @@ export function createApp(context: Context) {
   app.get('/api/projects/:slug/issues', async c => { const { project } = await projectFor(c, 'project.read'); const page = pageOf(c), rows = await issues.list(project.id, { after: page.after, limit: page.limit + 1 }); return c.json({ issues: rows.slice(0, page.limit), next: rows.length > page.limit ? rows[page.limit - 1]!.number : null, seq: await context.events.head() }); });
   app.post('/api/projects/:slug/issues', async c => {
     const { project } = await projectFor(c, 'project.contribute');
-    const created = await issues.create(c.get('viewer').userId, project.id, await body(c, CreateIssueBody));
+    const input = await body(c, CreateIssueBody);
+    const created = await issues.create(c.get('viewer').userId, project.id, input);
+    // Whoever the body names with @ is asked directly, under the same limits as in any thread; the PM still triages the issue.
+    await mentions.fromText({ projectId: project.id, threadId: created.threadId, message: { id: created.messageId }, author: { kind: 'user', id: c.get('viewer').userId }, body: input.body });
     const pm = await workspace.pm(project.id);
     if (pm) await turns.enqueue({ agentId: pm, projectId: project.id, kind: 'triage', threadId: created.threadId, dedupeKey: `triage:${created.threadId}` });
     return c.json(created);
@@ -389,9 +404,11 @@ export function createApp(context: Context) {
   app.post('/api/projects/:slug/handoffs/:id/hand', async c => {
     const { project } = await projectFor(c, 'project.contribute');
     const discussion = await workspace.discussion(project.id).catch(() => null);
-    await integrations.handToTeam(c.get('viewer').userId, c.req.param('id'), await workspace.pm(project.id), discussion?.id ?? null);
+    await integrations.handToTeam(c.get('viewer').userId, project.id, c.req.param('id'), await workspace.pm(project.id), discussion?.id ?? null);
     return c.json({ ok: true });
   });
+  app.post('/api/projects/:slug/handoffs/:id/attach', async c => { const { project } = await projectFor(c, 'project.contribute'); await integrations.attachToTask(c.get('viewer').userId, project.id, c.req.param('id'), (await body(c, AttachHandoffBody)).taskId); return c.json({ ok: true }); });
+  app.post('/api/projects/:slug/handoffs/:id/result', async c => { const { project } = await projectFor(c, 'project.contribute'); await integrations.recordResult(c.get('viewer').userId, project.id, c.req.param('id'), (await body(c, HandoffResultBody)).result); return c.json({ ok: true }); });
 
   // Roles are organization-wide documents: everyone may read them, admins change them.
   app.get('/api/roles', async c => {
@@ -443,18 +460,7 @@ export function createApp(context: Context) {
   });
 
   // Providers are organization-wide: which engine serves them, how they bill, and which models an agent may be given.
-  app.get('/api/providers', async c => {
-    const rows = await context.storage.db.selectFrom('providers').selectAll().orderBy('name').execute();
-    const seats = await context.storage.db.selectFrom('agents').select('provider_id').select(eb => eb.fn.countAll<number>().as('n')).where('status', '!=', 'retired').groupBy('provider_id').execute();
-    return c.json({ providers: rows.map(row => ({ id: row.id, name: row.name, kind: row.kind, engine: row.engine, models: JSON.parse(row.models) as string[], status: row.status, statusDetail: row.status_detail, agents: Number(seats.find(seat => seat.provider_id === row.id)?.n ?? 0) })) });
-  });
-  app.post('/api/providers', async c => {
-    allow(c, 'org.members');
-    const input = await body(c, ProviderBody);
-    const id = newId(context.now());
-    await context.storage.db.insertInto('providers').values({ id, name: input.name, kind: input.kind, engine: input.engine, billing: input.kind, engine_config: '{}', models: JSON.stringify(input.models), limits: JSON.stringify({ maxConcurrentTurns: input.maxConcurrentTurns }), status: 'connected', status_detail: null }).execute();
-    return c.json({ id });
-  });
+  mountProviderRoutes(app, context);
   app.post('/api/agents/:id/provider', async c => {
     const agent = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'projects.id as project_id']).where('agents.id', '=', c.req.param('id')).executeTakeFirst();
     if (!agent) throw new HttpError(404, 'not_found', 'Agent not found');
@@ -483,6 +489,18 @@ export function createApp(context: Context) {
     return c.json({ agent, turns, steps, seq: await context.events.head() });
   });
 
+  // The machines that run turns, as each last described itself on a claim. Projects a viewer cannot see are left out of a worker's list.
+  app.get('/api/workers', async c => {
+    const viewer = c.get('viewer'), rows = await context.storage.db.selectFrom('workers').selectAll().orderBy('name').execute();
+    const list = <T>(json: string, pick: (value: unknown) => T): T => { try { return pick(JSON.parse(json)); } catch { return pick(null); } };
+    return c.json({ workers: rows.map(row => ({
+      id: row.id, name: row.name, lastSeenAt: Number(row.last_seen_at), isolation: row.isolation === 'strict' ? 'strict' : 'isolated',
+      lanes: list(row.lanes, value => (value && typeof value === 'object' ? value : {}) as Record<string, number>),
+      projects: list(row.projects, value => (Array.isArray(value) ? value : []).filter((id): id is string => typeof id === 'string' && canSeeProject(viewer, id))),
+      engines: list(row.providers, value => { const engines = (value as { engines?: unknown } | null)?.engines; return Array.isArray(engines) ? engines.filter((name): name is string => typeof name === 'string') : []; }),
+    })), seq: await context.events.head() });
+  });
+
   // The trace of one turn. The list says which steps carry an artifact; `?seq=` returns that step's diff, output or think text.
   app.get('/api/turns/:id/steps', async c => {
     const db = context.storage.db;
@@ -491,13 +509,18 @@ export function createApp(context: Context) {
     allow(c, 'project.read', turn.project_id);
     const seq = c.req.query('seq');
     if (seq !== undefined) {
-      const artifact = await db.selectFrom('step_artifacts').select(['seq', 'kind', 'body', 'bytes', 'truncated']).where('turn_id', '=', turn.id).where('seq', '=', Number(seq) || 0).executeTakeFirst();
+      const artifact = await traceStore.read(turn.id, Number(seq) || 0);
       if (!artifact) throw new HttpError(404, 'not_found', 'This step has no artifact');
-      return c.json({ artifact: { ...artifact, truncated: Number(artifact.truncated) === 1 } });
+      const { data, mime, ...meta } = artifact;
+      // An image, or any body asked for as it is, is served as bytes; text otherwise travels in the JSON, wherever it was stored.
+      if (c.req.query('raw') !== undefined) return c.body(data as Uint8Array<ArrayBuffer>, 200, { 'content-type': mime ?? 'text/plain; charset=utf-8', 'cache-control': 'private, max-age=3600', 'x-content-type-options': 'nosniff', 'content-security-policy': "default-src 'none'; sandbox" });
+      return c.json({ artifact: { ...meta, mime, body: mime ? '' : new TextDecoder().decode(data) } });
     }
     const steps = await db.selectFrom('trace_steps').leftJoin('step_artifacts', join => join.onRef('step_artifacts.turn_id', '=', 'trace_steps.turn_id').onRef('step_artifacts.seq', '=', 'trace_steps.seq'))
       .select(['trace_steps.seq', 'trace_steps.at', 'trace_steps.kind', 'trace_steps.title', 'trace_steps.detail', 'trace_steps.status', 'step_artifacts.kind as artifact_kind', 'step_artifacts.bytes as artifact_bytes']).where('trace_steps.turn_id', '=', turn.id).orderBy('trace_steps.seq').limit(400).execute();
-    return c.json({ turn, steps, seq: await context.events.head() });
+    // The raw engine stream is filed under the turn, not under a step.
+    const stream = await db.selectFrom('step_artifacts').select(['bytes', 'truncated']).where('turn_id', '=', turn.id).where('seq', '=', STREAM_ARTIFACT_SEQ).executeTakeFirst();
+    return c.json({ turn, steps, stream: stream ? { seq: STREAM_ARTIFACT_SEQ, bytes: Number(stream.bytes), truncated: Number(stream.truncated) === 1 } : null, seq: await context.events.head() });
   });
 
   registerOrgRoutes(app, context, { workspace, docs, machineTokens });

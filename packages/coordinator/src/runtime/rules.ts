@@ -6,7 +6,7 @@ export const DEFAULT_RULES: Rules = { cost: CostRules.parse({}), routing: Routin
 
 export type Notice =
   | { type: 'budget.threshold'; projectId: string; scope: string; scopeId: string; percent: number; threshold: number }
-  | { type: 'cap.fallback'; agentId: string; providerId: string };
+  | { type: 'cap.fallback'; agentId: string; projectId: string; providerId: string };
 export interface Verdict { allow: boolean; route?: RouteChoice; deferReason?: DeferReason; notices: Notice[] }
 
 // A rule names a provider by id or by its display name.
@@ -40,7 +40,7 @@ export function evaluate(draft: TurnDraft, snapshot: Snapshot): Verdict {
     const fallback = cost.dailyCap.fallbackProvider ? named(snapshot, cost.dailyCap.fallbackProvider) : undefined;
     if (!fallback || fallback.id === route.providerId) return { allow: false, deferReason: 'over-cap', notices };
     route = { providerId: fallback.id, model: fallback.models[0] ?? null };
-    notices.push({ type: 'cap.fallback', agentId: draft.agentId, providerId: fallback.id });
+    notices.push({ type: 'cap.fallback', agentId: draft.agentId, projectId: draft.projectId, providerId: fallback.id });
   }
 
   // A paused project keeps its agents only while the provider's usage window has room.
