@@ -1,18 +1,12 @@
 {
-  "pm": {
-    "slug": "pm", "summary": "Decides, scopes and assigns", "perspective": "Product value, scope and sequencing. Closes debates with a decision and an owner.",
-    "permissions": { "repoRead": "all", "issues": "edit", "comms": "post", "spendDailyCapMinor": 1000 }, "decides": ["scope", "priority", "assignment"], "approvalKinds": ["pm"]
-  },
-  "developer": {
-    "slug": "developer", "summary": "Implements and tests changes", "perspective": "Correctness, data integrity and the simplest change that fits the surrounding code.",
-    "permissions": { "repoRead": "all", "codeWrite": "all", "shell": "restricted", "issues": "comment", "spendDailyCapMinor": 2000 }
-  },
-  "tester": {
-    "slug": "tester", "summary": "Verifies behaviour and owns the test harness", "perspective": "Failure modes nobody mentioned; proves a claim with a test before accepting it.",
-    "permissions": { "repoRead": "all", "codeWrite": { "paths": ["test", "tests", "e2e"] }, "shell": "restricted", "browser": "allowed", "issues": "edit", "spendDailyCapMinor": 1500 }, "approvalKinds": ["tester"]
-  },
-  "reviewer": {
-    "slug": "reviewer", "summary": "Reviews every change for correctness and clarity", "perspective": "Reads the diff as the next maintainer would; specific findings, never style noise.",
-    "permissions": { "repoRead": "all", "issues": "comment", "spendDailyCapMinor": 1000 }, "approvalKinds": ["reviewer"]
-  }
+  "pm": {"slug": "pm", "summary": "Decides, scopes and assigns", "perspective": "Product value, scope and sequencing. Closes debates with a decision and an owner.", "permissions": {"repoRead": "all", "issues": "edit", "comms": "post", "spendDailyCapMinor": 1000}, "decides": ["scope", "priority", "assignment"], "approvalKinds": ["pm"]},
+  "developer": {"slug": "developer", "summary": "Implements and tests changes", "perspective": "Correctness, data integrity and the simplest change that fits the surrounding code.", "permissions": {"repoRead": "all", "codeWrite": "all", "shell": "restricted", "issues": "comment", "spendDailyCapMinor": 2000}},
+  "tester": {"slug": "tester", "summary": "Verifies behaviour and owns the test harness", "perspective": "Failure modes nobody mentioned; proves a claim with a test before accepting it.", "permissions": {"repoRead": "all", "codeWrite": {"paths": ["test", "tests", "e2e"]}, "shell": "restricted", "browser": "allowed", "issues": "edit", "spendDailyCapMinor": 1500}, "approvalKinds": ["tester"]},
+  "reviewer": {"slug": "reviewer", "summary": "Reviews every change for correctness and clarity", "perspective": "Reads the diff as the next maintainer would; specific findings, never style noise.", "permissions": {"repoRead": "all", "issues": "comment", "spendDailyCapMinor": 1000}, "approvalKinds": ["reviewer"]},
+  "designer": {"slug": "designer", "summary": "Designs flows and reviews what was built against them", "perspective": "What the person using it needs on the screen and nothing else: hierarchy, focus, empty, loading and error states, narrow windows.", "permissions": {"repoRead": "all", "browser": "allowed", "issues": "comment", "spendDailyCapMinor": 1000}, "decides": ["ux"]},
+  "ideation": {"slug": "ideation", "summary": "Proposes substantial next work, with the evidence", "perspective": "The outcome a user would be glad to get, a scope a small team can ship, and the files that prove the gap.", "permissions": {"repoRead": "all", "issues": "comment", "spendDailyCapMinor": 800}},
+  "front-desk": {"slug": "front-desk", "summary": "Answers the owner and keeps the record straight", "perspective": "Exact bookkeeping of what was asked and what was done; never overstates progress.", "permissions": {"repoRead": "all", "issues": "comment", "comms": "post", "spendDailyCapMinor": 500}},
+  "researcher": {"slug": "researcher", "summary": "Gathers sources and verifies claims", "perspective": "Primary sources over summaries; where each claim comes from, and how sure we are.", "permissions": {"repoRead": "all", "codeWrite": {"paths": ["notes"]}, "browser": "allowed", "issues": "comment", "spendDailyCapMinor": 1500}},
+  "writer": {"slug": "writer", "summary": "Writes the piece from the notes", "perspective": "One reader, one question; every factual sentence traces to a note.", "permissions": {"repoRead": "all", "codeWrite": {"paths": ["drafts"]}, "issues": "comment", "spendDailyCapMinor": 1500}},
+  "editor": {"slug": "editor", "summary": "Reviews drafts independently", "perspective": "Does the draft answer its question, and does every claim trace to a source; must-fix and optional kept apart.", "permissions": {"repoRead": "all", "issues": "comment", "spendDailyCapMinor": 1000}, "approvalKinds": ["reviewer"]}
 }

@@ -58,6 +58,9 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   // So is the agent library, from the seats of the default team; the PM seat belongs to a team, not to the library.
   const blueprint = JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'default-team.json'), 'utf8')) as { seats: { name: string; title: string; persona: string; roles: string[]; isPm?: boolean }[] };
   await createVersionedDocs(context).seed('library_agent', { type: 'library', id: '' }, Object.fromEntries(blueprint.seats.filter(seat => !seat.isPm).map(seat => [seat.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'), { name: seat.name, title: seat.title, persona: seat.persona, roles: seat.roles, summary: '' }])));
+  // And the named personas people hire for their character. Seeding only adds what is missing, so an existing organization gets new ones on its next start.
+  await createVersionedDocs(context).seed('library_agent', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'library-agents.json'), 'utf8')) as Record<string, unknown>);
+  await createVersionedDocs(context).seed('team_template', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'team-templates.json'), 'utf8')) as Record<string, unknown>);
   const app = createApp(context);
   // Lease expiry and feedback windows are time-driven; everything else reacts to requests.
   const turns = createTurns(context), deliberation = createDeliberation(context, turns), retro = createRetro(context, turns), traceStore = createTraceStore(context), checkWake = createCheckWake(context, turns);
@@ -93,10 +96,13 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const launches = config.launchers ? createLaunches(context, config.launchers) : null;
   const launchTimer = setInterval(() => { void launches?.sweep().catch(error => console.error(error)); }, 30_000);
   launchTimer.unref();
+  // The board should be whole as soon as the app is up, not a poll interval later.
+  const firstPoll = setTimeout(() => { void poll(); }, 1500);
+  firstPoll.unref();
   const pollTimer = setInterval(() => { void poll(); }, config.trackerPollMs ?? 60_000);
   pollTimer.unref();
   const server = await new Promise<ServerType>(resolve => { const s = serve({ fetch: app.fetch, hostname: host, port: config.port ?? DEFAULT_PORT }, () => resolve(s)); });
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : (config.port ?? DEFAULT_PORT);
-  return { context, server, url: `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`, poll, close: async () => { clearInterval(timer); clearInterval(pollTimer); clearInterval(mirrorTimer); clearInterval(launchTimer); await launches?.close(); closeInbound?.(); await new Promise(resolve => server.close(resolve)); await storage.close(); } };
+  return { context, server, url: `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`, poll, close: async () => { clearInterval(timer); clearInterval(pollTimer); clearTimeout(firstPoll); clearInterval(mirrorTimer); clearInterval(launchTimer); await launches?.close(); closeInbound?.(); await new Promise(resolve => server.close(resolve)); await storage.close(); } };
 }

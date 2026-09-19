@@ -54,7 +54,7 @@ export function TeamExtras({ slug, roster, onChanged }: { slug: string; roster: 
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
             {library.data?.items.map(item => (
               <Card key={item.slug} tone="raised" pad="sm" className="flex items-center gap-2.5">
-                <span className="flex min-w-0 grow flex-col"><Text weight="semibold">{item.doc.name}</Text><Text size="caption" tone="muted" truncate>{item.doc.title || item.doc.summary}{item.doc.roles.some(role => role.toLowerCase() !== (item.doc.title ?? '').toLowerCase()) ? ` · also ${item.doc.roles.filter(role => role.toLowerCase() !== (item.doc.title ?? '').toLowerCase()).join(', ')}` : ''}</Text></span>
+                <span className="flex min-w-0 grow flex-col"><Text weight="semibold">{item.doc.name}</Text><Text size="caption" tone="muted" truncate>{[item.doc.title, item.doc.summary].filter(Boolean).join(' · ')}</Text></span>
                 <Button size="sm" disabled={hire.busy} onClick={() => { void hire.run(() => api(`/api/projects/${slug}/team/hire`, { library: item.slug }, hireKey.headers())).then(ok => { if (ok) { hireKey.renew(); onChanged(); } }); }}>Hire</Button>
               </Card>
             ))}
