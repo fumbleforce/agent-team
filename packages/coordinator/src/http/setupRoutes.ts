@@ -14,7 +14,12 @@ interface Deps { context: Context; integrations: Integrations; env?: NodeJS.Proc
 export function mountSetupRoutes(app: Hono<any>, deps: Deps) {
   const { context, integrations } = deps, env = deps.env ?? process.env, request = deps.fetch ?? fetch;
   const variableOf = (entry: SetupEntry, values: Values) => entry.credential?.variable ?? (entry.kind === 'mcp' && values.name ? customCredentialVariable(values.name) : null);
-  const tokenOf = (entry: SetupEntry) => [entry.credential?.variable, ...(entry.credential?.alternatives ?? [])].map(name => (name ? env[name] : undefined)).find(Boolean) ?? null;
+  // A variable set on purpose, or whatever else the product's adapter can find on this machine (an existing login).
+  const credentialOf = (entry: SetupEntry): { token: string; source: string } | null => {
+    const named = [entry.credential?.variable, ...(entry.credential?.alternatives ?? [])].map(name => (name ? env[name] : undefined)).find(Boolean);
+    return named ? { token: named, source: 'a variable on this machine' } : entry.findCredential?.(env) ?? null;
+  };
+  const tokenOf = (entry: SetupEntry) => credentialOf(entry)?.token ?? null;
 
   function checked(input: z.infer<typeof SetupBody>): { entry: SetupEntry; values: Values } {
     const entry = setupEntry(input.kind);
@@ -30,7 +35,23 @@ export function mountSetupRoutes(app: Hono<any>, deps: Deps) {
     return { entry, values };
   }
 
-  app.get('/api/integrations/catalog', c => c.json({ entries: CATALOG.map(({ test, ...entry }) => ({ ...entry, testable: Boolean(test) && entry.credential?.runsOn === 'coordinator', credentialPresent: entry.credential?.runsOn === 'coordinator' ? tokenOf(entry) !== null : null })) }));
+  // What the app is told about an entry: never its functions, and for a credential only whether one was found and where.
+  const described = (entry: SetupEntry) => {
+    const { test, findCredential: _find, ...rest } = entry;
+    const here = rest.credential?.runsOn === 'coordinator', found = here ? credentialOf(entry) : null;
+    return { ...rest, testable: Boolean(test) && here, credentialPresent: here ? found !== null : null, credentialSource: found?.source ?? null, prefill: {} as Values };
+  };
+  app.get('/api/integrations/catalog', c => c.json({ entries: CATALOG.map(described) }));
+  // The same catalog for one project: what was already entered for another entry of the same product is offered again.
+  app.get('/api/projects/:slug/integrations/catalog', async c => {
+    const { project } = await deps.projectFor(c, 'project.read');
+    const connections = await integrations.connections(project.id);
+    return c.json({ entries: CATALOG.map(entry => {
+      const shared = entry.sharesWith ? connections.find(item => item.kind === entry.sharesWith) : undefined;
+      const prefill = Object.fromEntries(entry.fields.flatMap(field => { const value = shared?.config[field.key]; return typeof value === 'string' && value ? [[field.key, value]] : []; }));
+      return { ...described(entry), prefill };
+    }) });
+  });
 
   app.post('/api/projects/:slug/integrations/test', async c => {
     await deps.projectFor(c, 'project.configure');
@@ -57,7 +78,8 @@ export function mountSetupRoutes(app: Hono<any>, deps: Deps) {
     }
     await integrations.replace(deps.userId(c), project.id, entry.target === 'connection' ? null : entry.target, {
       kind: entry.kind === 'mcp' ? 'mcp' : entry.kind, name: entry.kind === 'mcp' ? values.name! : entry.title, category: entry.category, mode: entry.mode, credentialRef: variable, config: { ...values, target: entry.target },
-      waiting: entry.credential?.runsOn === 'coordinator' && tokenOf(entry) === null ? `Waiting for ${entry.credential.variable} on the coordinator` : entry.credential?.runsOn === 'workers' ? `Uses ${entry.credential.variable} on the workers` : null,
+      // What the card says under the name: where the sign-in comes from, or what is still missing, in words.
+      waiting: entry.credential?.runsOn === 'coordinator' ? (credentialOf(entry) ? `Signed in through ${credentialOf(entry)!.source}` : `Waiting for ${entry.credential.variable} on the coordinator`) : entry.credential?.runsOn === 'workers' ? `Each worker signs in with its own ${entry.credential.label}` : null,
       connected: entry.credential?.runsOn !== 'coordinator' || tokenOf(entry) !== null,
     });
     return c.json({ ok: true });

@@ -1,5 +1,7 @@
 // What a person sees when connecting something in the app: one entry per integration this toolkit supports, with the
 // words, fields and checks of that product. The platform renders these generically and never names a provider itself.
+import { githubCredential } from '../tracker/githubCredential.ts';
+
 type Fetch = typeof fetch;
 export type Values = Record<string, string>;
 export interface SetupField { key: string; label: string; placeholder?: string; help?: string; required?: boolean; pattern?: string }
@@ -15,6 +17,10 @@ export interface SetupEntry {
   credential: { variable: string; alternatives?: string[]; label: string; runsOn: 'coordinator' | 'workers' } | null;
   // Where the settings go: a plain connection, or the project's tracker or code host.
   target: 'connection' | 'tracker' | 'scm';
+  // Another entry of the same product. What was entered for it is offered here too, so nobody types the same repository twice.
+  sharesWith?: string;
+  // A way to find the credential on this machine besides the variable: an existing login, say. Returns the token or null.
+  findCredential?(env: NodeJS.ProcessEnv): { token: string; source: string } | null;
   // The adapter's own kind when it differs from the entry's (one product can serve as code host and as tracker).
   adapterKind?: string;
   mode: string;
@@ -41,7 +47,8 @@ export const CATALOG: SetupEntry[] = [
     fields: [{ ...REPOSITORY, label: 'Project path', placeholder: 'group/project' }, BASE], credential: { variable: 'GITLAB_TOKEN', label: 'GitLab token', runsOn: 'workers' },
   },
   {
-    kind: 'github-issues', adapterKind: 'github', title: 'GitHub Issues', category: 'issue-boards', target: 'tracker', mode: 'two-way',
+    kind: 'github-issues', adapterKind: 'github', sharesWith: 'github', title: 'GitHub Issues', category: 'issue-boards', target: 'tracker', mode: 'two-way',
+    findCredential: env => { const found = githubCredential(env); return found ? { token: found.token, source: found.source === 'cli' ? 'the GitHub command-line login on this machine' : 'a variable on this machine' } : null; },
     summary: 'Use a repository\'s issues as the task board. Issues appear as tasks within a minute.',
     does: ['Every issue becomes a task; closed issues move to Done', 'Labels "agent:in-progress" and "agent:in-review" move a card between columns'],
     steps: ['On GitHub open Settings → Developer settings → Personal access tokens → Fine-grained tokens, choose Generate new token, select the repository and give it the repository permission Issues: read and write.', 'On the coordinator machine set GITHUB_ISSUES_TOKEN to that token and restart the coordinator. If GH_TOKEN is already set there it is used instead.'],

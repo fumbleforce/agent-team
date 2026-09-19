@@ -78,7 +78,7 @@ export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me;
                 {group.items.map(item => (
                   <Card key={item.id} tone="raised" pad="sm" className="flex flex-col gap-1">
                     <div className="flex items-center gap-2"><StatusDot tone={TONE[item.status as keyof typeof TONE] ?? 'off'} /><Text weight="semibold">{item.name}</Text><Text size="caption" tone="muted" className="ml-auto whitespace-nowrap">{item.mode}</Text></div>
-                    <div className="flex items-center gap-2"><Text size="caption" tone="muted" mono truncate className="grow">{item.statusDetail ?? item.credentialRef ?? ''}</Text>{item.projectScoped && <Button size="sm" variant="ghost" onClick={() => { if (window.confirm(`Remove ${item.name}?`)) void api(`/api/projects/${slug}/integrations/${item.id}/remove`, {}).then(view.reload); }}>Remove</Button>}</div>
+                    <div className="flex items-center gap-2"><Text size="caption" tone="muted" truncate className="grow">{item.statusDetail ?? ''}</Text>{item.projectScoped && <Button size="sm" variant="ghost" onClick={() => { if (window.confirm(`Remove ${item.name}?`)) void api(`/api/projects/${slug}/integrations/${item.id}/remove`, {}).then(view.reload); }}>Remove</Button>}</div>
                   </Card>
                 ))}
               </div>

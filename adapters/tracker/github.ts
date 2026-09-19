@@ -1,4 +1,5 @@
 import { MAX_COMMENT, PROGRESS_LABELS, type FullTrackerClient, type TrackerIssue, type TrackerOptions, type TrackerState } from './contract.ts';
+import { githubCredential } from './githubCredential.ts';
 
 // GitHub Issues as the board: issues are addressed as GH-<number>. There are only open and closed, so progress is carried by
 // labels, and the ideation states of the manifest name labels too. Response bodies and fetch errors are never surfaced:
@@ -14,8 +15,8 @@ const labelNames = (raw: RawIssue) => (raw.labels ?? []).map(label => (typeof la
 
 export function githubTracker(options: TrackerOptions = {}): FullTrackerClient {
   const env = options.env ?? process.env, request = options.fetch ?? fetch;
-  const key = env.GITHUB_ISSUES_TOKEN || env.GH_TOKEN;
-  if (!key?.trim() || /\s/.test(key)) throw new Error('GITHUB_ISSUES_TOKEN (or GH_TOKEN) is required');
+  const key = githubCredential(env)?.token;
+  if (!key) throw new Error('GITHUB_ISSUES_TOKEN (or GH_TOKEN, or a GitHub command-line login) is required');
 
   async function call<T>(method: string, route: string, body?: unknown): Promise<T> {
     const response = await request(`${API}${route}`, { method, headers: { authorization: `Bearer ${key}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-team', 'x-github-api-version': '2022-11-28', ...(body === undefined ? {} : { 'content-type': 'application/json' }) }, ...(body === undefined ? {} : { body: JSON.stringify(body) }), signal: AbortSignal.timeout(30_000) }).catch(() => { throw new Error('GitHub network request failed'); });

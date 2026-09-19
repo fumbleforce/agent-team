@@ -25,19 +25,24 @@ test('a project is created in the app and its task board is set up through the g
     assert.match((await call('/api/projects/web-shop/integrations/setup', { cookie, body: { kind: 'linear', values: {} } })).json.error.fields.projectId, /is needed/);
 
     // Without the credential on this machine the check says exactly what to set, and connecting still works.
-    delete process.env.GITHUB_ISSUES_TOKEN; delete process.env.GH_TOKEN;
+    delete process.env.GITHUB_ISSUES_TOKEN; delete process.env.GH_TOKEN; process.env.AGENT_TEAM_NO_CLI_LOGIN = '1';
     const checked = await call('/api/projects/web-shop/integrations/test', { cookie, body: { kind: 'github-issues', values: { repository: 'acme/shop' } } });
     assert.deepEqual([checked.json.ok, /GITHUB_ISSUES_TOKEN is not set on the coordinator yet/.test(checked.json.message)], [false, true]);
     assert.equal((await call('/api/projects/web-shop/integrations/setup', { cookie, body: { kind: 'github-issues', values: { repository: 'acme/shop' } } })).status, 200);
     const manifest = async () => JSON.parse((await db.selectFrom('projects').select('manifest').where('slug', '=', 'web-shop').executeTakeFirstOrThrow()).manifest);
     assert.deepEqual((await manifest()).tracker, { kind: 'github', repository: 'acme/shop' });
 
+    // The same product connected once is not asked about twice: the repository entered for the code host is offered for its issues.
+    await call('/api/projects/web-shop/integrations/setup', { cookie, body: { kind: 'github', values: { repository: 'acme/shop' } } });
+    const offered = ((await call('/api/projects/web-shop/integrations/catalog', { cookie })).json.entries as { kind: string; prefill: Record<string, string>; findCredential?: unknown }[]).find(entry => entry.kind === 'github-issues')!;
+    assert.deepEqual([offered.prefill, offered.findCredential], [{ repository: 'acme/shop' }, undefined]);
+
     // A project has one task board: choosing another replaces it, and removing it clears the manifest too.
     await call('/api/projects/web-shop/integrations/setup', { cookie, body: { kind: 'linear', values: { projectId: '9d6c1c2e-0000-4000-8000-000000000000' } } });
     const connections = (await call('/api/projects/web-shop/integrations', { cookie })).json.connections as { id: string; name: string; statusDetail: string }[];
-    assert.deepEqual(connections.map(item => [item.name, item.statusDetail]), [['Linear', 'Waiting for LINEAR_API_KEY on the coordinator']]);
+    assert.deepEqual(connections.map(item => [item.name, item.statusDetail]), [['GitHub', 'Each worker signs in with its own GitHub token'], ['Linear', 'Waiting for LINEAR_API_KEY on the coordinator']], 'one code host and one task board');
     assert.equal((await manifest()).tracker.kind, 'linear');
-    await call(`/api/projects/web-shop/integrations/${connections[0]!.id}/remove`, { cookie, body: {} });
+    await call(`/api/projects/web-shop/integrations/${connections.find(item => item.name === 'Linear')!.id}/remove`, { cookie, body: {} });
     assert.equal((await manifest()).tracker, undefined);
   } finally { await coordinator.close(); }
 });
