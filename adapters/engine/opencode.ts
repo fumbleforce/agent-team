@@ -19,7 +19,7 @@ export const opencode: EngineAdapter = {
     const readOnly = spec.toolProfile !== 'write';
     // Tool policy and the platform server travel in a private per-turn config file; the token is never in argv or the environment.
     const config = {
-      agent: { turn: { mode: 'primary', prompt: spec.systemPrompt, permission: { edit: readOnly ? 'deny' : 'allow', bash: spec.toolProfile === 'none' || readOnly ? 'deny' : { '*': 'allow', '*git push*': 'deny', '*git reset --hard*': 'deny' }, task: 'deny' } } },
+      agent: { turn: { mode: 'primary', prompt: spec.systemPrompt, permission: { edit: readOnly ? 'deny' : 'allow', bash: spec.toolProfile === 'none' || (readOnly && spec.toolProfile !== 'verify') ? 'deny' : { '*': 'allow', '*git push*': 'deny', '*git reset --hard*': 'deny' }, task: 'deny' } } },
       mcp: spec.platform ? { platform: { type: 'remote', url: spec.platform.url, enabled: true, headers: { Authorization: `Bearer ${readFileSync(spec.platform.tokenFile, 'utf8').trim()}` } } } : {},
     };
     return {

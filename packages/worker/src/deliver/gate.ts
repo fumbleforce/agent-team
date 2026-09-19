@@ -10,6 +10,8 @@ export interface ScmGate {
   parseChangeUrl(url: string): { repository: string } | null;
   view(exec: Exec, context: GateContext): Promise<Change>;
   checks(exec: Exec, context: GateContext, options: { includeProtected: boolean }): Promise<{ all: { name: string; passed: boolean }[]; protected: { name: string; passed: boolean }[] | null }>;
+  // Takes the change out of draft. The platform publishes drafts; this is the one place a change stops being one.
+  ready(exec: Exec, context: GateContext): Promise<unknown>;
   merge(exec: Exec, context: GateContext, headSha: string): Promise<unknown>;
 }
 export interface GateContext { url: string; repository: string; cwd: string }
@@ -77,6 +79,13 @@ export async function deliver(input: { config: DeliveryConfig; scm: ScmGate; app
 
     headSha = await local();
     validateApprovals(await input.approvals(), headSha, roles);
+    // Work is published as a draft. With every required approval valid at this head, and only then, the change is marked ready;
+    // a draft that is not exactly the change that was approved is left alone and fails the identity check below.
+    const first = await scm.view(exec, context);
+    if (first.isDraft === true && first.url === prUrl && first.state === 'OPEN' && first.baseRef === config.baseBranch && first.headRef === branch && first.headSha === headSha && first.sameRepository === true) {
+      abortCheck();
+      await scm.ready(exec, context);
+    }
     validateChange(await scm.view(exec, context));
     await checks();
     // Fresh reads immediately before the single mutation.

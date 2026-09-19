@@ -12,7 +12,7 @@ const TASK_RULES: Record<TurnKind, string> = {
   conclude: 'Decide the proposal below by calling deliberation.conclude. Name the outcome, state the decision in plain words with owners, and address every against or blocking block in dissent. Escalate when it changes scope, milestones, budget or the team beyond what you may decide.',
   triage: 'Someone raised the message below. Decide what it is: answer it in the thread with discussion.post, or open a deliberation when the team should weigh in. Keep it short.',
   reply: 'Answer the message below in the thread with discussion.post. Be factual and brief.',
-  review: 'Review the task below at its current head. Report findings precisely.',
+  review: 'Review the task below. Your folder is a throwaway checkout of exactly the revision under review: read it, run its tests if you can run commands, and change nothing. Then record your verdict with the task.review tool (you do not need the commit id) and report findings precisely.',
   retro: 'The weekly retro is open in the thread below, with the figures of this week. Post one note with discussion.post: what went well in a line, and at most three problems with their evidence and a suggestion. If you are the PM, read the notes already there and turn at most three of them into team proposals with proposal.create.',
   ideate: 'The backlog has room. Propose at most three substantial next pieces of work by calling ideas.propose once: each with its problem, benefit, scope, success criteria, size, evidence and why now. Do not repeat what is listed below. Each idea becomes an issue that waits for the owner; nothing is built before the owner approves it.',
   publish: '', deliver: '', capture: '',

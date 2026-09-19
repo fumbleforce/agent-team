@@ -141,7 +141,12 @@ export function createMcp(context: Context, deps: McpDeps) {
     'proposal.vote': async (turn, input) => proposals.vote(turn, input.proposalId, input.vote),
     'test.report': async (turn, input) => checks.record({ projectId: turn.project_id, suite: input.suite, kind: input.kind, branch: input.branch, sha: input.sha ?? null, source: 'agent', report: { passed: input.passed, failed: input.failed, skipped: input.skipped, total: input.passed + input.failed + input.skipped, durationMs: input.durationMs, failing: input.failing.map(item => ({ name: item.name, status: 'failed' as const, message: item.message ?? null })), quarantined: input.quarantined.map(name => ({ name, status: 'skipped' as const, message: null })) } }),
     // From an agent's turn a verdict is pending until the worker reports the head it verified.
-    'task.review': async (turn, input) => reviews.record(turn, input, { verification: 'worker' }),
+    // The reviewer does not have to know the commit id: the turn was given the head under review, and the worker reports the head it really ran at.
+    'task.review': async (turn, input) => {
+      const head = input.headSha ?? (turn.task_id ? (await db.selectFrom('tasks').select('head_sha').where('id', '=', turn.task_id).executeTakeFirst())?.head_sha : null);
+      if (!head) throw new ToolError('This task has no published head to review yet');
+      return reviews.record(turn, { ...input, headSha: head }, { verification: 'worker' });
+    },
     'deliberation.propose': async (turn, input) => { const { threadId, ...proposal } = input; await threadInProject(turn, threadId); return deliberation.propose(turn, threadId, proposal); },
     'deliberation.feedback': async (turn, input) => { await deliberation.feedback(turn, input.deliberationId, input.block); return RECORDED; },
     'deliberation.stand': async (turn, input) => { await deliberation.stand(turn, input.deliberationId, input.reason); return RECORDED; },

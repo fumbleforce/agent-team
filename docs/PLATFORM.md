@@ -33,12 +33,21 @@ On 2026-09-19 one read-only reply turn ran against the installed Claude Code CLI
 - An engine that could not be started crashed the worker. It is now a failed turn with a known state.
 - Input tokens left out what arrived through the cache, so a turn reported a handful of tokens.
 
-The other three engine adapters are written from vendor documentation and pass the contract suite on recorded events; none has been run. A write turn, a resumed session and a delivery have not been run against a real model.
+The other three engine adapters are written from vendor documentation and pass the contract suite on recorded events; none has been run.
 
 ## Deviations from the spec
 
 - **Typed API client (sections 7 and 14.4).** The spec names Hono's `hc<AppType>` client. That client infers routes only from an app built as one chained expression. The coordinator registers its routes, more than a hundred of them, as separate `app.get(...)` statements across five files, so `AppType` carries no routes, and adopting the client would mean rewriting every route file for a type-level gain. Instead the responses of the most used resources (project view with its board, thread messages, costs summary, team, and harness health) are Zod schemas in `packages/protocol/src/views.ts`. The coordinator builds those responses against the inferred types (`satisfies`, or the return type of the function that builds them), the web app imports the same types through `packages/web/src/data/client.ts` instead of writing interfaces, and route tests parse real responses with the schemas. Other screens still declare their response shapes locally; they move to `views.ts` as they are touched.
 - **Publishing (sections 1 and 16).** The root package is what gets published; the workspace packages are not published on their own. `prepack` builds the web app and runs `scripts/build-dist.ts`: `tsc -p tsconfig.build.json` emits every server source to `dist/`, mirroring the repository; the `@agent-team/*` specifiers in the emitted files are rewritten to relative paths inside `dist/`; and the blueprints, the built web app and the hosting templates are copied in, so `dist/` is a complete root for `packageRoot()`. `bin` points at `dist/bin/agent-team.js` only inside the tarball (`postpack` points it back), so a checkout keeps running `bin/agent-team.ts`. `npm run test:pack` packs, installs the tarball into an empty project and runs the usage, `migrate` and `demo` from `node_modules`. The package is still marked `private`; removing that is the owner's call.
+
+## Real runs on a real engine and a real code host
+
+On 2026-09-19, with Claude Code 2.1.233 and a private scratch repository on GitHub (`scripts/pilot-work.ts`, `scripts/pilot-delivery.ts`; both spend model usage and are never part of the test suite):
+
+- A work turn wrote code in its task's worktree with the secret file excluded, its diffs came from git, it reported through the platform tool and committed on the task's branch. A second turn on the same task resumed the same engine session and acted on the changed brief.
+- A full delivery: the branch was pushed and a draft pull request opened; tester, reviewer and PM each reviewed in their own detached checkout of that commit (the tester ran the tests) and recorded a verdict; the gate marked the draft ready, waited for the required check, merged it and confirmed the merge commit.
+
+What these runs found and fixed: sessions never resumed, because rotation used a turn's cumulative input tokens instead of the size of the conversation; a resumed session was not told that the task's brief changed or what people wrote on it; reviewers could not record a verdict, because the tool demanded a commit id that a read-only session cannot look up, and could not run tests at all; nothing ever took an approved change out of draft, so the gate always refused it.
 
 ## Checked against the real services, read-only
 
@@ -51,7 +60,7 @@ The wording of every guided setup (integrations, model providers, single sign-on
 
 ## Open
 
-- A pilot on a real project: a write turn through to a merged change, on both source hosts.
+- The same real delivery on GitLab, and a pilot on a real project rather than a scratch one.
 - A hosted Postgres (Supabase) with a real connection string.
 - Real credentials for chat, the document folder and an identity provider.
 - Deploying Fly and AWS from this code: both create billable resources and need the owner's go-ahead. The launched host's boot script has only been syntax-checked.

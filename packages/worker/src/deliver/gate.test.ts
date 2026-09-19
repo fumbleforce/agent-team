@@ -19,11 +19,12 @@ function worktree() {
 }
 
 function scm(head: string, overrides: Partial<{ change: Partial<Change>; checks: { name: string; passed: boolean }[]; protectedChecks: { name: string; passed: boolean }[] | null }> = {}) {
-  const state = { merged: false, merges: 0 };
+  const state = { merged: false, merges: 0, readied: 0, draft: overrides.change?.isDraft === true };
   const gate: ScmGate = {
     name: 'fake', changeNoun: 'PR',
     parseChangeUrl: url => (url === PR ? { repository: 'acme/app' } : null),
-    view: async () => ({ url: PR, state: state.merged ? 'MERGED' : 'OPEN', isDraft: false, baseRef: 'main', headRef: 'agents/gh-7', headSha: head, sameRepository: true, mergeable: true, mergeCommit: state.merged ? 'c'.repeat(40) : null, ...overrides.change }),
+    view: async () => ({ url: PR, state: state.merged ? 'MERGED' : 'OPEN', isDraft: false, baseRef: 'main', headRef: 'agents/gh-7', headSha: head, sameRepository: true, mergeable: true, mergeCommit: state.merged ? 'c'.repeat(40) : null, ...overrides.change, ...(overrides.change?.isDraft === true ? { isDraft: state.draft } : {}) }),
+    ready: async () => { state.readied++; state.draft = false; },
     checks: async () => ({ all: overrides.checks ?? [{ name: 'verify', passed: true }], protected: overrides.protectedChecks === undefined ? [] : overrides.protectedChecks }),
     merge: async () => { state.merges++; state.merged = true; },
   };
@@ -67,7 +68,8 @@ test('every gate blocks without merging', async () => {
   assert.match(await attempt({ checks: [] }), /checks/);
   assert.match(await attempt({ protectedChecks: null }), /checks/);
   assert.match(await attempt({ protectedChecks: [{ name: 'other', passed: false }] }), /checks/);
-  assert.match(await attempt({ change: { isDraft: true } }), /gate failed/);
+  // An approved draft is marked ready by the gate (next test); a draft on another branch is not the approved change and blocks.
+  assert.match(await attempt({ change: { isDraft: true, headRef: 'agents/other' } }), /gate failed/);
   assert.match(await attempt({ change: { headSha: 'd'.repeat(40) } }), /gate failed/);
   assert.match(await attempt({ change: { baseRef: 'release' } }), /gate failed/);
   assert.match(await attempt({}, { prUrl: 'https://example.test/other/repo/pull/1' }), /configured repository/);
@@ -83,4 +85,23 @@ test('an unconfirmed merge is reported as attempted and blocked', async () => {
   gate.merge = async () => {};
   const result = await deliver({ config, scm: gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
   assert.deepEqual([result.state, result.mergeAttempted], ['blocked', true]);
+});
+
+test('an approved draft is marked ready and merged; a draft that is not the approved change is left alone', async () => {
+  const { root, head } = worktree();
+  const draft = scm(head, { change: { isDraft: true } });
+  const merged = await deliver({ config, scm: draft.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([merged.state, draft.state.readied, draft.state.merges], ['merged', 1, 1]);
+
+  // Without the approvals nothing is touched, not even the draft flag.
+  const unapproved = scm(head, { change: { isDraft: true } });
+  const refused = await deliver({ config, scm: unapproved.gate, prUrl: PR, approvals: async () => ({}), worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([refused.state, unapproved.state.readied, unapproved.state.merges], ['blocked', 0, 0]);
+
+  // A draft at another head, or from a fork, is not the change that was approved.
+  for (const change of [{ isDraft: true, headSha: 'b'.repeat(40) }, { isDraft: true, sameRepository: false }]) {
+    const other = scm(head, { change });
+    const result = await deliver({ config, scm: other.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
+    assert.deepEqual([result.state, other.state.readied, other.state.merges], ['blocked', 0, 0]);
+  }
 });

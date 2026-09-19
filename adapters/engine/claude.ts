@@ -27,13 +27,13 @@ export const claude: EngineAdapter = {
     const mcpFile = path.join(turnDir, 'mcp.json');
     // The token lives only in this private per-turn file, never in argv or the environment.
     const servers = spec.platform ? { platform: { type: 'http', url: spec.platform.url, headers: { Authorization: `Bearer ${readFileSync(spec.platform.tokenFile, 'utf8').trim()}` } } } : {};
-    const tools = spec.toolProfile === 'write' ? [] : ['--tools', spec.toolProfile === 'none' ? '' : READ_TOOLS.join(',')];
+    const tools = spec.toolProfile === 'write' ? [] : ['--tools', spec.toolProfile === 'none' ? '' : [...READ_TOOLS, ...(spec.toolProfile === 'verify' ? ['Bash'] : [])].join(',')];
     return {
       bin: 'claude',
       args: [
         '--print', '--output-format', 'stream-json', '--verbose', '--setting-sources', 'user', '--strict-mcp-config', '--mcp-config', mcpFile,
         '--permission-mode', spec.toolProfile === 'write' ? 'acceptEdits' : 'default', '--append-system-prompt-file', systemFile,
-        ...tools, '--allowedTools', ...(spec.toolProfile === 'write' ? ['Bash'] : []), ...(spec.platform ? ['mcp__platform'] : []), '--disallowedTools', ...DENIED,
+        ...tools, '--allowedTools', ...(spec.toolProfile === 'write' || spec.toolProfile === 'verify' ? ['Bash'] : []), ...(spec.platform ? ['mcp__platform'] : []), '--disallowedTools', ...DENIED,
         ...(spec.sessionId ? ['--resume', spec.sessionId] : ['--session-id', spec.turnId]),
         ...(spec.model ? ['--model', spec.model] : []),
       ],

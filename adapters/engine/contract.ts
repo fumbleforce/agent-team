@@ -18,7 +18,8 @@ export interface TurnSpec {
   systemPrompt: string;
   model: string | null;
   sessionId: string | null;
-  toolProfile: 'write' | 'read-only' | 'none';
+  // 'verify' reads and runs commands but edits nothing: a reviewer or tester in a throwaway checkout of the head under review.
+  toolProfile: 'write' | 'verify' | 'read-only' | 'none';
   platform: { url: string; tokenFile: string } | null;
 }
 

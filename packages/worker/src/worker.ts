@@ -169,7 +169,8 @@ export function createWorker(config: WorkerConfig) {
         return;
       }
       const adapter = (turn.engine ? config.engines?.[turn.engine] : undefined) ?? config.engine;
-      const toolProfile = lane === 'work' && grants.codeWrite !== 'none' ? 'write' : 'read-only';
+      // A review runs in its own detached checkout of the head, so a reviewer whose role allows a shell may run the tests there; it still edits nothing, and the worker checks the head did not move.
+      const toolProfile = lane === 'work' && grants.codeWrite !== 'none' ? 'write' : turn.kind === 'review' && reviewTree && grants.shell !== 'none' ? 'verify' : 'read-only';
       // Anything short of an unrestricted writer is a restriction someone has to hold the engine to.
       const restricted = toolProfile !== 'write' || grants.shell !== 'full';
       if (config.isolation === 'strict' && restricted && !enforcesToolPolicy(adapter.capabilities)) {

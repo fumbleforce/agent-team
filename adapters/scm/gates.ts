@@ -19,6 +19,7 @@ export const github: ScmGate = {
     const read = async (...flags: string[]) => (JSON.parse(await gh(exec, context)('checks', ...flags, '--json', 'name,bucket,state')) as { name: string; bucket: string }[]).map(check => ({ name: check.name, passed: check.bucket === 'pass' }));
     return { all: await read(), protected: includeProtected ? await read('--required') : null };
   },
+  async ready(exec, context) { await gh(exec, context)('ready'); },
   async merge(exec, context, headSha) { await gh(exec, context)('merge', '--squash', '--match-head-commit', headSha); },
 };
 
@@ -53,6 +54,7 @@ export const gitlab: ScmGate = {
     if (typeof settings.only_allow_merge_if_pipeline_succeeds !== 'boolean') throw new Error('Unreadable project merge settings');
     return { all, protected: settings.only_allow_merge_if_pipeline_succeeds ? [{ name: 'pipeline', passed: current.pipelineStatus === 'success' }] : [] };
   },
+  async ready(exec, context) { await exec('glab', ['mr', 'update', mergeRequest(context.url)![2]!, '--ready', '--repo', context.repository], { cwd: context.cwd }); },
   async merge(exec, context, headSha) {
     const parsed = mergeRequest(context.url);
     await glab(exec, context)('PUT', `projects/${encodeURIComponent(context.repository)}/merge_requests/${parsed![2]}/merge`, [`sha=${headSha}`, 'squash=true', 'should_remove_source_branch=true']);
