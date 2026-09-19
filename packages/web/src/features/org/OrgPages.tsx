@@ -2,7 +2,9 @@ import { useState } from 'react';
 import { Link } from 'wouter';
 import type { Agent, Me, ProjectNode } from '../../data/client';
 import { useResource } from '../../data/useResource';
-import { AppShell, KeyValueList, ListLink, PageHeader, Sidebar, SidePanel } from '../../patterns';
+import { KeyValueList, ListLink, SidePanel } from '../../patterns';
+import { OrgShell } from './OrgShell';
+import { LinkForm, ProjectStructure, type Structure } from './Structure';
 import { RoleEditor, type EditableRole } from './RoleEditor';
 import { Avatar, Button, Card, Chip, Meter, SectionLabel, StatusDot, Text } from '../../ui';
 
@@ -10,15 +12,15 @@ interface OrgProject extends ProjectNode { roster: Agent[]; openTasks: number; s
 interface Grant { repoRead: unknown; codeWrite: unknown; shell: string; browser: string; issues: string; comms: string; deploy: string; secrets: string[]; spendDailyCapMinor: number }
 interface RoleDoc { slug: string; version: number; author: string; doc: { summary: string; perspective: string; skills: string[]; permissions: Grant; knowledgeFirst: string[]; approvalKinds: string[] }; wornBy: { id: string; name: string; initials: string; tint: string }[] }
 
-const shell = (me: Me, projects: ProjectNode[]) => <Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} teamName={null} links={[]} />;
 const scope = (value: unknown) => (typeof value === 'string' ? value : (value as { paths: string[] }).paths.join(', '));
 
 export function OrgPage({ me, projects }: { me: Me; projects: ProjectNode[] }) {
   const org = useResource<{ projects: OrgProject[] }>('/api/org');
+  const structure = useResource<Structure>('/api/org/structure');
   const money = (minor: number) => new Intl.NumberFormat(undefined, { style: 'currency', currency: me.org?.currency ?? 'EUR', maximumFractionDigits: 0 }).format(minor / 100);
   return (
-    <AppShell sidebar={shell(me, projects)}>
-      <PageHeader title="Organization" crumbs={[me.org?.name ?? 'Organization']} />
+    <OrgShell me={me} projects={projects} title="Organization" active="/org">
+      <LinkForm me={me} projects={projects} onChanged={structure.reload} />
       <div className="grid min-h-0 grow auto-rows-min grid-cols-1 gap-3 overflow-y-auto px-5 pt-4 pb-5 md:grid-cols-2 xl:grid-cols-4">
         {org.data?.projects.map(project => (
           <Card key={project.id} as="article" className="flex flex-col gap-2.5">
@@ -29,12 +31,13 @@ export function OrgPage({ me, projects }: { me: Me; projects: ProjectNode[] }) {
               <Text size="small" weight="medium">{project.team?.name ?? 'No team'}</Text>
               <div className="flex flex-wrap gap-1">{project.roster.map(agent => <Avatar key={agent.id} initials={agent.initials} tint={agent.tint} size="sm" />)}</div>
             </Card>
+            <ProjectStructure projectId={project.id} projects={projects} structure={structure.data} onChanged={structure.reload} />
             <KeyValueList items={[['Open tasks', String(project.openTasks)], ['Spend this month', money(project.spendMinor)]]} />
             <Link href={`/p/${project.subprojects[0]?.slug ?? project.slug}/tasks`}><Button block>Open</Button></Link>
           </Card>
         ))}
       </div>
-    </AppShell>
+    </OrgShell>
   );
 }
 
@@ -44,8 +47,7 @@ export function RolesPage({ slug, me, projects }: { slug: string | null; me: Me;
   const [editing, setEditing] = useState<string | null>(null);
   const canEdit = me.user.orgRole === 'owner' || me.user.orgRole === 'admin';
   return (
-    <AppShell sidebar={shell(me, projects)}>
-      <PageHeader title="Roles" crumbs={[me.org?.name ?? 'Organization']} />
+    <OrgShell me={me} projects={projects} title="Roles" active="/roles">
       <div className="flex min-h-0 grow">
         <SidePanel label="Roles" wide>
           {roles.data?.roles.map(item => <ListLink key={item.slug} href={`/roles/${item.slug}`} active={item.slug === role?.slug} aside={<span className="flex gap-0.5">{item.wornBy.map(agent => <Avatar key={agent.id} initials={agent.initials} tint={agent.tint} size="xs" />)}</span>}>{item.slug}</ListLink>)}
@@ -69,6 +71,6 @@ export function RolesPage({ slug, me, projects }: { slug: string | null; me: Me;
           </div>
         )}
       </div>
-    </AppShell>
+    </OrgShell>
   );
 }

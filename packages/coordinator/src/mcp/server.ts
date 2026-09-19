@@ -1,27 +1,45 @@
+import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import { isToolName, TOOLS, type ToolInput, type ToolName, type TurnKind } from '@agent-team/protocol';
+import { isToolName, MAX_TOOL_CALLS_PER_TURN, PermissionGrant, permits, RATE_LIMITS, TOOLS, type ToolInput, type ToolName, type ToolOutput, type TurnKind } from '@agent-team/protocol';
 import { sameSecret, turnTokenFromHash } from '../auth/secrets.ts';
 import type { Context } from '../context.ts';
 import type { Workspace } from '../repos/workspace.ts';
 import type { Deliberation } from '../runtime/deliberation.ts';
 import type { Reviews } from '../runtime/reviews.ts';
 import type { Knowledge, Scope } from '../knowledge/knowledge.ts';
+import type { Issues } from '../repos/issues.ts';
+import type { Integrations } from '../repos/integrations.ts';
+import type { Mentions } from '../runtime/mentions.ts';
+import type { Turns } from '../runtime/turns.ts';
 import { createChecks } from '../checks/checks.ts';
+import { createCosts } from '../costs/costs.ts';
+import { createActions } from './actions.ts';
 import { createProposals } from '../runtime/proposals.ts';
 import { HttpError } from '../context.ts';
 
-interface Turn { id: string; agent_id: string; project_id: string; task_id: string | null; kind: string }
+interface Turn { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; grants: string }
 class ToolError extends Error {}
-type Handlers = { [N in ToolName]: (turn: Turn, input: ToolInput<N>) => Promise<unknown> };
+type Handlers = { [N in ToolName]: (turn: Turn, input: ToolInput<N>) => Promise<ToolOutput<N>> };
+export interface McpDeps { workspace: Workspace; deliberation: Deliberation; reviews: Reviews; knowledge: Knowledge; turns: Turns; issues: Issues; integrations: Integrations; mentions: Mentions }
+
+const RECORDED = { recorded: true } as const;
+const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+// Keys sorted at every level, so the same arguments hash the same however the client ordered them.
+const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : value !== null && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}` : JSON.stringify(value) ?? 'null';
+const sha256 = (text: string) => createHash('sha256').update(text).digest('hex');
 
 const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: '2.0', id: id ?? null, error: { code, message } });
 
-// Tools-only MCP over plain JSON-RPC. Every call re-checks the lease, the turn kind and the project.
-export function createMcp(context: Context, workspace: Workspace, deliberation: Deliberation, reviews: Reviews, knowledge: Knowledge) {
+// Tools-only MCP over plain JSON-RPC. Every call re-checks the lease, the turn kind, the frozen grants and the project;
+// mutations are remembered by key, so a retried call returns what the first one returned.
+export function createMcp(context: Context, deps: McpDeps) {
+  const { workspace, deliberation, reviews, knowledge, turns, issues, integrations, mentions } = deps;
   const { storage, events, now } = context;
   const db = storage.db;
   const checks = createChecks(context);
   const proposals = createProposals(context);
+  const costs = createCosts(context);
+  const actions = createActions(context, turns);
 
   async function authenticate(header: string | undefined): Promise<Turn | null> {
     const match = /^Bearer (turn\.([0-9a-f-]{36})\.[\w-]+)$/.exec(header ?? '');
@@ -31,7 +49,9 @@ export function createMcp(context: Context, workspace: Workspace, deliberation: 
     return sameSecret(match[1]!, turnTokenFromHash(context.machineToken, turn.id, turn.lease_token_hash)) ? turn : null;
   }
 
-  const allowed = (turn: Turn) => (Object.keys(TOOLS) as ToolName[]).filter(name => (TOOLS[name].turnKinds as readonly TurnKind[]).includes(turn.kind as TurnKind));
+  // The grants were frozen on the turn at claim; a role edited since does not widen or narrow a running turn.
+  const grantsOf = (turn: Turn) => PermissionGrant.parse(JSON.parse(turn.grants));
+  const allowed = (turn: Turn) => { const grants = grantsOf(turn); return (Object.keys(TOOLS) as ToolName[]).filter(name => (TOOLS[name].turnKinds as readonly TurnKind[]).includes(turn.kind as TurnKind) && permits(grants, TOOLS[name].permission)); };
 
   // A turn sees the knowledge of its own project and of the project above it.
   async function scopesOf(turn: Turn): Promise<Scope[]> {
@@ -45,6 +65,38 @@ export function createMcp(context: Context, workspace: Workspace, deliberation: 
     return thread;
   }
 
+  async function issueInProject(turn: Turn, number: number) {
+    const issue = await issues.get(turn.project_id, number).catch(() => null);
+    if (!issue) throw new ToolError(`Issue #${number} not found in this project`);
+    return issue;
+  }
+
+  // A reply turn that answers a mention speaks once, in the thread it was asked in.
+  async function replying<T extends { messageId: string }>(turn: Turn, threadId: string, post: () => Promise<T>): Promise<T> {
+    const owed = turn.kind === 'reply' ? await mentions.owedBy(turn.id) : null;
+    if (owed && owed.thread_id !== threadId) throw new ToolError('Answer in the thread you were mentioned in');
+    if (owed && owed.state !== 'woken') throw new ToolError('This mention is already answered; a mention gets one reply');
+    const posted = await post();
+    if (owed) await mentions.answer(owed.id, posted.messageId);
+    return posted;
+  }
+
+  // Every entity a call names must be in the turn's project; feedback and review turns are held to their own subject.
+  async function confine(turn: Turn, input: Record<string, unknown>) {
+    if (typeof input.deliberationId === 'string') {
+      const row = await db.selectFrom('deliberations').select(['project_id', 'thread_id', 'task_id']).where('id', '=', input.deliberationId).executeTakeFirst();
+      if (!row || row.project_id !== turn.project_id) throw new ToolError('Deliberation not found in this project');
+      const item = await db.selectFrom('work_items').select('thread_id').where('id', '=', turn.work_item_id).executeTakeFirst();
+      if ((turn.kind === 'feedback' || turn.kind === 'review') && ((item?.thread_id && item.thread_id !== row.thread_id) || (turn.task_id ?? null) !== row.task_id)) throw new ToolError('This turn is about another deliberation');
+    }
+    if (typeof input.taskId === 'string') {
+      const task = await db.selectFrom('tasks').select('project_id').where('id', '=', input.taskId).executeTakeFirst();
+      if (!task || task.project_id !== turn.project_id) throw new ToolError('Task not found in this project');
+      if ((turn.kind === 'feedback' || turn.kind === 'review') && input.taskId !== turn.task_id) throw new ToolError('This turn is about another task');
+    }
+    if (typeof input.proposalId === 'string' && (await db.selectFrom('proposals').select('project_id').where('id', '=', input.proposalId).executeTakeFirst())?.project_id !== turn.project_id) throw new ToolError('Proposal not found in this project');
+  }
+
   const handlers: Handlers = {
     'thread.read': async (turn, input) => {
       const thread = await threadInProject(turn, input.threadId);
@@ -52,7 +104,12 @@ export function createMcp(context: Context, workspace: Workspace, deliberation: 
     },
     'discussion.post': async (turn, input) => {
       const thread = await threadInProject(turn, input.threadId);
-      return { messageId: await workspace.postMessage({ kind: 'agent', id: turn.agent_id }, thread, { body: input.body, kind: input.kind }) };
+      return replying(turn, thread.id, async () => ({ messageId: await workspace.postMessage({ kind: 'agent', id: turn.agent_id }, thread, { body: input.body, kind: input.kind }) }));
+    },
+    'agent.mention': async (turn, input) => {
+      const thread = await threadInProject(turn, input.threadId);
+      const result = await mentions.mention({ projectId: turn.project_id, threadId: thread.id, message: { body: input.body }, author: { kind: 'agent', id: turn.agent_id }, targets: [input.target], expects: input.expects, turnId: turn.id });
+      return { messageId: result.messageId, mentions: result.mentions.map(item => ({ mentionId: item.mentionId, agentId: item.agentId, state: item.state, reason: item.reason })) };
     },
     'task.list': async (turn, input) => {
       let query = db.selectFrom('tasks').select(['id', 'key', 'title', 'state', 'assignee_agent_id']).where('project_id', '=', turn.project_id);
@@ -82,21 +139,89 @@ export function createMcp(context: Context, workspace: Workspace, deliberation: 
     'test.report': async (turn, input) => checks.record({ projectId: turn.project_id, suite: input.suite, kind: input.kind, branch: input.branch, sha: input.sha ?? null, source: 'agent', report: { passed: input.passed, failed: input.failed, skipped: input.skipped, total: input.passed + input.failed + input.skipped, durationMs: input.durationMs, failing: input.failing.map(item => ({ name: item.name, status: 'failed' as const, message: item.message ?? null })) } }),
     'task.review': async (turn, input) => reviews.record(turn, input),
     'deliberation.propose': async (turn, input) => { const { threadId, ...proposal } = input; await threadInProject(turn, threadId); return deliberation.propose(turn, threadId, proposal); },
-    'deliberation.feedback': async (turn, input) => { await deliberation.feedback(turn, input.deliberationId, input.block); return { recorded: true }; },
-    'deliberation.revise': async (turn, input) => { await deliberation.revise(turn, input.deliberationId, input.revision); return { recorded: true }; },
-    'deliberation.conclude': async (turn, input) => { await deliberation.conclude(turn, input.deliberationId, input.conclusion); return { recorded: true }; },
+    'deliberation.feedback': async (turn, input) => { await deliberation.feedback(turn, input.deliberationId, input.block); return RECORDED; },
+    'deliberation.stand': async (turn, input) => { await deliberation.stand(turn, input.deliberationId, input.reason); return RECORDED; },
+    'deliberation.revise': async (turn, input) => { await deliberation.revise(turn, input.deliberationId, input.revision); return RECORDED; },
+    'deliberation.conclude': async (turn, input) => { await deliberation.conclude(turn, input.deliberationId, input.conclusion); return RECORDED; },
+    'triage.decide': async (turn, input) => { await threadInProject(turn, input.threadId); return actions.triage(turn, input); },
+    'retro.submit': async (turn, input) => {
+      const item = await db.selectFrom('work_items').select('thread_id').where('id', '=', turn.work_item_id).executeTakeFirst();
+      if (!item?.thread_id) throw new ToolError('This turn has no retro thread');
+      return actions.retro(turn, (await threadInProject(turn, item.thread_id)).id, input);
+    },
+    'task.claim': async (turn, input) => actions.claim(turn, input.taskId),
+    'task.handoff': async (turn, input) => actions.handoff(turn, input),
+    'issue.create': async (turn, input) => {
+      const created = await issues.create(null, turn.project_id, { title: input.title, body: input.body, source: 'discussion', markers: [] }, turn.agent_id);
+      // Like an issue a person raises, it goes to the PM, unless the PM filed it.
+      const pm = await workspace.pm(turn.project_id);
+      if (pm && pm !== turn.agent_id) await turns.enqueue({ agentId: pm, projectId: turn.project_id, kind: 'triage', threadId: created.threadId, dedupeKey: `triage:${created.threadId}` });
+      return created;
+    },
+    'issue.comment': async (turn, input) => {
+      const issue = await issueInProject(turn, input.number);
+      return replying(turn, issue.thread_id, async () => ({ messageId: await workspace.postMessage({ kind: 'agent', id: turn.agent_id }, { id: issue.thread_id, project_id: turn.project_id }, { body: input.body, kind: 'note' }) }));
+    },
+    'issue.link': async (turn, input) => {
+      const issue = await issueInProject(turn, input.number);
+      const scopes = await scopesOf(turn);
+      const target = input.to.type === 'page' ? await db.selectFrom('kb_pages').select(['scope_type', 'scope_id']).where('id', '=', input.to.id).executeTakeFirst()
+        : await db.selectFrom(({ task: 'tasks', issue: 'issues', decision: 'decisions', thread: 'threads' } as const)[input.to.type]).select('project_id').where('id', '=', input.to.id).executeTakeFirst();
+      const inside = target && ('project_id' in target ? target.project_id === turn.project_id : scopes.some(scope => scope.type === target.scope_type && scope.id === target.scope_id));
+      if (!inside || (input.to.type === 'issue' && input.to.id === issue.id)) throw new ToolError(`That ${input.to.type} is not in this project`);
+      await actions.link(turn, issue.id, input.to, input.rel);
+      return { linked: true as const };
+    },
+    'knowledge.write': async (turn, input) => knowledge.write({ kind: 'agent', id: turn.agent_id }, { scope: (await scopesOf(turn))[0]!, path: input.path, title: input.title, body: input.body, note: input.note, expectedRev: input.expectedRev }),
+    'cost.status': async turn => {
+      const agent = await db.selectFrom('agents').select('daily_cap_minor').where('id', '=', turn.agent_id).executeTakeFirstOrThrow();
+      const spentTodayMinor = await costs.spentToday(turn.agent_id), today = day(now());
+      const month = await costs.summary([turn.project_id], `${today.slice(0, 8)}01`, today);
+      return { agent: { spentTodayMinor, dailyCapMinor: agent.daily_cap_minor, remainingMinor: agent.daily_cap_minor === null ? null : Math.max(0, agent.daily_cap_minor - spentTodayMinor) }, project: { monthMinor: month.totalMinor, budgetMinor: month.budgetMinor } };
+    },
+    'handoff.send': async (turn, input) => ({ handoffId: await integrations.send(turn.agent_id, turn.project_id, input) }),
   };
 
-  async function callTool(turn: Turn, name: string, args: unknown) {
-    if (!isToolName(name) || !allowed(turn).includes(name)) throw new ToolError(`Tool ${name} is not available in a ${turn.kind} turn`);
+  // Reserves the call before it runs: the sequence number, the per-tool limit of its rate class and the turn's total are
+  // all counted from tool_calls. A key seen before returns the stored result, or refuses when that outcome never landed.
+  async function reserve(turn: Turn, name: ToolName, argsHash: string, key: string | null): Promise<{ seq: number } | { replay: unknown }> {
+    return storage.transaction(async tx => {
+      const prior = key ? await tx.selectFrom('tool_calls').select(['tool', 'args_hash', 'result']).where('turn_id', '=', turn.id).where('idempotency_key', '=', key).executeTakeFirst() : null;
+      if (prior && (prior.tool !== name || prior.args_hash !== argsHash)) throw new ToolError('This idempotency key was used for a different call');
+      if (prior) { if (prior.result === null) throw new ToolError('The first attempt of this call has no known outcome; do not retry it, report it instead'); return { replay: JSON.parse(prior.result) }; }
+      const rows = await tx.selectFrom('tool_calls').select(['tool', 'seq']).where('turn_id', '=', turn.id).execute();
+      if (rows.length >= MAX_TOOL_CALLS_PER_TURN) throw new ToolError('Tool call limit for this turn reached; stop calling tools');
+      const limit = RATE_LIMITS[TOOLS[name].rateClass];
+      if (rows.filter(row => row.tool === name).length >= limit) throw new ToolError(`${name} may be called ${limit === 1 ? 'once' : `${limit} times`} per turn`);
+      const seq = rows.reduce((max, row) => Math.max(max, row.seq), 0) + 1;
+      await tx.insertInto('tool_calls').values({ turn_id: turn.id, seq, tool: name, args_hash: argsHash, idempotency_key: key, result: null, created_at: now() }).execute();
+      return { seq };
+    });
+  }
+
+  async function callTool(turn: Turn, name: string, args: unknown, givenKey: unknown) {
+    if (!isToolName(name) || !allowed(turn).includes(name)) throw new ToolError(`Tool ${name} is not available to this ${turn.kind} turn`);
     const spec = TOOLS[name];
     const parsed = spec.input.safeParse(args ?? {});
     if (!parsed.success) throw new ToolError(z.prettifyError(parsed.error));
-    // Counted from the log, so the limit survives a coordinator restart.
-    const calls = await db.selectFrom('events').select(eb => eb.fn.countAll<number>().as('n')).where('turn_id', '=', turn.id).where('type', '=', 'tool.called').executeTakeFirstOrThrow();
-    if (Number(calls.n) >= 200) throw new ToolError('Tool call limit for this turn reached; stop calling tools');
-    const result = await (handlers[name] as (turn: Turn, input: unknown) => Promise<unknown>)(turn, parsed.data);
-    const logged = await storage.transaction(tx => events.append(tx, [{ type: 'tool.called', category: 'trace', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, turnId: turn.id, payload: { tool: name, mutating: spec.mutating } }]));
+    if (givenKey !== undefined && (typeof givenKey !== 'string' || givenKey.length === 0 || givenKey.length > 200)) throw new ToolError('idempotencyKey is a string of at most 200 characters');
+    await confine(turn, parsed.data as Record<string, unknown>);
+    const text = canonical(parsed.data);
+    // Reads are not replayed: they are logged for the limits only.
+    const reserved = await reserve(turn, name, sha256(text), spec.mutating ? (givenKey as string | undefined) ?? sha256(`${turn.id}\n${name}\n${text}`) : null);
+    if ('replay' in reserved) return reserved.replay;
+    let result: unknown;
+    try {
+      result = spec.output.parse(await (handlers[name] as (turn: Turn, input: unknown) => Promise<unknown>)(turn, parsed.data));
+    } catch (error) {
+      // A refusal changed nothing, so the same call may be made again later; it still counts against the limits.
+      if (error instanceof HttpError || error instanceof ToolError) await db.updateTable('tool_calls').set({ idempotency_key: null, result: JSON.stringify({ refused: error.message }) }).where('turn_id', '=', turn.id).where('seq', '=', reserved.seq).execute();
+      throw error;
+    }
+    const logged = await storage.transaction(async tx => {
+      await tx.updateTable('tool_calls').set({ result: spec.mutating ? JSON.stringify(result) : '{}' }).where('turn_id', '=', turn.id).where('seq', '=', reserved.seq).execute();
+      return events.append(tx, [{ type: 'tool.called', category: 'trace', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, turnId: turn.id, payload: { tool: name, seq: reserved.seq, mutating: spec.mutating } }]);
+    });
     events.published(logged);
     return result;
   }
@@ -113,7 +238,7 @@ export function createMcp(context: Context, workspace: Workspace, deliberation: 
       if (method === 'tools/list') return { status: 200, body: { jsonrpc: '2.0', id, result: { tools: allowed(turn).map(name => ({ name, description: TOOLS[name].description, inputSchema: z.toJSONSchema(TOOLS[name].input, { io: 'input' }) })) } } };
       if (method !== 'tools/call') return { status: 200, body: rpcError(id, -32601, 'Method not found') };
       try {
-        const result = await callTool(turn, String(params?.name ?? ''), params?.arguments);
+        const result = await callTool(turn, String(params?.name ?? ''), params?.arguments, params?.idempotencyKey);
         return { status: 200, body: { jsonrpc: '2.0', id, result: { content: [{ type: 'text', text: JSON.stringify(result) }] } } };
       } catch (error) {
         // Protocol refusals (one block, one revision, dissent not addressed) are the agent's to read, not failures.

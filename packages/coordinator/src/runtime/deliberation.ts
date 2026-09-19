@@ -97,6 +97,21 @@ export function createDeliberation(context: Context, turns: Turns) {
       await wake(deliberationId);
     },
 
+    // Standing aside is a reviewer's one answer too: an abstention with its reason on the record, and the deliberation moves on.
+    async stand(turn: { agent_id: string }, deliberationId: string, reason: string) {
+      const published = await storage.transaction(async tx => {
+        const row = await tx.selectFrom('deliberations').selectAll().where('id', '=', deliberationId).executeTakeFirst();
+        const seat = await tx.selectFrom('deliberation_participants').selectAll().where('deliberation_id', '=', deliberationId).where('agent_id', '=', turn.agent_id).executeTakeFirst();
+        if (!row || !seat) throw conflict('You are not a reviewer of this deliberation');
+        if (row.state !== 'open' || seat.state !== 'pending') throw conflict('Feedback is closed; one block per reviewer');
+        await tx.updateTable('deliberation_participants').set({ state: 'abstained' }).where('deliberation_id', '=', deliberationId).where('agent_id', '=', turn.agent_id).execute();
+        const stood = await events.append(tx, [{ type: 'deliberation.stood_aside', actorKind: 'agent', agentId: turn.agent_id, projectId: row.project_id, threadId: row.thread_id, payload: { deliberationId, reason } }]);
+        return [...stood, ...await advance(tx, deliberationId)];
+      });
+      events.published(published);
+      await wake(deliberationId);
+    },
+
     async revise(turn: { agent_id: string }, deliberationId: string, input: z.infer<typeof Revision>) {
       const published = await storage.transaction(async tx => {
         const row = await tx.selectFrom('deliberations').selectAll().where('id', '=', deliberationId).executeTakeFirst();

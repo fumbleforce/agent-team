@@ -1,19 +1,35 @@
 import { StrictMode, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
-import { Redirect, Route, Switch } from 'wouter';
+import { Redirect, Route, Switch, useLocation } from 'wouter';
 import type { Agent, Me, ProjectNode } from './data/client';
 import { AgentPage } from './features/agent/AgentPage';
 import { CostsPage } from './features/costs/CostsPage';
 import { IntegrationsPage } from './features/integrations/IntegrationsPage';
+import { AuditPage } from './features/audit/AuditPage';
 import { OrgPage, RolesPage } from './features/org/OrgPages';
+import { ProjectSettingsPage } from './features/settings/ProjectSettingsPage';
+import { AuthPage, MembersPage } from './features/settings/SettingsPages';
 import { ProposalsPage } from './features/proposals/ProposalsPage';
 import { startStream } from './data/stream';
 import { useResource } from './data/useResource';
 import { Gallery } from './dev/Gallery';
 import { ProjectPage } from './features/project/ProjectPage';
 import { InvitePage, LoginPage, SetupPage } from './features/session/SessionPages';
-import { CenteredPanel } from './patterns';
+import { CenteredPanel, CommandPalette } from './patterns';
 import './tokens.css';
+
+const SCREENS = [{ href: '/org', label: 'Organization' }, { href: '/roles', label: 'Roles' }, { href: '/proposals', label: 'Team proposals' }, { href: '/costs', label: 'Costs' }, { href: '/settings/members', label: 'Members', note: 'settings' }, { href: '/settings/auth', label: 'Sign-in', note: 'settings' }, { href: '/audit', label: 'Audit log' }];
+const PROJECT_TABS = ['Tasks', 'Issues', 'Product', 'Tests', 'Workload', 'Knowledge', 'Team', 'Integrations'];
+
+// Ctrl or Cmd + K. Pages and project screens are those of the project in the address bar.
+function Palette({ projects, agents }: { projects: ProjectNode[]; agents: Agent[] }) {
+  const [location] = useLocation();
+  const slug = location.startsWith('/p/') ? (location.split('/')[2] ?? null) : null;
+  const knowledge = useResource<{ pages: { id: string; path: string; title: string }[] }>(slug ? `/api/projects/${slug}/knowledge` : null);
+  const pages = slug ? (knowledge.data?.pages ?? []).map(page => ({ href: `/p/${slug}/knowledge/${page.id}`, label: page.title, note: page.path })) : [];
+  const tabs = slug ? PROJECT_TABS.map(tab => ({ href: `/p/${slug}/${tab.toLowerCase()}`, label: tab, note: slug })) : [];
+  return <CommandPalette projects={projects} agents={agents} pages={pages} screens={[...tabs, ...SCREENS]} />;
+}
 
 function Signed() {
   const me = useResource<Me>('/api/me');
@@ -25,10 +41,16 @@ function Signed() {
   const first = tree.data.projects[0];
   const home = first ? `/p/${first.subprojects[0]?.slug ?? first.slug}/tasks` : null;
   return (
+    <>
+    <Palette projects={tree.data.projects} agents={agents.data?.agents ?? []} />
     <Switch>
       <Route path="/p/:slug/knowledge/:pageId">{params => <ProjectPage slug={params.slug} tab="knowledge" pageId={params.pageId} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/p/:slug/issues/:number">{params => <ProjectPage slug={params.slug} tab="issues" pageId={params.number} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/p/:slug/integrations">{params => <IntegrationsPage slug={params.slug} me={me.data!} projects={tree.data!.projects} />}</Route>
+      <Route path="/settings/members"><MembersPage me={me.data} projects={tree.data.projects} /></Route>
+      <Route path="/settings/auth"><AuthPage me={me.data} projects={tree.data.projects} /></Route>
+      <Route path="/settings/project/:id">{params => <ProjectSettingsPage id={params.id} me={me.data!} projects={tree.data!.projects} />}</Route>
+      <Route path="/audit"><AuditPage me={me.data} projects={tree.data.projects} /></Route>
       <Route path="/org"><OrgPage me={me.data} projects={tree.data.projects} /></Route>
       <Route path="/roles/:slug">{params => <RolesPage slug={params.slug} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/roles"><RolesPage slug={null} me={me.data} projects={tree.data.projects} /></Route>
@@ -40,6 +62,7 @@ function Signed() {
       <Route path="/p/:slug">{params => <Redirect to={`/p/${params.slug}/tasks`} />}</Route>
       <Route>{home ? <Redirect to={home} /> : <CenteredPanel title="No projects yet" note="Run agent-team up in a checkout to register the first project." >{null}</CenteredPanel>}</Route>
     </Switch>
+    </>
   );
 }
 

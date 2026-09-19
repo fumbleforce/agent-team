@@ -19,7 +19,7 @@ export function createIntegrations(context: Context, turns: Turns) {
   return {
     async connections(projectId: string) {
       const rows = await db.selectFrom('connections').selectAll().where(eb => eb.or([eb('project_id', '=', projectId), eb('project_id', 'is', null)])).orderBy('category').orderBy('name').execute();
-      return rows.map(row => ({ id: row.id, kind: row.kind, name: row.name, category: row.category, mode: row.mode, status: row.status, statusDetail: row.status_detail, credentialRef: row.credential_ref, config: JSON.parse(row.config) as Record<string, unknown>, lastSyncAt: row.last_sync_at === null ? null : Number(row.last_sync_at) }));
+      return rows.map(row => ({ projectScoped: row.project_id !== null, id: row.id, kind: row.kind, name: row.name, category: row.category, mode: row.mode, status: row.status, statusDetail: row.status_detail, credentialRef: row.credential_ref, config: JSON.parse(row.config) as Record<string, unknown>, lastSyncAt: row.last_sync_at === null ? null : Number(row.last_sync_at) }));
     },
 
     async connect(userId: string, projectId: string, input: z.infer<typeof ConnectionBody>) {
@@ -32,6 +32,38 @@ export function createIntegrations(context: Context, turns: Turns) {
       return id;
     },
 
+    // Guided setup: a project has one tracker and one code host, and one connection per name, so setting one up again replaces it.
+    async replace(userId: string, projectId: string, exclusive: string | null, input: { kind: string; name: string; category: string; mode: string; credentialRef: string | null; config: Record<string, string>; waiting: string | null; connected: boolean }) {
+      const id = newId(now());
+      const published = await storage.transaction(async tx => {
+        const existing = await tx.selectFrom('connections').select(['id', 'kind', 'name', 'config']).where('project_id', '=', projectId).execute();
+        const stale = existing.filter(row => (exclusive ? (JSON.parse(row.config) as { target?: string }).target === exclusive : row.kind === input.kind && row.name === input.name)).map(row => row.id);
+        if (stale.length) await tx.deleteFrom('connections').where('id', 'in', stale).execute();
+        await tx.insertInto('connections').values({ id, project_id: projectId, kind: input.kind, name: input.name, category: input.category, mode: input.mode, config: JSON.stringify(input.config), status: input.connected ? 'connected' : 'warning', status_detail: input.waiting, credential_ref: input.credentialRef, last_sync_at: null, created_at: now() }).execute();
+        return events.append(tx, [{ type: 'connection.added', category: 'audit', actorKind: 'user', userId, projectId, payload: { kind: input.kind, name: input.name } }]);
+      });
+      events.published(published);
+      return id;
+    },
+
+    async disconnect(userId: string, projectId: string, connectionId: string) {
+      const published = await storage.transaction(async tx => {
+        const row = await tx.selectFrom('connections').select(['kind', 'name', 'config']).where('id', '=', connectionId).where('project_id', '=', projectId).executeTakeFirst();
+        if (!row) throw new HttpError(404, 'not_found', 'Connection not found');
+        await tx.deleteFrom('connections').where('id', '=', connectionId).execute();
+        // A tracker or code host set up in the app is also what the project's manifest points at.
+        const target = (JSON.parse(row.config) as { target?: string }).target;
+        if (target === 'tracker' || target === 'scm') {
+          const project = await tx.selectFrom('projects').select('manifest').where('id', '=', projectId).executeTakeFirstOrThrow();
+          const manifest = JSON.parse(project.manifest) as Record<string, unknown>;
+          delete manifest[target];
+          await tx.updateTable('projects').set({ manifest: JSON.stringify(manifest) }).where('id', '=', projectId).execute();
+        }
+        return events.append(tx, [{ type: 'connection.removed', category: 'audit', actorKind: 'user', userId, projectId, payload: { kind: row.kind, name: row.name } }]);
+      });
+      events.published(published);
+    },
+
     async handoffs(projectId: string) {
       const rows = await db.selectFrom('handoffs').selectAll().where('project_id', '=', projectId).orderBy('created_at', 'desc').limit(50).execute();
       return rows.map(row => ({ id: row.id, direction: row.direction, source: row.source, title: row.title, summary: row.summary, attachmentId: row.attachment_id, targetTaskId: row.target_task_id, state: row.state, pickedByAgentId: row.picked_by_agent_id, createdAt: Number(row.created_at) }));
@@ -42,6 +74,17 @@ export function createIntegrations(context: Context, turns: Turns) {
       const published = await storage.transaction(async tx => {
         await tx.insertInto('handoffs').values({ id, project_id: projectId, direction: 'in', source: input.source, title: input.title, summary: input.summary, context: JSON.stringify(input.context), attachment_id: input.attachmentId ?? null, target_task_id: null, state: 'new', picked_by_agent_id: null, created_by: userId, created_at: now() }).execute();
         return events.append(tx, [{ type: 'handoff.received', actorKind: userId ? 'user' : 'system', userId, projectId, payload: { handoffId: id, source: input.source } }]);
+      });
+      events.published(published);
+      return id;
+    },
+
+    // Outbound: an agent records what it hands to someone outside the team. `source` names the other side in both directions.
+    async send(agentId: string, projectId: string, input: { destination: string; title: string; summary: string; context: Record<string, unknown>; taskId?: string | undefined }) {
+      const id = newId(now());
+      const published = await storage.transaction(async tx => {
+        await tx.insertInto('handoffs').values({ id, project_id: projectId, direction: 'out', source: input.destination, title: input.title, summary: input.summary, context: JSON.stringify(input.context), attachment_id: null, target_task_id: input.taskId ?? null, state: 'outbox', picked_by_agent_id: agentId, created_by: null, created_at: now() }).execute();
+        return events.append(tx, [{ type: 'handoff.sent', actorKind: 'agent', agentId, projectId, taskId: input.taskId ?? null, payload: { handoffId: id, destination: input.destination } }]);
       });
       events.published(published);
       return id;
@@ -63,3 +106,4 @@ export function createIntegrations(context: Context, turns: Turns) {
     },
   };
 }
+export type Integrations = ReturnType<typeof createIntegrations>;

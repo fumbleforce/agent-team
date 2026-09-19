@@ -37,6 +37,9 @@
   --text-metric: 1.625rem;
   --text-metric--line-height: 2rem;
 
+  /* Below this width the sidebar is a drawer and the right rail is a tab (spec 14.1: 900 px). */
+  --breakpoint-shell: 56.25rem;
+
   --radius-chip: 4px;
   --radius-control: 7px;
   --radius-card: 10px;

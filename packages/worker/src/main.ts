@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { engineAdapter, ENGINES } from '../../../adapters/engine/index.ts';
 import { createWorker, type WorkerConfig } from './worker.ts';
 
-interface FileConfig { coordinatorUrl: string; workerId: string; stateDir: string; engine: string; lanes?: WorkerConfig['lanes']; projects: Record<string, string>; worktrees?: WorkerConfig['worktrees']; publish?: { scm: string; repository: string; base: string } }
+interface FileConfig { coordinatorUrl: string; workerId: string; stateDir: string; engine: string; lanes?: WorkerConfig['lanes']; projects: Record<string, string>; worktrees?: WorkerConfig['worktrees']; isolation?: 'strict' | 'isolated'; publish?: { scm: string; repository: string; base: string } }
 
 const index = process.argv.indexOf('--config');
 if (index < 0 || !process.argv[index + 1]) { console.error('Usage: node packages/worker/src/main.ts --config FILE [--once [--job LABEL]]'); process.exit(1); }
@@ -17,7 +17,7 @@ const worker = createWorker({
   coordinatorUrl: file.coordinatorUrl, token, workerId: file.workerId, stateDir: file.stateDir, engine: engineAdapter(file.engine),
   engines: Object.fromEntries(ENGINES.map(name => [name, engineAdapter(name)])),
   lanes: file.lanes ?? { work: 1, bounded: 1, deliver: 1 }, projects: file.projects,
-  ...(file.publish ? { publish: { ...file.publish, exec } } : {}),
+  ...(file.publish ? { publish: { ...file.publish, exec } } : {}), ...(file.isolation ? { isolation: file.isolation } : {}),
   worktrees: file.worktrees === undefined ? { branchPrefix: 'agents/', base: 'HEAD' } : file.worktrees,
 });
 console.log(`Worker ${file.workerId} serving ${Object.keys(file.projects).length} project(s) with ${file.engine}`);
@@ -26,6 +26,7 @@ for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => { 
 if (process.argv.includes('--once')) {
   const label = process.argv[process.argv.indexOf('--job') + 1] ?? 'one turn', deadline = Date.now() + 10 * 60_000;
   let claimed = false;
+  await worker.sweep().catch(() => []);
   while (!claimed && Date.now() < deadline) { claimed = await worker.tick(); if (!claimed) await new Promise(resolve => setTimeout(resolve, 5000)); }
   await worker.idle();
   console.log(claimed ? `Worker ${file.workerId} finished ${label}` : `Worker ${file.workerId} found nothing to claim for ${label}`);

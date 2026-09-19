@@ -11,15 +11,15 @@ export interface SessionsTable { id: string; user_id: string; token_hash: string
 export interface InvitesTable { id: string; email: string; org_role: string; project_grants: Json; token_hash: string; invited_by: string; expires_at: Ms; accepted_at: Ms | null }
 export interface ProjectMembersTable { project_id: string; user_id: string; role: string }
 export interface SetupTokensTable { token_hash: string; expires_at: Ms; used_at: Ms | null }
-export interface MachineTokensTable { id: string; name: string; token_hash: string; kind: string; created_by: string | null; created_at: Ms; revoked_at: Ms | null }
+export interface MachineTokensTable { id: string; name: string; token_hash: string; kind: string; created_by: string | null; created_at: Ms; revoked_at: Ms | null; last_used_at: Ms | null }
 
 export interface ProjectsTable { id: string; slug: string; name: string; kind: string; parent_id: string | null; status: string; manifest: Json; manifest_sha: string | null; team_id: string | null; sort: number; created_at: Ms }
 export interface MilestonesTable { id: string; project_id: string; label: string; due_at: Ms | null; state: string }
 
 export interface TeamsTable { id: string; scope: string; project_id: string | null; name: string; template_slug: string | null; template_version: number | null }
-export interface AgentsTable { id: string; team_id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; provider_id: string | null; model: string | null; daily_cap_minor: number | null; is_pm: boolean; doing: string | null; sort: number; created_at: Ms }
+export interface AgentsTable { id: string; team_id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; provider_id: string | null; model: string | null; daily_cap_minor: number | null; is_pm: boolean; doing: string | null; sort: number; created_at: Ms; idle_at: Ms | null }
 export interface AgentRolesTable { agent_id: string; role_slug: string }
-export interface ProvidersTable { id: string; name: string; kind: string; engine: string; billing: string; engine_config: Json; models: Json; limits: Json; status: string; status_detail: string | null }
+export interface ProvidersTable { id: string; name: string; kind: string; engine: string; billing: string; engine_config: Json; models: Json; limits: Json; status: string; status_detail: string | null; limited_until: Ms | null }
 
 export interface VersionedDocsTable { kind: string; slug: string; scope_type: string; scope_id: string; version: number; doc: Json; author: string; updated_at: Ms }
 export interface VersionedDocHistoryTable { id: Generated<number>; kind: string; slug: string; scope_type: string; scope_id: string; version: number; doc: Json; author: string; note: string | null; created_at: Ms }
@@ -34,7 +34,7 @@ export interface EventsTable { seq: Generated<number>; id: string; at: Ms; type:
 export interface AttachmentsTable { id: string; sha256: string; bytes: number; mime: string; name: string; storage_kind: string; storage_key: string; created_by: string | null; created_at: Ms }
 export interface LinksTable { from_type: string; from_id: string; to_type: string; to_id: string; rel: string; created_at: Ms }
 
-export interface Schema extends RuntimeSchema, KnowledgeSchema, DeliberationSchema, DeliverySchema, ChecksSchema, ProposalsSchema, IssuesSchema, IntegrationsSchema, ProductSchema, SchedulesSchema, EmbeddingsSchema {
+export interface Schema extends RuntimeSchema, KnowledgeSchema, DeliberationSchema, DeliverySchema, ChecksSchema, ProposalsSchema, IssuesSchema, IntegrationsSchema, ProductSchema, SchedulesSchema, EmbeddingsSchema, MentionsSchema, SessionsSchema, OrgAuthSchema {
   org: OrgTable; users: UsersTable; identities: IdentitiesTable; sessions: SessionsTable; invites: InvitesTable;
   project_members: ProjectMembersTable; setup_tokens: SetupTokensTable; machine_tokens: MachineTokensTable;
   projects: ProjectsTable; milestones: MilestonesTable;
@@ -49,7 +49,7 @@ export const BOOLEAN_COLUMNS: ReadonlySet<string> = new Set(['is_pm', 'revised',
 
 export interface WorkersTable { id: string; name: string; lanes: Json; isolation: string; providers: Json; projects: Json; last_seen_at: Ms }
 export interface WorkItemsTable { id: string; agent_id: string; project_id: string; kind: string; lane: string; task_id: string | null; thread_id: string | null; priority_class: number; state: string; defer_reason: string | null; not_before: Ms | null; dedupe_key: string | null; cause_event_id: string | null; created_at: Ms }
-export interface TurnsTable { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; lane: string; access: string; state: string; stop_reason: string | null; worker_id: string; lease_token_hash: string; lease_until: Ms; grants: Json; summary: string | null; tokens_in: number; tokens_out: number; cost_minor: number; started_at: Ms; finished_at: Ms | null }
+export interface TurnsTable { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; lane: string; access: string; state: string; stop_reason: string | null; worker_id: string; lease_token_hash: string; lease_until: Ms; grants: Json; summary: string | null; tokens_in: number; tokens_out: number; cost_minor: number; started_at: Ms; finished_at: Ms | null; provider_id: string | null; model: string | null; session_id: string | null; context_mode: string | null }
 export interface TraceStepsTable { turn_id: string; seq: number; at: Ms; kind: string; title: string; detail: string | null; status: string; artifact_id: string | null }
 export interface QuarantinesTable { id: string; scope: string; ref_id: string; turn_id: string; reason: string; opened_at: Ms; released_by: string | null; released_at: Ms | null }
 
@@ -57,7 +57,7 @@ export interface RuntimeSchema { workers: WorkersTable; work_items: WorkItemsTab
 
 export interface CostEntriesTable { id: string; turn_id: string | null; agent_id: string | null; project_id: string; provider_id: string | null; billing_kind: string; tokens_in: number; tokens_out: number; amount_minor: number; currency: string; at: Ms }
 export interface CostDailyTable { day: string; project_id: string; agent_id: string; amount_minor: number; tokens: number }
-export interface BudgetsTable { scope: string; scope_id: string; period: string; amount_minor: number }
+export interface BudgetsTable { scope: string; scope_id: string; period: string; amount_minor: number; warned_period: string | null }
 export interface KbPagesTable { id: string; scope_type: string; scope_id: string; path: string; title: string; current_rev: number; archived_at: Ms | null; updated_at: Ms }
 export interface KbRevisionsTable { page_id: string; rev_no: number; body: string; author_kind: string; author_id: string | null; note: string | null; created_at: Ms }
 export interface KbReadsTable { page_id: string; rev_no: number; agent_id: string; turn_id: string | null; at: Ms }
@@ -108,4 +108,19 @@ export interface SchedulesSchema { schedules: SchedulesTable }
 
 export interface EmbeddingsTable { doc_type: string; doc_id: string; model: string; vector: Json }
 
+export interface AgentSessionsTable { id: string; agent_id: string; task_id: string | null; purpose: string; engine: string | null; provider_id: string | null; model: string | null; engine_session_id: string | null; worker_id: string; state: string; context_tokens: number; turn_count: number; rotated_from: string | null; base_sha: string | null; created_at: Ms; last_turn_at: Ms }
+export interface StepArtifactsTable { turn_id: string; seq: number; kind: string; body: string; bytes: number; truncated: number; created_at: Ms }
+export interface SessionsSchema { agent_sessions: AgentSessionsTable; step_artifacts: StepArtifactsTable }
 export interface EmbeddingsSchema { embeddings: EmbeddingsTable }
+
+export interface LoginAttemptsTable { subject: string; failures: number; window_start: Ms; locked_until: Ms | null }
+export interface IdempotencyKeysTable { user_id: string; key: string; fingerprint: string; status: number; response: Json | null; created_at: Ms; expires_at: Ms }
+export interface ProjectLinksTable { id: string; from_project_id: string; to_project_id: string; kind: string; note: string; created_by: string | null; created_at: Ms }
+export interface SeatLoansTable { id: string; agent_id: string; to_project_id: string; state: string; note: string; created_by: string | null; created_at: Ms; ended_at: Ms | null }
+
+export interface OrgAuthSchema { login_attempts: LoginAttemptsTable; idempotency_keys: IdempotencyKeysTable; project_links: ProjectLinksTable; seat_loans: SeatLoansTable }
+
+export interface MentionsTable { id: string; message_id: string; thread_id: string; project_id: string; author_kind: string; author_id: string | null; target_type: string; target_id: string; agent_id: string | null; expects: string; state: string; depth: number; work_item_id: string | null; reply_message_id: string | null; created_at: Ms }
+export interface ToolCallsTable { turn_id: string; seq: number; tool: string; args_hash: string; idempotency_key: string | null; result: Json | null; created_at: Ms }
+
+export interface MentionsSchema { mentions: MentionsTable; tool_calls: ToolCallsTable }

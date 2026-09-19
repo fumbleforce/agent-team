@@ -19,7 +19,7 @@ export function ProposalsPage({ id, me, projects, agents }: { id: string | null;
 
   return (
     <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} teamName={null} links={[]} />}>
-      <PageHeader title="Team proposals" crumbs={[me.org?.name ?? 'Organization']} />
+      <PageHeader title="Team proposals" crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }]} />
       <div className="flex min-h-0 grow">
         <SidePanel label="Proposals" wide>
           {items.map(item => <ListLink key={item.id} href={`/proposals/${item.id}`} active={item.id === selected?.id} aside={<Chip tone={STATE[item.state]?.tone ?? 'neutral'}>{STATE[item.state]?.label ?? item.state}</Chip>}>{item.title}</ListLink>)}

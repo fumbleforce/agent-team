@@ -1,11 +1,11 @@
 import type { z } from 'zod';
-import { Role } from '@agent-team/protocol';
+import { CostRules, LibraryAgent, ProjectSettings, Role, RoutingRules, TeamTemplate } from '@agent-team/protocol';
 import type { ExpressionBuilder } from 'kysely';
 import type { Schema, Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 
 // Every kind of versioned document and the schema that validates it. Adding a kind is one line here.
-export const DOC_KINDS = { role: Role } as const satisfies Record<string, z.ZodType>;
+export const DOC_KINDS = { role: Role, project_settings: ProjectSettings, team_template: TeamTemplate, library_agent: LibraryAgent, cost_rules: CostRules, routing_rules: RoutingRules } as const satisfies Record<string, z.ZodType>;
 export type DocKind = keyof typeof DOC_KINDS;
 export type DocOf<K extends DocKind> = z.infer<(typeof DOC_KINDS)[K]>;
 export interface DocScope { type: 'library' | 'org' | 'team' | 'project'; id: string }
@@ -43,10 +43,10 @@ export function createVersionedDocs(context: Context) {
       return { slug: row.slug, version: row.version, author: row.author, updatedAt: Number(row.updated_at), doc: JSON.parse(row.doc) as DocOf<K> };
     },
 
-    async save<K extends DocKind>(kind: K, scope: DocScope, slug: string, doc: unknown, options: { author: string; note?: string; expectedVersion?: number }) {
+    async save<K extends DocKind>(kind: K, scope: DocScope, slug: string, doc: unknown, options: { author: string; userId?: string; projectId?: string; note?: string; expectedVersion?: number }) {
       const result = await storage.transaction(async tx => {
         const version = await write(tx, kind, scope, slug, doc, options.author, options.note ?? null, options.expectedVersion);
-        return { version, published: await events.append(tx, [{ type: 'settings.changed', category: 'audit', actorKind: 'user', payload: { kind, slug, version, scope } }]) };
+        return { version, published: await events.append(tx, [{ type: 'settings.changed', category: 'audit', actorKind: 'user', userId: options.userId ?? null, projectId: options.projectId ?? null, payload: { kind, slug, version, scope } }]) };
       });
       events.published(result.published);
       return result.version;

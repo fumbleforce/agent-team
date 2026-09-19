@@ -1,12 +1,15 @@
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { outsideWriteScope, turnToken, type Lane, type PermissionGrant, type TraceStepInput, type TurnKind, type Viewport } from '@agent-team/protocol';
-import type { EngineAdapter } from '../../../adapters/engine/contract.ts';
+import { enforcesToolPolicy, type EngineAdapter } from '../../../adapters/engine/contract.ts';
 import { publish as publishChange, type Exec } from '../../../adapters/scm/publish.ts';
 import { SCM_GATES } from '../../../adapters/scm/gates.ts';
 import { deliver as gate, type Approvals, type DeliveryConfig } from './deliver/gate.ts';
 import { capturePage, type CaptureFn } from './capture.ts';
 import { executeTurn, turnDirectory } from './execute.ts';
+import { clearRun, recordRun, sweepOrphans } from './orphans.ts';
+import { createRedactor } from './redact.ts';
+import { createTracer, type StepArtifact } from './trace.ts';
 import { cappedBy, changedPaths, committedCeiling, ensureWorktree, headSha, worktreeFor } from './worktree.ts';
 
 export interface DeliveryFacts { taskKey: string; headSha: string; prUrl: string; manifest: { scm?: { kind?: string }; delivery?: DeliveryConfig }; approvals: Approvals }
@@ -31,8 +34,10 @@ export interface WorkerConfig {
   capture?: CaptureFn;
   // Other engines installed on this worker, for agents whose provider names one; the default serves everyone else.
   engines?: Record<string, EngineAdapter>;
+  // A strict worker runs a restricted turn only on an engine that enforces the restriction itself; instructions are not isolation.
+  isolation?: 'strict' | 'isolated';
 }
-interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; capture?: { url: string; viewport: Viewport } | null }
+interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
 interface Lease { workerId: string; leaseToken: string }
 
 class LeaseLost extends Error {}
@@ -90,23 +95,46 @@ export function createWorker(config: WorkerConfig) {
     let pending: TraceStepInput[] = [];
     const flush = async () => { const steps = pending; pending = []; if (steps.length && !lost()) await call(`/worker/turns/${turn.turnId}/steps`, { ...lease, steps }).catch(() => {}); };
     const flusher = setInterval(() => { void flush(); }, 1000);
+    const turnDir = turnDirectory(config.stateDir, turn.turnId);
     try {
       // The agent reaches the platform with a token derived from this lease; it travels in a private file, never in argv.
-      const turnDir = turnDirectory(config.stateDir, turn.turnId);
       mkdirSync(turnDir, { recursive: true, mode: 0o700 });
       const tokenFile = path.join(turnDir, 'platform-token');
-      writeFileSync(tokenFile, turnToken(config.token, turn.turnId, turn.leaseToken), { mode: 0o600 });
+      const platformToken = turnToken(config.token, turn.turnId, turn.leaseToken), env = config.env ?? process.env;
+      writeFileSync(tokenFile, platformToken, { mode: 0o600 });
       const checkout = config.projects[turn.projectId] ?? process.cwd();
       // Writers work in their task's own worktree; bounded turns read the checkout.
       const worktree = lane === 'work' && turn.taskKey && config.worktrees ? await ensureWorktree({ checkout, taskKey: turn.taskKey, ...config.worktrees }) : null;
       // The committed ceiling wins even over what the coordinator sent.
       const grants = cappedBy(turn.grants, config.worktrees ? await committedCeiling(checkout, config.worktrees.base) : null);
+      const adapter = (turn.engine ? config.engines?.[turn.engine] : undefined) ?? config.engine;
+      const toolProfile = lane === 'work' && grants.codeWrite !== 'none' ? 'write' : 'read-only';
+      // Anything short of an unrestricted writer is a restriction someone has to hold the engine to.
+      const restricted = toolProfile !== 'write' || grants.shell !== 'full';
+      if (config.isolation === 'strict' && restricted && !enforcesToolPolicy(adapter.capabilities)) {
+        if (!lost()) await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'failed', stopReason: 'isolation-refused', summary: `This worker is strict and the ${adapter.name} engine cannot enforce the turn's restrictions (${toolProfile}, shell ${grants.shell}); nothing was run.` } });
+        return;
+      }
+      // Whatever leaves this worker is stripped of its secrets first.
+      const redact = createRedactor(env, [config.token, turn.leaseToken, platformToken]);
+      const artifact = (item: StepArtifact) => lost() ? Promise.resolve() : fetch(`${config.coordinatorUrl}/worker/turns/${turn.turnId}/artifacts`, { method: 'POST', headers: { 'content-type': 'text/plain; charset=utf-8', authorization: `Bearer ${config.token}`, 'x-worker-id': lease.workerId, 'x-lease-token': lease.leaseToken, 'x-step-seq': String(item.seq), 'x-step-kind': item.kind, 'x-step-truncated': item.truncated ? '1' : '0' }, body: item.body, signal: AbortSignal.timeout(30_000) }).then(() => {});
+      const tracer = createTracer({ worktree: worktree?.path ?? null, turnDir, redact, onSteps: steps => { pending.push(...steps); }, onArtifact: artifact });
+      tracer.start();
+      // Only an engine that can resume gets the session and the delta; every other one starts from the packet, which carries the same history.
+      const resume = turn.resume && adapter.capabilities.resume === 'id' ? turn.resume : null;
+      const moved = resume?.baseSha && worktree && resume.baseSha !== worktree.baseCommit ? `\n\n# The base moved\nThe base branch was at ${resume.baseSha.slice(0, 10)} when this session last ran and is at ${worktree.baseCommit.slice(0, 10)} now. Bring your branch up to date before you continue.` : '';
       const result = await executeTurn({
-        adapter: (turn.engine ? config.engines?.[turn.engine] : undefined) ?? config.engine, turnDir, env: config.env ?? process.env, timeoutMs: config.timeoutMs ?? 45 * 60_000, signal,
-        spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? checkout, prompt: turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, sessionId: null, toolProfile: lane === 'work' && grants.codeWrite !== 'none' ? 'write' : 'read-only', platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
-        onSteps: steps => { pending.push(...steps); },
+        adapter, turnDir, env, timeoutMs: config.timeoutMs ?? 45 * 60_000, signal,
+        spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
+        onSteps: steps => tracer.steps(steps),
+        // What a crash leaves behind is found by the next start of this worker.
+        onSpawn: pid => recordRun(turnDir, { turnId: turn.turnId, leaseToken: turn.leaseToken, pid: pid ?? null, startedAt: Date.now() }),
+        // Posted at once: a session named only at the end of a turn is lost with the turn.
+        onSession: sessionId => { if (turn.kind === 'work' && !lost()) void call(`/worker/turns/${turn.turnId}/session`, { ...lease, sessionId, ...(worktree ? { baseSha: worktree.baseCommit } : {}) }).catch(() => {}); },
       });
+      await tracer.finish();
       await flush();
+      const summary = result.summary ? redact(result.summary) : null;
       // The diff gate: whatever tool made a change, a path outside the write scope means nothing is published or reviewed.
       const violations = worktree ? outsideWriteScope(grants, await changedPaths(worktree.path, worktree.baseCommit)) : [];
       if (violations.length) {
@@ -114,17 +142,17 @@ export function createWorker(config: WorkerConfig) {
         return;
       }
       // Publishing is worker code: after a completed work turn the branch is pushed and a draft change opened or reused.
-      const title = `${turn.taskKey ?? ''} ${result.summary?.split('\n')[0]?.slice(0, 80) ?? ''}`.trim();
+      const title = `${turn.taskKey ?? ''} ${summary?.split('\n')[0]?.slice(0, 80) ?? ''}`.trim();
       const published = worktree && config.publish && result.state === 'completed'
-        ? await publishChange(config.publish.scm, { worktree: worktree.path, repository: config.publish.repository, branch: worktree.branch, base: config.publish.base, title, body: result.summary ?? '' }, config.publish.exec)
+        ? await publishChange(config.publish.scm, { worktree: worktree.path, repository: config.publish.repository, branch: worktree.branch, base: config.publish.base, title, body: summary ?? '' }, config.publish.exec)
           .catch((error: Error) => { console.error(`Publish failed: ${error.message}`); return null; })
         : null;
       // With the lease gone the coordinator has already marked the turn uncertain; nothing more may be reported.
       if (!lost()) await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: {
-        state: result.state, stopReason: result.stopReason, ...(result.summary ? { summary: result.summary } : {}), tokensIn: result.tokensIn, tokensOut: result.tokensOut, costMinor: Math.round(result.costUsd * 100),
+        state: result.state, stopReason: result.stopReason, ...(summary ? { summary } : {}), tokensIn: result.tokensIn, tokensOut: result.tokensOut, costMinor: Math.round(result.costUsd * 100),
         ...(worktree ? { headSha: await headSha(worktree.path) } : {}), ...(published ? { prUrl: published.url } : {}),
       } });
-    } finally { clearInterval(flusher); }
+    } finally { clearInterval(flusher); clearRun(turnDir); }
   }
 
   async function run(turn: Claimed, lane: Lane) {
@@ -153,7 +181,9 @@ export function createWorker(config: WorkerConfig) {
       void job.finally(() => running.delete(job));
       return true;
     },
-    async loop() { while (!stopped) { if (!await this.tick().catch(() => false)) await new Promise(resolve => setTimeout(resolve, config.pollMs ?? 2000)); } },
+    // Turns a previous run of this worker left behind: their processes are ended and they are reported, never resumed.
+    sweep: () => sweepOrphans(config.stateDir, record => call(`/worker/turns/${record.turnId}/orphaned`, { workerId: config.workerId, leaseToken: record.leaseToken })),
+    async loop() { await this.sweep().catch(() => []); while (!stopped) { if (!await this.tick().catch(() => false)) await new Promise(resolve => setTimeout(resolve, config.pollMs ?? 2000)); } },
     idle: () => Promise.all([...running]).then(() => undefined),
     stop() { stopped = true; },
   };

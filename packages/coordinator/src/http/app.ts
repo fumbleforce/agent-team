@@ -8,23 +8,31 @@ import { AcceptInviteBody, CaptureBody, InviteBody, LoginBody, newId, ProductEnv
 import { createAccounts } from '../auth/accounts.ts';
 import { createOidc } from '../auth/oidc.ts';
 import { can, canSeeProject, type Action, type Viewer } from '../auth/rbac.ts';
-import { sameSecret } from '../auth/secrets.ts';
+import { createMachineTokens } from '../auth/machineTokens.ts';
+import { clientAddress, idempotency, ifMatch, onError, onNotFound, pageOf, parseBody, preconditioned } from './conventions.ts';
+import { registerOrgRoutes } from './orgRoutes.ts';
+import { registerRuleRoutes } from './ruleRoutes.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
+import { mountSetupRoutes } from './setupRoutes.ts';
+import { SCM_KINDS } from '../../../../adapters/scm/index.ts';
+import { TRACKER_KINDS } from '../../../../adapters/tracker/index.ts';
 import { createWorkspace } from '../repos/workspace.ts';
 import { createTurns } from '../runtime/turns.ts';
 import { createMcp } from '../mcp/server.ts';
 import { createDeliberation } from '../runtime/deliberation.ts';
 import { createReviews } from '../runtime/reviews.ts';
 import { createRetro } from '../runtime/retro.ts';
+import { createMentions } from '../runtime/mentions.ts';
 import { createKnowledge, httpEmbedder, type Scope } from '../knowledge/knowledge.ts';
 import { createCosts } from '../costs/costs.ts';
 import { createChecks } from '../checks/checks.ts';
 import { createProposals } from '../runtime/proposals.ts';
 import { createIssues } from '../repos/issues.ts';
 import { createCaptures } from '../runtime/captures.ts';
+import { createSessions } from '../runtime/sessions.ts';
 import { createVersionedDocs } from '../repos/versionedDocs.ts';
 import { ConnectionBody, createIntegrations, HandoffBody } from '../repos/integrations.ts';
-import { ClaimBody, FinishBody, LeaseBody, CreateIssueBody, MemoryActionBody, ProviderBody, RegisterProjectBody, SeatProviderBody, StepsBody, WritePageBody } from '@agent-team/protocol';
+import { ClaimBody, FinishBody, LeaseBody, SessionBody, StepArtifactKind, CreateIssueBody, MemoryActionBody, ProviderBody, RegisterProjectBody, CreateProjectBody, SeatProviderBody, StepsBody, WritePageBody } from '@agent-team/protocol';
 
 type Env = { Variables: { viewer: Viewer } };
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.json': 'application/json', '.png': 'image/png' };
@@ -39,32 +47,29 @@ export function createApp(context: Context) {
   const retro = createRetro(context, turns);
   // Semantic search is on when an embeddings endpoint is named; otherwise search is lexical.
   const knowledge = createKnowledge(context, process.env.AGENT_TEAM_EMBEDDINGS_URL ? httpEmbedder(process.env.AGENT_TEAM_EMBEDDINGS_URL, process.env.AGENT_TEAM_EMBEDDINGS_MODEL ?? 'nomic-embed-text') : null);
-  const mcp = createMcp(context, workspace, deliberation, reviews, knowledge);
   const costs = createCosts(context);
   const checks = createChecks(context);
   const proposals = createProposals(context);
   const issues = createIssues(context, path.join(context.dataDir, 'blobs'));
   const captures = createCaptures(context, turns, issues);
+  const sessions = createSessions(context);
   const docs = createVersionedDocs(context);
   const integrations = createIntegrations(context, turns);
+  const mentions = createMentions(context, turns);
+  const mcp = createMcp(context, { workspace, deliberation, reviews, knowledge, turns, issues, integrations, mentions });
   const LIBRARY = { type: 'library' as const, id: '' };
   const cookieName = context.secureCookies ? '__Host-session' : 'session';
   const app = new Hono<Env>();
 
-  const body = async <T extends z.ZodType>(c: Hc, schema: T): Promise<z.infer<T>> => {
-    const parsed = schema.safeParse(await c.req.json().catch(() => null));
-    if (!parsed.success) throw new HttpError(400, 'invalid', z.prettifyError(parsed.error));
-    return parsed.data;
-  };
+  const machineTokens = createMachineTokens(context);
+  const body = parseBody;
   const startSession = (c: Hc, token: string) => setCookie(c, cookieName, token, { httpOnly: true, sameSite: 'Lax', secure: context.secureCookies, path: '/', maxAge: 30 * 24 * 3600 });
   const allow = (c: Hc<Env>, action: Action, projectId?: string) => { if (!can(c.get('viewer'), action, projectId)) throw forbidden(); };
-  const machine = (c: Hc) => { if (!sameSecret(c.req.header('authorization') ?? '', `Bearer ${context.machineToken}`)) throw new HttpError(401, 'unauthorized', 'Machine token required'); };
+  // The root machine token or a named one that is not revoked.
+  const machine = async (c: Hc) => { if (!await machineTokens.accepts(c.req.header('authorization'))) throw new HttpError(401, 'unauthorized', 'Machine token required'); };
 
-  app.onError((error, c) => {
-    if (error instanceof HttpError) return c.json({ error: { code: error.code, message: error.message } }, error.status as 400);
-    console.error(error);
-    return c.json({ error: { code: 'internal', message: 'Internal error' } }, 500);
-  });
+  app.onError(onError);
+  app.notFound(onNotFound);
 
   // Cookie-authenticated writes must come from this origin and carry JSON.
   app.use('/api/*', async (c, next) => {
@@ -79,15 +84,15 @@ export function createApp(context: Context) {
 
   app.get('/health', c => c.json({ ok: true }));
   app.post('/machine/projects', async c => {
-    machine(c);
+    await machine(c);
     const id = await workspace.registerProject(await body(c, RegisterProjectBody));
     await retro.ensureSchedule(id);
     return c.json({ id });
   });
-  app.post('/machine/setup-link', async c => { machine(c); return c.json({ path: await accounts.setupLink() }); });
+  app.post('/machine/setup-link', async c => { await machine(c); return c.json({ path: await accounts.setupLink() }); });
 
   // Worker routes: machine token plus, per turn, the lease. A lost lease answers 409 and the worker stops.
-  app.use('/worker/*', async (c, next) => { machine(c); await next(); });
+  app.use('/worker/*', async (c, next) => { await machine(c); await next(); });
   app.post('/worker/claim', async c => {
     const claim = await body(c, ClaimBody);
     // Every poll records the worker as seen, with what it serves: the Team page and the launcher read it.
@@ -106,9 +111,28 @@ export function createApp(context: Context) {
   });
   // The body is the captured image; the lease travels in headers because the body is not JSON.
   app.post('/worker/turns/:id/artifacts', async c => {
+    // A trace step's text (a git diff, run output, think text) arrives the same way, named by the step it belongs to.
+    const stepKind = StepArtifactKind.safeParse(c.req.header('x-step-kind')), seq = Number(c.req.header('x-step-seq'));
+    if (stepKind.success && Number.isInteger(seq) && seq >= 0) {
+      const text = await c.req.text();
+      context.events.published(await context.storage.transaction(async tx => sessions.stepArtifact(tx, await turns.leased(tx, c.req.param('id'), c.req.header('x-worker-id') ?? '', c.req.header('x-lease-token') ?? ''), { seq, kind: stepKind.data, body: text, truncated: c.req.header('x-step-truncated') === '1' })));
+      return c.json({ ok: true });
+    }
     const latency = Number(c.req.header('x-latency-ms'));
     const bytes = new Uint8Array(await c.req.arrayBuffer());
     return c.json(await captures.artifact(c.req.param('id'), c.req.header('x-worker-id') ?? '', c.req.header('x-lease-token') ?? '', { mime: (c.req.header('content-type') ?? '').split(';')[0]!.trim(), bytes, latencyMs: Number.isFinite(latency) && latency >= 0 ? Math.round(latency) : null }));
+  });
+  app.post('/worker/turns/:id/session', async c => {
+    const input = await body(c, SessionBody);
+    context.events.published(await context.storage.transaction(async tx => sessions.record(tx, await turns.leased(tx, c.req.param('id'), input.workerId, input.leaseToken), input)));
+    return c.json({ ok: true });
+  });
+  // A worker that starts and finds a turn of its own still recorded as running gives the lease up; the expiry makes it uncertain and quarantines.
+  app.post('/worker/turns/:id/orphaned', async c => {
+    const lease = await body(c, LeaseBody);
+    await context.storage.transaction(async tx => sessions.orphaned(tx, await turns.leased(tx, c.req.param('id'), lease.workerId, lease.leaseToken)));
+    await turns.sweep();
+    return c.json({ ok: true });
   });
   app.post('/worker/turns/:id/finish', async c => { const input = await body(c, FinishBody); const finished = await turns.finish(c.req.param('id'), input.workerId, input.leaseToken, input.outcome);
     // A work turn that reported ready_for_review hands its head to the reviewers.
@@ -127,7 +151,7 @@ export function createApp(context: Context) {
   app.post('/api/auth/setup', async c => { startSession(c, await accounts.setup(await body(c, SetupBody))); return c.json({ ok: true }); });
   app.post('/api/auth/login', async c => {
     const input = await body(c, LoginBody);
-    startSession(c, await accounts.login(input.email, input.password, c.req.header('x-forwarded-for') ?? 'local'));
+    startSession(c, await accounts.login(input.email, input.password, clientAddress(c)));
     return c.json({ ok: true });
   });
   app.post('/api/auth/invites/:token', async c => { startSession(c, await accounts.acceptInvite(c.req.param('token'), await body(c, AcceptInviteBody))); return c.json({ ok: true }); });
@@ -143,17 +167,24 @@ export function createApp(context: Context) {
   app.post('/api/auth/logout', async c => {
     const token = getCookie(c, cookieName);
     if (token) await accounts.logout(token);
-    deleteCookie(c, cookieName, { path: '/' });
+    deleteCookie(c, cookieName, { path: '/', secure: context.secureCookies });
     return c.json({ ok: true });
   });
 
   app.use('/api/*', async (c, next) => {
     if (c.req.path.startsWith('/api/auth/')) return next();
-    const viewer = await accounts.viewer(getCookie(c, cookieName));
+    let viewer = await accounts.viewer(getCookie(c, cookieName));
+    // On a loopback bind an identity proxy may vouch for the person; that opens an ordinary session.
+    const vouched = !viewer && context.trustedHeader ? c.req.header(context.trustedHeader) : undefined;
+    if (vouched) {
+      const token = await accounts.trustedSession(vouched);
+      if (token) { startSession(c, token); viewer = await accounts.viewer(token); }
+    }
     if (!viewer) throw new HttpError(401, 'unauthenticated', 'Sign in');
     c.set('viewer', viewer);
     await next();
   });
+  app.use('/api/*', idempotency(context));
 
   app.get('/api/me', async c => {
     const viewer = c.get('viewer');
@@ -208,14 +239,16 @@ export function createApp(context: Context) {
   };
   app.get('/api/threads/:id/messages', async c => {
     const thread = await threadFor(c, 'project.read');
-    return c.json({ messages: await workspace.messages(thread.id, { after: Number(c.req.query('after') ?? 0), limit: 100 }), seq: await context.events.head() });
+    return c.json({ ...await (async () => { const page = pageOf(c), rows = await workspace.messages(thread.id, { after: page.after ?? 0, limit: page.limit + 1 }); return { messages: rows.slice(0, page.limit), next: rows.length > page.limit ? rows[page.limit - 1]!.seq : null }; })(), seq: await context.events.head() });
   });
   app.post('/api/threads/:id/messages', async c => {
     const thread = await threadFor(c, 'project.contribute');
     const input = await body(c, PostMessageBody);
     const id = await workspace.postMessage({ kind: 'user', id: c.get('viewer').userId }, thread, input);
-    // What a human raises in a team thread goes to the PM, who answers or opens a deliberation.
-    const pm = thread.project_id && thread.visibility === 'team' ? await workspace.pm(thread.project_id) : null;
+    // @agent and @role are directed requests under the same limits as an agent's; whoever is named answers instead of the PM.
+    const named = thread.project_id && thread.visibility === 'team' ? await mentions.fromText({ projectId: thread.project_id, threadId: thread.id, message: { id }, author: { kind: 'user', id: c.get('viewer').userId }, body: input.body }) : [];
+    // What a human raises in a team thread otherwise goes to the PM, who answers or opens a deliberation.
+    const pm = thread.project_id && thread.visibility === 'team' && named.length === 0 ? await workspace.pm(thread.project_id) : null;
     if (pm && thread.project_id) await turns.enqueue({ agentId: pm, projectId: thread.project_id, kind: 'triage', threadId: thread.id, dedupeKey: `triage:${thread.id}` });
     return c.json({ id });
   });
@@ -257,7 +290,10 @@ export function createApp(context: Context) {
     const roster = root.team_id ? await workspace.roster(root.team_id) : [];
     const ids = roster.map(agent => agent.id);
     const items = ids.length ? await context.storage.db.selectFrom('work_items').leftJoin('tasks', 'tasks.id', 'work_items.task_id').select(['work_items.id', 'work_items.agent_id', 'work_items.kind', 'work_items.lane', 'work_items.state', 'work_items.defer_reason', 'tasks.key', 'tasks.title']).where('work_items.agent_id', 'in', ids).where('work_items.state', 'in', ['queued', 'leased']).orderBy('work_items.priority_class').orderBy('work_items.created_at').execute() : [];
-    const lanes = roster.map(agent => {
+    const limited = new Map((await context.storage.db.selectFrom('providers').select(['id', 'limited_until']).where('limited_until', '>', context.now()).execute()).map(row => [row.id, Number(row.limited_until)]));
+    const lanes = roster.map(seat => {
+      // An agent whose provider hit its usage limit shows provider-limited until the reset.
+      const agent = { ...seat, limitedUntil: seat.provider_id ? limited.get(seat.provider_id) ?? null : null };
       const mine = items.filter(item => item.agent_id === agent.id);
       const view = (item: (typeof items)[number]) => ({ id: item.id, kind: item.kind, key: item.key, title: item.title ?? item.kind, deferReason: item.defer_reason });
       return { agent, now: mine.filter(item => item.state === 'leased').map(view), queued: mine.filter(item => item.state === 'queued' && item.lane === 'work').map(view), owed: mine.filter(item => item.state === 'queued' && item.lane !== 'work').map(view) };
@@ -295,7 +331,7 @@ export function createApp(context: Context) {
     const file = await issues.attachment(c.req.param('id'));
     return c.body(file.data, 200, { 'content-type': file.mime, 'cache-control': 'private, max-age=31536000, immutable', 'x-content-type-options': 'nosniff' });
   });
-  app.get('/api/projects/:slug/issues', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ issues: await issues.list(project.id), seq: await context.events.head() }); });
+  app.get('/api/projects/:slug/issues', async c => { const { project } = await projectFor(c, 'project.read'); const page = pageOf(c), rows = await issues.list(project.id, { after: page.after, limit: page.limit + 1 }); return c.json({ issues: rows.slice(0, page.limit), next: rows.length > page.limit ? rows[page.limit - 1]!.number : null, seq: await context.events.head() }); });
   app.post('/api/projects/:slug/issues', async c => {
     const { project } = await projectFor(c, 'project.contribute');
     const created = await issues.create(c.get('viewer').userId, project.id, await body(c, CreateIssueBody));
@@ -326,6 +362,27 @@ export function createApp(context: Context) {
     return c.json(await captures.request(c.get('viewer').userId, project, await workspace.pm(project.id), c.req.param('envId'), input.viewport));
   });
 
+  mountSetupRoutes(app, { context, integrations, projectFor: (c, action) => projectFor(c as Hc<Env>, action), body: (c, schema) => body(c as Hc<Env>, schema), userId: c => (c as Hc<Env>).get('viewer').userId });
+  // What the installed adapters offer, so the app never has to name a provider itself.
+  app.get('/api/adapters', c => c.json({ scm: SCM_KINDS, trackers: TRACKER_KINDS }));
+  // A project made in the app. The manifest a checkout commits later (through `up`) replaces what is entered here.
+  app.post('/api/projects', async c => {
+    allow(c, 'org.members');
+    const input = await body(c, CreateProjectBody);
+    const slug = input.slug ?? input.name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+    if (!slug) throw new HttpError(400, 'invalid', 'The name needs at least one letter or digit');
+    const db = context.storage.db;
+    if (await db.selectFrom('projects').select('id').where('slug', '=', slug).executeTakeFirst()) throw new HttpError(409, 'conflict', `A project called "${slug}" already exists`);
+    const parent = input.parentSlug ? await db.selectFrom('projects').select(['id', 'parent_id']).where('slug', '=', input.parentSlug).executeTakeFirst() : null;
+    if (input.parentSlug && (!parent || parent.parent_id)) throw new HttpError(400, 'invalid', 'A sub-project sits directly under a top-level project');
+    const manifest = { name: input.name, ...(input.scm ? { scm: { kind: input.scm } } : {}), ...(input.repository ? { delivery: { repository: input.repository, baseBranch: input.baseBranch, requiredChecks: [], autoMergeAuthorized: false } } : {}), ...(input.tracker ? { tracker: { kind: input.tracker, ...(input.repository ? { repository: input.repository } : {}) } } : {}) };
+    const id = await workspace.registerProject({ slug, name: input.name, kind: input.kind, manifest });
+    if (parent) await db.updateTable('projects').set({ parent_id: parent.id }).where('id', '=', id).execute();
+    const published = await context.storage.transaction(tx => context.events.append(tx, [{ type: 'settings.changed', category: 'audit', actorKind: 'user', userId: c.get('viewer').userId, projectId: id, payload: { what: 'project.created', slug } }]));
+    context.events.published(published);
+    return c.json({ id, slug });
+  });
+  app.post('/api/projects/:slug/integrations/:id/remove', async c => { const { project } = await projectFor(c, 'project.configure'); await integrations.disconnect(c.get('viewer').userId, project.id, c.req.param('id')); return c.json({ ok: true }); });
   app.get('/api/projects/:slug/integrations', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ connections: await integrations.connections(project.id), handoffs: await integrations.handoffs(project.id) }); });
   app.post('/api/projects/:slug/integrations', async c => { const { project } = await projectFor(c, 'project.configure'); return c.json({ id: await integrations.connect(c.get('viewer').userId, project.id, await body(c, ConnectionBody)) }); });
   app.post('/api/projects/:slug/handoffs', async c => { const { project } = await projectFor(c, 'project.contribute'); return c.json({ id: await integrations.receive(c.get('viewer').userId, project.id, await body(c, HandoffBody)) }); });
@@ -346,8 +403,9 @@ export function createApp(context: Context) {
   app.post('/api/roles/:slug', async c => {
     allow(c, 'org.members');
     const input = await body(c, z.object({ doc: z.record(z.string(), z.unknown()), note: z.string().max(200).optional(), expectedVersion: z.number().int().min(0).optional() }));
+    const matched = ifMatch(c), expectedVersion = matched ?? input.expectedVersion;
     const user = await context.storage.db.selectFrom('users').select('name').where('id', '=', c.get('viewer').userId).executeTakeFirstOrThrow();
-    return c.json({ version: await docs.save('role', LIBRARY, c.req.param('slug'), { ...input.doc, slug: c.req.param('slug') }, { author: user.name, ...(input.note ? { note: input.note } : {}), ...(input.expectedVersion !== undefined ? { expectedVersion: input.expectedVersion } : {}) }) });
+    return c.json({ version: await preconditioned(matched, () => docs.save('role', LIBRARY, c.req.param('slug'), { ...input.doc, slug: c.req.param('slug') }, { author: user.name, userId: c.get('viewer').userId, ...(input.note ? { note: input.note } : {}), ...(expectedVersion !== undefined ? { expectedVersion } : {}) })) });
   });
 
   // The organization at a glance: every project the viewer can see with its team, open work and spend this month.
@@ -424,6 +482,26 @@ export function createApp(context: Context) {
     const steps = turns[0] ? await context.storage.db.selectFrom('trace_steps').selectAll().where('turn_id', '=', turns[0].id).orderBy('seq').limit(400).execute() : [];
     return c.json({ agent, turns, steps, seq: await context.events.head() });
   });
+
+  // The trace of one turn. The list says which steps carry an artifact; `?seq=` returns that step's diff, output or think text.
+  app.get('/api/turns/:id/steps', async c => {
+    const db = context.storage.db;
+    const turn = await db.selectFrom('turns').select(['id', 'project_id', 'state']).where('id', '=', c.req.param('id')).executeTakeFirst();
+    if (!turn) throw new HttpError(404, 'not_found', 'Turn not found');
+    allow(c, 'project.read', turn.project_id);
+    const seq = c.req.query('seq');
+    if (seq !== undefined) {
+      const artifact = await db.selectFrom('step_artifacts').select(['seq', 'kind', 'body', 'bytes', 'truncated']).where('turn_id', '=', turn.id).where('seq', '=', Number(seq) || 0).executeTakeFirst();
+      if (!artifact) throw new HttpError(404, 'not_found', 'This step has no artifact');
+      return c.json({ artifact: { ...artifact, truncated: Number(artifact.truncated) === 1 } });
+    }
+    const steps = await db.selectFrom('trace_steps').leftJoin('step_artifacts', join => join.onRef('step_artifacts.turn_id', '=', 'trace_steps.turn_id').onRef('step_artifacts.seq', '=', 'trace_steps.seq'))
+      .select(['trace_steps.seq', 'trace_steps.at', 'trace_steps.kind', 'trace_steps.title', 'trace_steps.detail', 'trace_steps.status', 'step_artifacts.kind as artifact_kind', 'step_artifacts.bytes as artifact_bytes']).where('trace_steps.turn_id', '=', turn.id).orderBy('trace_steps.seq').limit(400).execute();
+    return c.json({ turn, steps, seq: await context.events.head() });
+  });
+
+  registerOrgRoutes(app, context, { workspace, docs, machineTokens });
+  registerRuleRoutes(app, context, { workspace, docs, costs });
 
   // Snapshot-then-stream: a view returns the seq it is current to, the client subscribes from there.
   app.get('/api/stream', c => streamSSE(c, async stream => {

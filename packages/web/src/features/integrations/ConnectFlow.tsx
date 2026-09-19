@@ -1,0 +1,71 @@
+import { useState } from 'react';
+import { api, ApiError } from '../../data/client';
+import { useResource } from '../../data/useResource';
+import { ChoiceCard, StatusLine, Steps } from '../../patterns';
+import { Button, Chip, Dialog, Field, Input, SectionLabel, Text } from '../../ui';
+
+interface SetupField { key: string; label: string; placeholder?: string; help?: string; required?: boolean }
+export interface CatalogEntry { kind: string; title: string; category: string; summary: string; does: string[]; steps: string[]; fields: SetupField[]; mode: string; testable: boolean; credentialPresent: boolean | null;
+  credential: { variable: string; label: string; runsOn: 'coordinator' | 'workers' } | null }
+export const CATEGORY: Record<string, string> = { code: 'Code', 'issue-boards': 'Task boards', comms: 'Chat', storage: 'Documents', business: 'Business tools', 'ai-workspaces': 'AI workspaces', media: 'Media', other: 'Anything else' };
+
+// Pick what to connect, follow its steps, check that it works, connect. Secrets are never typed here:
+// each entry says which variable to set and on which machine, and the check tells whether it is there.
+export function ConnectFlow({ slug, connectedKinds, onDone }: { slug: string; connectedKinds: string[]; onDone(): void }) {
+  const catalog = useResource<{ entries: CatalogEntry[] }>('/api/integrations/catalog');
+  const [open, setOpen] = useState(false), [entry, setEntry] = useState<CatalogEntry | null>(null);
+  const [errors, setErrors] = useState<Record<string, string>>({}), [check, setCheck] = useState<{ ok: boolean; message: string } | null>(null), [busy, setBusy] = useState(false);
+  const pick = (next: CatalogEntry | null) => { setEntry(next); setErrors({}); setCheck(null); };
+
+  async function send(action: 'test' | 'setup', form: HTMLFormElement) {
+    if (!entry) return;
+    const values = Object.fromEntries(entry.fields.map(field => [field.key, String(new FormData(form).get(field.key) ?? '')]));
+    setBusy(true); setErrors({});
+    try {
+      const result = await api<{ ok: boolean; message?: string }>(`/api/projects/${slug}/integrations/${action}`, { kind: entry.kind, values });
+      if (action === 'test') setCheck({ ok: result.ok, message: result.message ?? '' });
+      else { setOpen(false); pick(null); onDone(); }
+    } catch (failure) {
+      if (failure instanceof ApiError && Object.keys(failure.fields).length) setErrors(failure.fields as Record<string, string>);
+      else setCheck({ ok: false, message: failure instanceof ApiError ? failure.message : 'That did not work; try again.' });
+    } finally { setBusy(false); }
+  }
+
+  const groups = Object.keys(CATEGORY).map(key => ({ key, items: catalog.data?.entries.filter(item => item.category === key) ?? [] })).filter(group => group.items.length);
+  return (
+    <Dialog open={open} onOpenChange={next => { setOpen(next); if (!next) pick(null); }} title={entry ? `Connect ${entry.title}` : 'Connect something'} description={entry ? entry.summary : 'Pick what this project should work with. Each one walks you through its setup.'} trigger={<Button variant="primary">+ Connect something</Button>}
+      footer={entry && (
+        <div className="flex grow items-center gap-2">
+          <Button variant="ghost" onClick={() => pick(null)}>← Back</Button>
+          <span className="grow" />
+          {entry.testable && <Button disabled={busy} onClick={() => { const form = document.getElementById('connect-flow') as HTMLFormElement | null; if (form?.reportValidity()) void send('test', form); }}>Test connection</Button>}
+          <Button type="submit" form="connect-flow" variant="primary" disabled={busy}>Connect {entry.title}</Button>
+        </div>
+      )}>
+      {!entry ? (
+        <div className="flex min-h-0 flex-col gap-4 overflow-y-auto">
+          {groups.map(group => (
+            <section key={group.key} className="flex flex-col gap-1.5">
+              <SectionLabel>{CATEGORY[group.key]}</SectionLabel>
+              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                {group.items.map(item => <ChoiceCard key={item.kind} title={item.title} note={item.summary} onClick={() => pick(item)} aside={connectedKinds.includes(item.kind) ? <Chip tone="working">Connected</Chip> : undefined} />)}
+              </div>
+            </section>
+          ))}
+        </div>
+      ) : (
+        <form id="connect-flow" className="flex min-h-0 flex-col gap-4 overflow-y-auto" onSubmit={event => { event.preventDefault(); void send('setup', event.currentTarget); }}>
+          <section className="flex flex-col gap-1.5"><SectionLabel>What the team does with it</SectionLabel>{entry.does.map(line => <Text key={line} size="small" tone="soft">· {line}</Text>)}</section>
+          <section className="flex flex-col gap-2"><SectionLabel>Before you connect</SectionLabel><Steps items={entry.steps} /></section>
+          {entry.credential && (entry.credential.runsOn === 'coordinator'
+            ? <StatusLine boxed tone={entry.credentialPresent ? 'working' : 'attention'}>{entry.credentialPresent ? `${entry.credential.label} found on the coordinator.` : `${entry.credential.variable} is not set on the coordinator yet. You can connect now; it starts working once the variable is set and the coordinator restarted.`}</StatusLine>
+            : <StatusLine boxed tone="off">The {entry.credential.label.toLowerCase()} lives on the worker machines as {entry.credential.variable}; it is never entered here.</StatusLine>)}
+          <section className="flex flex-col gap-3">
+            {entry.fields.map((field, index) => <Field key={field.key} label={field.required ? field.label : `${field.label} (optional)`} help={field.help} error={errors[field.key]}><Input name={field.key} placeholder={field.placeholder} required={field.required} autoFocus={index === 0} /></Field>)}
+          </section>
+          {check && <StatusLine boxed tone={check.ok ? 'working' : 'stop'}>{check.message}</StatusLine>}
+        </form>
+      )}
+    </Dialog>
+  );
+}

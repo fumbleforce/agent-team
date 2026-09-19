@@ -1,6 +1,12 @@
-export { AppShell, Sidebar, PageHeader, RailHeader, CenteredPanel, AgentLine, type SidebarProps } from './AppShell';
-export { Message, Composer, resolveAuthor, type Author } from './Thread';
+export { AppShell, Sidebar, PageHeader, RailHeader, CenteredPanel, AgentLine, type SidebarProps, type Crumb } from './AppShell';
+export { Message, Composer, resolveAuthor, mentionOptions, type Author, type ComposerImage, type ComposerProps, type MentionOption } from './Thread';
 export { TaskCard, BoardColumn } from './TaskCard';
 export { SidePanel, ListLink, Prose, NoteCard, BarRow, TraceRow } from './Panels';
 export { Attachment, KeyValueList, PreviewFrame, LaneRow, LaneCell, SeatRow, SubHeader, VoteLine, type LaneItem } from './Lanes';
 export { MatrixTable, type MatrixCell } from './MatrixTable';
+export { Markdown, renderMarkdown } from './Markdown';
+export { CommandPalette, openPalette, type CommandPaletteProps, type PaletteLink } from './CommandPalette';
+export { EntityLink, EmptyState, type EntityKind } from './Links';
+export { DataTable, SettingsBody, SettingsSection, type DataColumn } from './DataTable';
+export { DiffView, OutputView, Disclosure, parseDiff, type DiffFile, type DiffLine } from './DiffView';
+export { ChoiceCard, Steps, StatusLine } from './Setup';

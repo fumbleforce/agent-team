@@ -1,0 +1,26 @@
+@reference "../tokens.css";
+
+/* Rendered markdown: the one place where elements are styled by tag, because the markup comes from a parser. Token classes only. */
+.prose { @apply text-body text-ink-soft leading-relaxed wrap-break-word; }
+.prose.prose-small { @apply text-small; }
+.prose > :first-child { @apply mt-0; }
+.prose > :last-child { @apply mb-0; }
+.prose p, .prose ul, .prose ol, .prose pre, .prose blockquote, .prose table { @apply my-2; }
+.prose h1 { @apply mt-5 mb-2 text-heading font-semibold tracking-tight text-ink; }
+.prose h2 { @apply mt-5 mb-2 text-title font-semibold tracking-tight text-ink; }
+.prose h3, .prose h4, .prose h5, .prose h6 { @apply mt-4 mb-1.5 text-body font-semibold text-ink; }
+.prose ul { @apply list-disc pl-5; }
+.prose ol { @apply list-decimal pl-5; }
+.prose li { @apply my-0.5; }
+.prose a { @apply text-accent underline underline-offset-2; }
+.prose strong { @apply font-semibold text-ink; }
+.prose code { @apply rounded-chip bg-active px-1 py-px font-mono text-caption text-ink; }
+.prose pre { @apply overflow-x-auto rounded-control border border-line bg-ground p-3; }
+.prose pre code { @apply bg-transparent p-0; }
+.prose blockquote { @apply border-l-2 border-line-strong pl-3 text-ink-muted; }
+.prose hr { @apply my-4 border-0 border-t border-line; }
+.prose table { @apply border-collapse text-small; }
+.prose th, .prose td { @apply border border-line px-2 py-1 text-left; }
+.prose th { @apply bg-raised font-semibold text-ink; }
+.prose img { @apply max-h-80 max-w-full rounded-control border border-line-strong; }
+.prose input { @apply mr-1.5 accent-accent; }

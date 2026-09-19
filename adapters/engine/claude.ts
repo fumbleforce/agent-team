@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { TraceStepInput } from '@agent-team/protocol';
-import { allowlistedEnvironment, type EngineAdapter, type ParseState } from './contract.ts';
+import { allowlistedEnvironment, type EngineAdapter, type EngineStep, type ParseState } from './contract.ts';
 
 const LIMIT = /rate.?limit|usage limit|limit reached|hit your limit|out of (?:extra )?usage|too many requests|\b429\b/i;
 const READ_TOOLS = ['Read', 'Grep', 'Glob'];
@@ -59,13 +59,14 @@ export const claude: EngineAdapter = {
       return [];
     }
     if (event.type !== 'assistant') return [];
-    const steps: TraceStepInput[] = [];
+    const steps: EngineStep[] = [];
     for (const block of event.message?.content ?? []) {
       if (block.type === 'text' && block.text?.trim()) steps.push({ seq: state.nextSeq++, kind: 'think', title: block.text.replace(/\s+/g, ' ').slice(0, 300), status: 'ok' });
       // Platform calls are traced by the coordinator when it handles them, identically for every engine.
       if (block.type === 'tool_use' && block.name && !block.name.startsWith('mcp__platform')) {
-        const info = detail(block.input);
-        steps.push({ seq: state.nextSeq++, kind: KIND[block.name] ?? 'run', title: info ? `${block.name}: ${info}` : block.name, status: 'ok' });
+        const info = detail(block.input), kind = KIND[block.name] ?? 'run', target = block.input?.file_path ?? block.input?.notebook_path;
+        // The path is only a hint for where to ask git; the diff itself never comes from the tool's input.
+        steps.push({ seq: state.nextSeq++, kind, title: info ? `${block.name}: ${info}` : block.name, status: 'ok', ...(kind === 'edit' && typeof target === 'string' ? { target } : {}) });
       }
     }
     return steps;

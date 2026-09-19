@@ -24,6 +24,9 @@ export const PostMessageBody = z.object({
 });
 export const VersionedDocBody = z.object({ doc: z.record(z.string(), z.unknown()), note: z.string().max(200).optional() });
 export const RegisterProjectBody = z.object({ slug: ProjectBody.shape.slug, name: z.string().min(1).max(80), kind: z.string().max(40).default('repo'), manifest: z.record(z.string(), z.unknown()).default({}) });
+export const CreateProjectBody = z.object({ name: z.string().trim().min(1).max(80), slug: ProjectBody.shape.slug.optional(), kind: z.string().max(40).default('repo'), parentSlug: z.string().max(60).optional(),
+  // Where the code lives and where its issues are; both can be left out and set later by the committed manifest.
+  scm: z.string().regex(/^[a-z][a-z0-9-]{0,30}$/).optional(), repository: z.string().regex(/^[\w.-]+(\/[\w.-]+)+$/).max(200).optional(), baseBranch: z.string().max(100).default('main'), tracker: z.string().regex(/^[a-z][a-z0-9-]{0,30}$/).optional() });
 export const WritePageBody = z.object({ path: z.string().max(200), title: z.string().min(1).max(160), body: z.string().max(200_000), note: z.string().max(200).optional(), expectedRev: z.number().int().min(0).optional() });
 export const MemoryActionBody = z.object({ action: z.enum(['confirm', 'retire', 'promote']), path: z.string().max(200).optional() });
 export const CreateIssueBody = z.object({ title: z.string().min(1).max(200), body: z.string().min(1).max(8000), source: z.enum(['discussion', 'product']).default('discussion'), attachmentId: z.string().nullish(),

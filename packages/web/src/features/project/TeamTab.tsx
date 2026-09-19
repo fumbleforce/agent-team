@@ -1,3 +1,4 @@
+import type { ReactNode } from 'react';
 import { api, type Agent } from '../../data/client';
 import { useResource } from '../../data/useResource';
 import { SeatRow } from '../../patterns';
@@ -5,7 +6,7 @@ import { Button, Card, Field, Input, SectionLabel, Select, StatusDot, Text } fro
 
 interface Provider { id: string; name: string; kind: string; engine: string; models: string[]; status: string; agents: number }
 
-export function TeamTab({ roster, teamName, onChanged }: { roster: Agent[]; teamName: string | null; onChanged(): void }) {
+export function TeamTab({ roster, teamName, onChanged, children }: { roster: Agent[]; teamName: string | null; onChanged(): void; children?: ReactNode }) {
   const providers = useResource<{ providers: Provider[] }>('/api/providers');
   const list = providers.data?.providers ?? [];
   const assign = (agent: Agent, value: string) => {
@@ -51,6 +52,7 @@ export function TeamTab({ roster, teamName, onChanged }: { roster: Agent[]; team
         </form>
         <Text size="caption" tone="muted">Any agent can run on any provider. Credentials stay on the workers; a provider here only names the engine and the models it offers.</Text>
       </section>
+      {children}
     </div>
   );
 }

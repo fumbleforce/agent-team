@@ -1,4 +1,5 @@
-import { newId } from '@agent-team/protocol';
+import type { z } from 'zod';
+import { newId, type BudgetBody } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import type { Context } from '../context.ts';
 
@@ -37,6 +38,42 @@ export function createCosts(context: Context) {
         byAgent: sum(row => row.agent_id).sort((a, b) => b.amountMinor - a.amountMinor),
         byProject: sum(row => row.project_id).sort((a, b) => b.amountMinor - a.amountMinor),
       };
+    },
+
+    // Every entry of a period as CSV, oldest first. Names are resolved here so the file reads without the database.
+    async exportCsv(projectIds: string[], from: number, to: number): Promise<string> {
+      const rows = projectIds.length ? await db.selectFrom('cost_entries').innerJoin('projects', 'projects.id', 'cost_entries.project_id').leftJoin('agents', 'agents.id', 'cost_entries.agent_id').leftJoin('providers', 'providers.id', 'cost_entries.provider_id')
+        .select(['cost_entries.id', 'cost_entries.at', 'projects.slug', 'agents.name as agent', 'providers.name as provider', 'cost_entries.billing_kind', 'cost_entries.tokens_in', 'cost_entries.tokens_out', 'cost_entries.amount_minor', 'cost_entries.currency', 'cost_entries.turn_id'])
+        .where('cost_entries.project_id', 'in', projectIds).where('cost_entries.at', '>=', from).where('cost_entries.at', '<', to).orderBy('cost_entries.at').orderBy('cost_entries.id').execute() : [];
+      // Quoted when needed; a leading formula character is defused so a spreadsheet never runs a name.
+      const cell = (value: string | number | null) => {
+        const text = typeof value === 'string' && /^[=+@-]/.test(value) ? `'${value}` : String(value ?? '');
+        return /[",\r\n]/.test(text) ? `"${text.replaceAll('"', '""')}"` : text;
+      };
+      const lines = rows.map(row => [new Date(Number(row.at)).toISOString(), row.slug, row.agent, row.provider, row.billing_kind, row.tokens_in, row.tokens_out, row.amount_minor, row.currency, row.turn_id].map(cell).join(','));
+      return `${['at,project,agent,provider,billing_kind,tokens_in,tokens_out,amount_minor,currency,turn_id', ...lines].join('\r\n')}\r\n`;
+    },
+
+    async budgets(projectIds: string[]) {
+      const rows = await db.selectFrom('budgets').select(['scope', 'scope_id', 'period', 'amount_minor']).orderBy('scope').orderBy('scope_id').execute();
+      return rows.filter(row => row.scope === 'org' || projectIds.includes(row.scope_id)).map(row => ({ scope: row.scope, scopeId: row.scope_id, period: row.period, amountMinor: row.amount_minor }));
+    },
+
+    // Changing the amount re-arms the warning: the new budget has not warned yet.
+    async setBudget(input: z.infer<typeof BudgetBody> & { amountMinor: number }) {
+      const published = await storage.transaction(async tx => {
+        await tx.insertInto('budgets').values({ scope: input.scope, scope_id: input.scopeId, period: input.period, amount_minor: input.amountMinor, warned_period: null }).onConflict(oc => oc.columns(['scope', 'scope_id', 'period']).doUpdateSet({ amount_minor: input.amountMinor, warned_period: null })).execute();
+        return context.events.append(tx, [{ type: 'settings.changed', category: 'audit', actorKind: 'user', projectId: input.scope === 'project' ? input.scopeId : null, payload: { kind: 'budget', scope: input.scope, scopeId: input.scopeId, amountMinor: input.amountMinor } }]);
+      });
+      context.events.published(published);
+    },
+
+    async deleteBudget(scope: string, scopeId: string, period = 'month') {
+      const published = await storage.transaction(async tx => {
+        const gone = await tx.deleteFrom('budgets').where('scope', '=', scope).where('scope_id', '=', scopeId).where('period', '=', period).executeTakeFirst();
+        return Number(gone.numDeletedRows) ? context.events.append(tx, [{ type: 'settings.changed', category: 'audit', actorKind: 'user', projectId: scope === 'project' ? scopeId : null, payload: { kind: 'budget', scope, scopeId, amountMinor: null } }]) : [];
+      });
+      context.events.published(published);
     },
 
     // Inside a transaction pass it as the executor: a second connection would wait on the first forever.

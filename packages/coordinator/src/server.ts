@@ -22,7 +22,9 @@ export type TrackerFactory = (kind: string) => Promise<TrackerClient | null>;
 // The tracker clients are adapters; a project without a credential for its tracker is simply not polled.
 const adapterTrackers: TrackerFactory = async kind => trackerClient(kind);
 
-export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; webRoot?: string | null; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string }
+export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; webRoot?: string | null; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string }
+
+export const isLoopback = (host: string): boolean => host === '127.0.0.1' || host === '::1' || host === 'localhost';
 
 // Loopback, a CGNAT (tailnet) address, or every interface when explicitly allowed.
 export function validBind(host: string, env: NodeJS.ProcessEnv = process.env): boolean {
@@ -35,14 +37,18 @@ export function validBind(host: string, env: NodeJS.ProcessEnv = process.env): b
 export async function startCoordinator(config: CoordinatorConfig): Promise<{ context: Context; server: ServerType; url: string; poll(): Promise<void>; close(): Promise<void> }> {
   const host = config.host ?? '127.0.0.1';
   if (!validBind(host)) throw new Error(`Refusing to bind ${host}`);
+  if (config.trustedHeader && !isLoopback(host)) throw new Error(`Refusing to trust the ${config.trustedHeader} header on ${host}: trusted-header sign-in needs a loopback bind`);
   if (config.machineToken.length < 24) throw new Error('The machine token must be at least 24 characters');
   const storage = await createStorage(config.storage);
   await storage.migrate();
   const built = path.join(packageRoot(), 'packages', 'web', 'dist');
   const webRoot = config.webRoot === undefined ? (existsSync(built) ? built : null) : config.webRoot;
-  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), machineToken: config.machineToken, webRoot, secureCookies: config.secureCookies ?? false, demoLogin: config.demoLogin ?? null });
+  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), machineToken: config.machineToken, webRoot, secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null });
   // The shipped role library is seeded once; an owner's edits are never overwritten.
   await createVersionedDocs(context).seed('role', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'roles.json'), 'utf8')) as Record<string, unknown>);
+  // So is the agent library, from the seats of the default team; the PM seat belongs to a team, not to the library.
+  const blueprint = JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'default-team.json'), 'utf8')) as { seats: { name: string; title: string; persona: string; roles: string[]; isPm?: boolean }[] };
+  await createVersionedDocs(context).seed('library_agent', { type: 'library', id: '' }, Object.fromEntries(blueprint.seats.filter(seat => !seat.isPm).map(seat => [seat.title.toLowerCase().replace(/[^a-z0-9]+/g, '-'), { name: seat.name, title: seat.title, persona: seat.persona, roles: seat.roles, summary: '' }])));
   const app = createApp(context);
   // Lease expiry and feedback windows are time-driven; everything else reacts to requests.
   const turns = createTurns(context), deliberation = createDeliberation(context, turns), retro = createRetro(context, turns);

@@ -1,0 +1,65 @@
+import type { Hono } from 'hono';
+import { z } from 'zod';
+import { HttpError, type Context } from '../context.ts';
+import { CATALOG, customCredentialVariable, setupEntry, type SetupEntry, type Values } from '../../../../adapters/integration/catalog.ts';
+import type { Integrations } from '../repos/integrations.ts';
+
+const SetupBody = z.object({ kind: z.string().max(40), values: z.record(z.string().max(40), z.string().max(400)).default({}) });
+type Project = { id: string; slug: string };
+interface Deps { context: Context; integrations: Integrations; env?: NodeJS.ProcessEnv; fetch?: typeof fetch;
+  projectFor(c: unknown, action: 'project.read' | 'project.configure'): Promise<{ project: Project }>; body<T>(c: unknown, schema: z.ZodType<T>): Promise<T>; userId(c: unknown): string }
+
+// Guided setup of what a project connects to. The catalog's words and checks come from the adapters; this file only
+// validates what was entered, checks that the credential is present where it must be, and stores the result.
+export function mountSetupRoutes(app: Hono<any>, deps: Deps) {
+  const { context, integrations } = deps, env = deps.env ?? process.env, request = deps.fetch ?? fetch;
+  const variableOf = (entry: SetupEntry, values: Values) => entry.credential?.variable ?? (entry.kind === 'mcp' && values.name ? customCredentialVariable(values.name) : null);
+  const tokenOf = (entry: SetupEntry) => [entry.credential?.variable, ...(entry.credential?.alternatives ?? [])].map(name => (name ? env[name] : undefined)).find(Boolean) ?? null;
+
+  function checked(input: z.infer<typeof SetupBody>): { entry: SetupEntry; values: Values } {
+    const entry = setupEntry(input.kind);
+    if (!entry) throw new HttpError(404, 'not_found', 'That integration is not supported');
+    const values: Values = {}, fields: Record<string, string> = {};
+    for (const field of entry.fields) {
+      const value = (input.values[field.key] ?? '').trim();
+      if (!value) { if (field.required) fields[field.key] = `${field.label} is needed`; continue; }
+      if (field.pattern && !new RegExp(`^(?:${field.pattern})$`).test(value)) { fields[field.key] = `${field.label} does not look right${field.placeholder ? `; it should look like ${field.placeholder}` : ''}`; continue; }
+      values[field.key] = value;
+    }
+    if (Object.keys(fields).length) throw new HttpError(400, 'invalid', 'Some fields need another look', fields);
+    return { entry, values };
+  }
+
+  app.get('/api/integrations/catalog', c => c.json({ entries: CATALOG.map(({ test, ...entry }) => ({ ...entry, testable: Boolean(test) && entry.credential?.runsOn === 'coordinator', credentialPresent: entry.credential?.runsOn === 'coordinator' ? tokenOf(entry) !== null : null })) }));
+
+  app.post('/api/projects/:slug/integrations/test', async c => {
+    await deps.projectFor(c, 'project.configure');
+    const { entry, values } = checked(await deps.body(c, SetupBody));
+    const token = tokenOf(entry);
+    if (!entry.test) return c.json({ ok: true, message: 'Nothing to check from here: this one is used by the workers.' });
+    if (!token) return c.json({ ok: false, message: `${entry.credential!.variable} is not set on the coordinator yet. Set it, restart the coordinator and test again.` });
+    try { return c.json({ ok: true, message: await entry.test(values, token, request) }); }
+    catch (error) { return c.json({ ok: false, message: (error as Error).message.slice(0, 300) }); }
+  });
+
+  app.post('/api/projects/:slug/integrations/setup', async c => {
+    const { project } = await deps.projectFor(c, 'project.configure');
+    const { entry, values } = checked(await deps.body(c, SetupBody));
+    const variable = variableOf(entry, values);
+    if (entry.target !== 'connection') {
+      // The tracker and the code host are part of the project's manifest, which is what polling and delivery read.
+      const row = await context.storage.db.selectFrom('projects').select('manifest').where('id', '=', project.id).executeTakeFirstOrThrow();
+      const manifest = JSON.parse(row.manifest) as { tracker?: unknown; scm?: unknown; delivery?: Record<string, unknown> };
+      const kind = entry.adapterKind ?? entry.kind;
+      if (entry.target === 'tracker') manifest.tracker = { kind, ...values };
+      else { manifest.scm = { kind }; manifest.delivery = { requiredChecks: [], autoMergeAuthorized: false, ...manifest.delivery, repository: values.repository, baseBranch: values.baseBranch ?? 'main' }; }
+      await context.storage.db.updateTable('projects').set({ manifest: JSON.stringify(manifest) }).where('id', '=', project.id).execute();
+    }
+    await integrations.replace(deps.userId(c), project.id, entry.target === 'connection' ? null : entry.target, {
+      kind: entry.kind === 'mcp' ? 'mcp' : entry.kind, name: entry.kind === 'mcp' ? values.name! : entry.title, category: entry.category, mode: entry.mode, credentialRef: variable, config: { ...values, target: entry.target },
+      waiting: entry.credential?.runsOn === 'coordinator' && tokenOf(entry) === null ? `Waiting for ${entry.credential.variable} on the coordinator` : entry.credential?.runsOn === 'workers' ? `Uses ${entry.credential.variable} on the workers` : null,
+      connected: entry.credential?.runsOn !== 'coordinator' || tokenOf(entry) !== null,
+    });
+    return c.json({ ok: true });
+  });
+}

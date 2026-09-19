@@ -1,8 +1,8 @@
 import { useState, type ClipboardEvent, type FormEvent } from 'react';
-import { api, type Agent, type Me, type Message as MessageData } from '../../data/client';
+import { api, postToThread, uploadImage, type Agent, type Me, type Message as MessageData } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
-import { Attachment, Composer, ListLink, Message, resolveAuthor, SidePanel, SubHeader } from '../../patterns';
+import { Attachment, Composer, ListLink, mentionOptions, Message, resolveAuthor, SidePanel, SubHeader } from '../../patterns';
 import { Button, Chip, Field, Input, MarkerCanvas, SectionLabel, Text, Textarea, type Marker } from '../../ui';
 
 interface Issue { id: string; number: number; title: string; state: string; source: string; thread_id: string; attachment_id: string | null }
@@ -61,7 +61,7 @@ export function IssuesTab({ slug, number, roster, me, navigate }: { slug: string
               </div>
             ))}
           </div>
-          <Composer placeholder="Reply — the team sees this in the issue's thread" action="Reply" onSend={body => api(`/api/threads/${selected.thread_id}/messages`, { body }).then(() => undefined)} />
+          <Composer placeholder="Reply — the team sees this in the issue's thread" action="Reply" mentions={mentionOptions(roster)} onAttach={uploadImage} onSend={(body, images) => postToThread(selected.thread_id, body, images)} />
         </div>
       ) : <div className="min-w-0 grow overflow-y-auto px-6 py-5"><RaiseIssue slug={slug} onRaised={raised => { list.reload(); navigate(`/p/${slug}/issues/${raised}`); }} /></div>}
     </div>

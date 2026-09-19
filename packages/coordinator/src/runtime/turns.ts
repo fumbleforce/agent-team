@@ -1,26 +1,30 @@
 import type { z } from 'zod';
-import { effective, newId, PermissionGrant, Role, type ClaimBody, type FinishBody, type Lane, type TraceStepInput, type TurnKind, type Viewport } from '@agent-team/protocol';
+import { CostRules, DeferReason, effective, newId, PermissionGrant, Role, RoutingRules, type ClaimBody, type FinishBody, type Lane, type TraceStepInput, type TurnKind, type Viewport } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import { hashToken, newToken, sameSecret } from '../auth/secrets.ts';
 import { HttpError, type Context } from '../context.ts';
 import { createCosts } from '../costs/costs.ts';
 import { buildPacket, type Packet } from './packet.ts';
+import { createSessions, type Resume } from './sessions.ts';
+import { DEFAULT_RULES, type Notice } from './rules.ts';
+import * as scheduler from './scheduler.ts';
+import { accessOf, laneOf, WORKER_FRESH_MS, type ClaimDraft, type Snapshot } from './scheduler.ts';
 
+import { effectiveProjects } from '../repos/org.ts';
 export const LEASE_MS = 90_000;
-const BOUNDED: readonly TurnKind[] = ['capture', 'review', 'feedback', 'revise', 'conclude', 'triage', 'reply', 'retro', 'ideate'];
-// 1 reply to a human, 2 unblock others, 3 owed feedback, 4 continue, 5 new work, 6 upkeep.
-const CLASS: Record<TurnKind, number> = { reply: 1, conclude: 2, revise: 2, review: 3, feedback: 3, triage: 3, work: 5, publish: 4, deliver: 4, retro: 6, ideate: 6, capture: 4 };
-
-export const laneOf = (kind: TurnKind): Lane => (kind === 'deliver' || kind === 'publish' ? 'deliver' : BOUNDED.includes(kind) ? 'bounded' : 'work');
-const accessOf = (kind: TurnKind) => (kind === 'work' || kind === 'publish' || kind === 'deliver' ? 'write' : kind === 'feedback' || kind === 'conclude' || kind === 'revise' || kind === 'capture' ? 'none' : 'read');
+export { laneOf };
+export const RULES_SCOPE = { type: 'org', id: '' } as const, RULES_SLUG = 'default', LIMIT_BACKOFF_MS = 5 * 60_000;
+const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
+const RATE_LIMITED = /rate-limit|usage-limit/;
 
 export type ClaimRequest = z.infer<typeof ClaimBody>;
-export interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; threadId: string | null; packet: Packet; grants: PermissionGrant; engine: string | null; model: string | null; capture: { url: string; viewport: Viewport } | null }
+export interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; threadId: string | null; packet: Packet; resume: Resume | null; grants: PermissionGrant; engine: string | null; model: string | null; capture: { url: string; viewport: Viewport } | null }
 export type Outcome = z.infer<typeof FinishBody>['outcome'];
 
 export function createTurns(context: Context) {
   const { storage, events, now } = context;
   const costs = createCosts(context);
+  const sessions = createSessions(context);
 
   // Runs at the start of every claim and on a timer. An expired lease means the outcome is unknown:
   // the turn becomes uncertain, is never retried, and the smallest object it could have changed is quarantined.
@@ -51,6 +55,84 @@ export function createTurns(context: Context) {
     return ceiling.success ? effective(roles, ceiling.data) : effective(roles);
   }
 
+  // Everything the pure scheduler needs to decide, read in the claim's own transaction.
+  async function snapshotFor(tx: Tx, claim: ClaimDraft): Promise<Snapshot & { reasons: [string, string | null][] }> {
+    const lanes = (Object.entries(claim.free) as [Lane, number | undefined][]).filter(([, free]) => (free ?? 0) > 0).map(([lane]) => lane);
+    const rows = await tx.selectFrom('work_items').select(['id', 'agent_id', 'project_id', 'kind', 'lane', 'task_id', 'priority_class', 'created_at', 'defer_reason'])
+      .where('state', '=', 'queued').where('lane', 'in', lanes).where('project_id', 'in', [...claim.projects])
+      .where(eb => eb.or([eb('not_before', 'is', null), eb('not_before', '<=', now())])).orderBy('priority_class').orderBy('created_at').limit(200).execute();
+    const items = rows.map(row => ({ id: row.id, agentId: row.agent_id, projectId: row.project_id, kind: row.kind as TurnKind, lane: row.lane as Lane, taskId: row.task_id, priorityClass: row.priority_class, createdAt: Number(row.created_at) }));
+    const agentIds = [...new Set(items.map(item => item.agentId))], taskIds = [...new Set(items.flatMap(item => item.taskId ?? []))], projectIds = [...new Set(items.map(item => item.projectId))];
+    const snapshot: Snapshot & { reasons: [string, string | null][] } = { now: now(), items, agents: {}, tasks: {}, providers: {}, projects: {}, running: [], rules: DEFAULT_RULES, reasons: rows.map(row => [row.id, row.defer_reason]) };
+    if (items.length === 0) return snapshot;
+
+    const today = day(now()), month = today.slice(0, 7);
+    const spent = new Map((await tx.selectFrom('cost_daily').select('agent_id').select(eb => eb.fn.sum<number>('amount_minor').as('total')).where('agent_id', 'in', agentIds).where('day', '=', today).groupBy('agent_id').execute()).map(row => [row.agent_id, Number(row.total)]));
+    const last = new Map((await tx.selectFrom('turns').select('agent_id').select(eb => eb.fn.max('started_at').as('at')).where('agent_id', 'in', agentIds).groupBy('agent_id').execute()).map(row => [row.agent_id, Number(row.at)]));
+    for (const agent of await tx.selectFrom('agents').select(['id', 'status', 'provider_id', 'model', 'daily_cap_minor']).where('id', 'in', agentIds).execute())
+      snapshot.agents[agent.id] = { status: agent.status, providerId: agent.provider_id, model: agent.model, dailyCapMinor: agent.daily_cap_minor, spentTodayMinor: spent.get(agent.id) ?? 0, lastStartedAt: last.get(agent.id) ?? 0 };
+
+    const running = await tx.selectFrom('turns').innerJoin('agents', 'agents.id', 'turns.agent_id').select(['turns.agent_id', 'turns.lane', 'turns.task_id', 'turns.access', 'turns.provider_id', 'agents.provider_id as seat_provider_id']).where('turns.state', '=', 'running').execute();
+    snapshot.running = running.map(turn => ({ agentId: turn.agent_id, lane: turn.lane as Lane }));
+
+    if (taskIds.length) {
+      const quarantined = new Set((await tx.selectFrom('quarantines').select('ref_id').where('scope', '=', 'task').where('ref_id', 'in', taskIds).where('released_at', 'is', null).execute()).map(row => row.ref_id));
+      const fresh = new Set((await tx.selectFrom('workers').select('id').where('last_seen_at', '>', now() - WORKER_FRESH_MS).execute()).map(row => row.id));
+      // Newest first: the first write turn seen per task names the holder of its worktree, the first routed work turn its sticky route.
+      const written = await tx.selectFrom('turns').select(['task_id', 'kind', 'worker_id', 'provider_id', 'model']).where('task_id', 'in', taskIds).where('access', '=', 'write').orderBy('started_at', 'desc').orderBy('id', 'desc').execute();
+      for (const task of await tx.selectFrom('tasks').select(['id', 'state', 'tag']).where('id', 'in', taskIds).execute()) {
+        const mine = written.filter(turn => turn.task_id === task.id), holder = mine[0]?.worker_id, routed = mine.find(turn => turn.kind === 'work' && turn.provider_id !== null);
+        snapshot.tasks[task.id] = { state: task.state, tags: task.tag ? [task.tag] : [], quarantined: quarantined.has(task.id), writerRunning: running.some(turn => turn.task_id === task.id && turn.access === 'write'), holder: holder && fresh.has(holder) ? holder : null, sticky: routed ? { providerId: routed.provider_id, model: routed.model } : null };
+      }
+    }
+
+    for (const provider of await tx.selectFrom('providers').selectAll().execute()) {
+      const limits = JSON.parse(provider.limits) as { maxConcurrentTurns?: number; windowTokens?: number; windowMs?: number };
+      let windowPct: number | null = null;
+      if (limits.windowTokens) {
+        const used = await tx.selectFrom('cost_entries').select(eb => [eb.fn.sum<number>('tokens_in').as('tokens_in'), eb.fn.sum<number>('tokens_out').as('tokens_out')]).where('provider_id', '=', provider.id).where('at', '>=', now() - (limits.windowMs ?? 5 * 3600_000)).executeTakeFirst();
+        windowPct = (Number(used?.tokens_in ?? 0) + Number(used?.tokens_out ?? 0)) / limits.windowTokens * 100;
+      }
+      snapshot.providers[provider.id] = { id: provider.id, name: provider.name, status: provider.status, models: JSON.parse(provider.models) as string[], limitedUntil: provider.limited_until === null ? null : Number(provider.limited_until), running: running.filter(turn => (turn.provider_id ?? turn.seat_provider_id) === provider.id).length, maxConcurrent: limits.maxConcurrentTurns ?? null, windowPct };
+    }
+
+    // A project budget covers the project and its sub-projects; the org budget covers everything. The fullest one governs.
+    const budgets = await tx.selectFrom('budgets').selectAll().where('period', '=', 'month').execute();
+    const monthly = budgets.length ? await tx.selectFrom('cost_daily').innerJoin('projects', 'projects.id', 'cost_daily.project_id').select(['cost_daily.project_id', 'projects.parent_id']).select(eb => eb.fn.sum<number>('cost_daily.amount_minor').as('total')).where('cost_daily.day', '>=', `${month}-01`).where('cost_daily.day', '<=', `${month}-31`).groupBy(['cost_daily.project_id', 'projects.parent_id']).execute() : [];
+    const busyDelivery = new Set((await tx.selectFrom('merge_queue').select('project_id').where('project_id', 'in', projectIds).where('state', 'in', ['running', 'uncertain']).execute()).map(row => row.project_id));
+    for (const project of await tx.selectFrom('projects').select(['id', 'parent_id', 'status']).where('id', 'in', projectIds).execute()) {
+      let governing: { pct: number; budget: (typeof budgets)[number] } | null = null;
+      for (const budget of budgets) {
+        if (budget.scope === 'project' ? budget.scope_id !== project.id && budget.scope_id !== project.parent_id : budget.scope !== 'org') continue;
+        const total = monthly.filter(row => budget.scope === 'org' || row.project_id === budget.scope_id || row.parent_id === budget.scope_id).reduce((sum, row) => sum + Number(row.total), 0);
+        const pct = budget.amount_minor > 0 ? total / budget.amount_minor * 100 : 100;
+        if (!governing || pct > governing.pct) governing = { pct, budget };
+      }
+      snapshot.projects[project.id] = { status: project.status, budgetPct: governing?.pct ?? null, budget: governing ? { scope: governing.budget.scope, scopeId: governing.budget.scope_id } : null, warned: governing?.budget.warned_period === month, deliveryBusy: busyDelivery.has(project.id) };
+    }
+
+    const docs = await tx.selectFrom('versioned_docs').select(['kind', 'doc']).where('kind', 'in', ['cost_rules', 'routing_rules']).where('scope_type', '=', RULES_SCOPE.type).where('scope_id', '=', RULES_SCOPE.id).where('slug', '=', RULES_SLUG).execute();
+    const doc = (kind: string) => { const found = docs.find(row => row.kind === kind); return found ? JSON.parse(found.doc) as unknown : {}; };
+    snapshot.rules = { cost: CostRules.parse(doc('cost_rules')), routing: RoutingRules.parse(doc('routing_rules')) };
+    return snapshot;
+  }
+
+  // A budget warns once per period: the message goes to the discussion, the event to the log, the mark on the budget.
+  async function notify(tx: Tx, notices: Notice[], snapshot: Snapshot) {
+    const drafts = [], month = day(now()).slice(0, 7);
+    for (const notice of notices) {
+      if (notice.type !== 'budget.threshold') continue;
+      for (const project of Object.values(snapshot.projects)) if (project.budget?.scope === notice.scope && project.budget.scopeId === notice.scopeId) project.warned = true;
+      const marked = await tx.updateTable('budgets').set({ warned_period: month }).where('scope', '=', notice.scope).where('scope_id', '=', notice.scopeId).where('period', '=', 'month').where(eb => eb.or([eb('warned_period', 'is', null), eb('warned_period', '!=', month)])).executeTakeFirst();
+      if (Number(marked.numUpdatedRows) === 0) continue;
+      const home = await tx.selectFrom('projects').select(['id', 'parent_id']).where('id', '=', notice.projectId).executeTakeFirstOrThrow();
+      const thread = await tx.selectFrom('threads').select('id').where('project_id', 'in', [home.id, ...(home.parent_id ? [home.parent_id] : [])]).where('kind', '=', 'discussion').orderBy('created_at', 'desc').executeTakeFirst();
+      if (thread) await tx.insertInto('messages').values({ id: newId(now()), thread_id: thread.id, author_kind: 'system', author_id: null, kind: 'system', body: `Spend has reached ${notice.percent} % of the ${notice.scope === 'org' ? 'organization' : 'project'} budget for ${month}. At 100 % only replies to people and work that unblocks others will run.`, payload: JSON.stringify({ budget: { scope: notice.scope, scopeId: notice.scopeId, percent: notice.percent } }), created_at: now() }).execute();
+      drafts.push({ type: 'budget.threshold', actorKind: 'system' as const, projectId: notice.projectId, threadId: thread?.id ?? null, payload: { scope: notice.scope, scopeId: notice.scopeId, percent: notice.percent, threshold: notice.threshold } });
+    }
+    return drafts.length ? events.append(tx, drafts) : [];
+  }
+
   async function leased(tx: Tx, turnId: string, workerId: string, leaseToken: string) {
     const turn = await tx.selectFrom('turns').selectAll().where('id', '=', turnId).executeTakeFirst();
     if (!turn || turn.state !== 'running' || turn.worker_id !== workerId || Number(turn.lease_until) < now() || !sameSecret(turn.lease_token_hash, hashToken(leaseToken))) throw new HttpError(409, 'lease', 'Lease lost or invalid');
@@ -61,10 +143,17 @@ export function createTurns(context: Context) {
     async enqueue(input: { agentId: string; projectId: string; kind: TurnKind; taskId?: string | null; threadId?: string | null; dedupeKey?: string; causeEventId?: string; notBefore?: number; prepare?: (tx: Tx, workItemId: string) => Promise<void> }): Promise<string | null> {
       const id = newId(now());
       const published = await storage.transaction(async tx => {
-        if (input.dedupeKey && await tx.selectFrom('work_items').select('id').where('dedupe_key', '=', input.dedupeKey).where('state', 'in', ['queued', 'leased']).executeTakeFirst()) return null;
-        await tx.insertInto('work_items').values({ id, agent_id: input.agentId, project_id: input.projectId, kind: input.kind, lane: laneOf(input.kind), task_id: input.taskId ?? null, thread_id: input.threadId ?? null, priority_class: CLASS[input.kind], state: 'queued', defer_reason: null, not_before: input.notBefore ?? null, dedupe_key: input.dedupeKey ?? null, cause_event_id: input.causeEventId ?? null, created_at: now() }).execute();
+        // An agent works for its own team's projects and for those it is on loan to; a paused or archived project takes no new work.
+        if (!(await effectiveProjects(tx, input.agentId)).includes(input.projectId)) return null;
+        const live = input.dedupeKey ? await tx.selectFrom('work_items').select('dedupe_key').where('dedupe_key', '=', input.dedupeKey).where('state', 'in', ['queued', 'leased']).execute() : [];
+        const task = input.taskId ? await tx.selectFrom('tasks').select(['state', 'assignee_agent_id']).where('id', '=', input.taskId).executeTakeFirst() : undefined;
+        const draft = scheduler.enqueue({ kind: input.kind, agentId: input.agentId, dedupeKey: input.dedupeKey }, { liveDedupeKeys: new Set(live.map(row => row.dedupe_key ?? '')), task: task ? { state: task.state, assigneeAgentId: task.assignee_agent_id } : null });
+        if (!draft) return null;
+        await tx.insertInto('work_items').values({ id, agent_id: input.agentId, project_id: input.projectId, kind: input.kind, lane: draft.lane, task_id: input.taskId ?? null, thread_id: input.threadId ?? null, priority_class: draft.priorityClass, state: 'queued', defer_reason: null, not_before: input.notBefore ?? null, dedupe_key: input.dedupeKey ?? null, cause_event_id: input.causeEventId ?? null, created_at: now() }).execute();
         // What the turn needs beyond the item itself is written with it, so a claim never sees one without the other.
         await input.prepare?.(tx, id);
+        // Having work again ends the idle period, so the next one is announced.
+        await tx.updateTable('agents').set({ idle_at: null }).where('id', '=', input.agentId).where('idle_at', 'is not', null).execute();
         return events.append(tx, [{ type: 'work_item.queued', actorKind: 'system', projectId: input.projectId, agentId: input.agentId, taskId: input.taskId ?? null, payload: { workItemId: id, kind: input.kind } }]);
       });
       if (!published) return null;
@@ -75,52 +164,43 @@ export function createTurns(context: Context) {
     // One transaction: expire, gate, pick, insert the turn, lease the item.
     async claim(request: ClaimRequest): Promise<Claimed | null> {
       const result = await storage.transaction(async tx => {
-        const expired = await expire(tx);
+        const expired = [...await expire(tx)];
         const lanes = (Object.entries(request.free) as [Lane, number | undefined][]).filter(([, free]) => (free ?? 0) > 0).map(([lane]) => lane);
         if (lanes.length === 0 || request.projects.length === 0) return { expired, claimed: null };
-        const candidates = await tx.selectFrom('work_items').innerJoin('agents', 'agents.id', 'work_items.agent_id').select(['agents.daily_cap_minor', 'work_items.id', 'work_items.agent_id', 'work_items.project_id', 'work_items.kind', 'work_items.lane', 'work_items.task_id', 'work_items.thread_id'])
-          .where('work_items.state', '=', 'queued').where('work_items.lane', 'in', lanes).where('work_items.project_id', 'in', request.projects).where('agents.status', '=', 'active')
-          .where(eb => eb.or([eb('work_items.not_before', 'is', null), eb('work_items.not_before', '<=', now())]))
-          .orderBy('work_items.priority_class').orderBy('work_items.created_at').limit(50).execute();
-        for (const item of candidates) {
-          const kind = item.kind as TurnKind;
-          // The spend gate: an agent over its daily cap waits for tomorrow; replies to a human still run.
-          if (item.daily_cap_minor !== null && kind !== 'reply' && await costs.spentToday(item.agent_id, tx) >= item.daily_cap_minor) {
-            await tx.updateTable('work_items').set({ defer_reason: 'over-cap' }).where('id', '=', item.id).execute();
+        const snapshot = await snapshotFor(tx, request);
+        const stored = new Map(snapshot.reasons);
+        for (;;) {
+          const { picked, deferrals, notices } = scheduler.pick(snapshot, request);
+          // Every refusal is written down, once per change, so the Workload page can say why an item waits.
+          for (const deferral of deferrals.filter(row => row.reason === 'task-closed')) { await tx.updateTable('work_items').set({ state: 'done', defer_reason: 'task-closed' }).where('id', '=', deferral.id).execute(); snapshot.items = snapshot.items.filter(other => other.id !== deferral.id); stored.set(deferral.id, 'task-closed'); }
+          for (const deferral of deferrals) if (stored.get(deferral.id) !== deferral.reason) { await tx.updateTable('work_items').set({ defer_reason: deferral.reason }).where('id', '=', deferral.id).execute(); stored.set(deferral.id, deferral.reason); }
+          expired.push(...await notify(tx, notices, snapshot));
+          if (!picked) return { expired, claimed: null };
+          const { item, route } = picked, kind = item.kind, access = accessOf(kind);
+          const wanted = kind === 'capture' ? await tx.selectFrom('snapshots').select(['url', 'viewport']).where('work_item_id', '=', item.id).where('state', '=', 'requested').executeTakeFirst() : undefined;
+          if (kind === 'capture' && !wanted) {
+            await tx.updateTable('work_items').set({ state: 'done', defer_reason: 'no-request' }).where('id', '=', item.id).execute();
+            snapshot.items = snapshot.items.filter(other => other.id !== item.id);
             continue;
           }
-          const access = accessOf(kind);
-          if (await tx.selectFrom('turns').select('id').where('agent_id', '=', item.agent_id).where('lane', '=', item.lane).where('state', '=', 'running').executeTakeFirst()) continue;
-          // A provider serves a bounded number of turns at once, across all its agents.
-          const provider = await tx.selectFrom('agents').innerJoin('providers', 'providers.id', 'agents.provider_id').select(['providers.id', 'providers.limits']).where('agents.id', '=', item.agent_id).executeTakeFirst();
-          const limit = provider ? (JSON.parse(provider.limits) as { maxConcurrentTurns?: number }).maxConcurrentTurns : undefined;
-          if (provider && limit !== undefined) {
-            const busy = await tx.selectFrom('turns').innerJoin('agents', 'agents.id', 'turns.agent_id').select(eb => eb.fn.countAll<number>().as('n')).where('turns.state', '=', 'running').where('agents.provider_id', '=', provider.id).executeTakeFirstOrThrow();
-            if (Number(busy.n) >= limit) { await tx.updateTable('work_items').set({ defer_reason: 'provider-busy' }).where('id', '=', item.id).execute(); continue; }
-          }
           if (kind === 'deliver') {
-            if (await tx.selectFrom('merge_queue').select('id').where('project_id', '=', item.project_id).where('state', 'in', ['running', 'uncertain']).executeTakeFirst()) continue;
-            await tx.updateTable('merge_queue').set({ state: 'running' }).where('task_id', '=', item.task_id).where('state', '=', 'queued').execute();
-            await tx.updateTable('tasks').set({ state: 'merging', updated_at: now() }).where('id', '=', item.task_id).execute();
+            await tx.updateTable('merge_queue').set({ state: 'running' }).where('task_id', '=', item.taskId).where('state', '=', 'queued').execute();
+            await tx.updateTable('tasks').set({ state: 'merging', updated_at: now() }).where('id', '=', item.taskId).execute();
           }
-          if (item.task_id) {
-            if (await tx.selectFrom('quarantines').select('id').where('scope', '=', 'task').where('ref_id', '=', item.task_id).where('released_at', 'is', null).executeTakeFirst()) continue;
-            if (access === 'write' && await tx.selectFrom('turns').select('id').where('task_id', '=', item.task_id).where('access', '=', 'write').where('state', '=', 'running').executeTakeFirst()) continue;
-          }
-          const wanted = kind === 'capture' ? await tx.selectFrom('snapshots').select(['url', 'viewport']).where('work_item_id', '=', item.id).where('state', '=', 'requested').executeTakeFirst() : undefined;
-          if (kind === 'capture' && !wanted) { await tx.updateTable('work_items').set({ state: 'done', defer_reason: 'no-request' }).where('id', '=', item.id).execute(); continue; }
           const turnId = newId(now()), leaseToken = newToken();
-          const grants = await grantsFor(tx, item.agent_id, item.project_id);
-          // Provider and model belong to the agent, not to the job or the worker.
-          const seat = await tx.selectFrom('agents').leftJoin('providers', 'providers.id', 'agents.provider_id').select(['agents.model', 'providers.engine']).where('agents.id', '=', item.agent_id).executeTakeFirst();
-          const taskKey = item.task_id ? (await tx.selectFrom('tasks').select('key').where('id', '=', item.task_id).executeTakeFirst())?.key ?? null : null;
-          await tx.insertInto('turns').values({ id: turnId, work_item_id: item.id, agent_id: item.agent_id, project_id: item.project_id, task_id: item.task_id, kind, lane: item.lane, access, state: 'running', stop_reason: null, worker_id: request.workerId, lease_token_hash: hashToken(leaseToken), lease_until: now() + LEASE_MS, grants: JSON.stringify(grants), summary: null, tokens_in: 0, tokens_out: 0, cost_minor: 0, started_at: now(), finished_at: null }).execute();
-          await tx.updateTable('work_items').set({ state: 'leased' }).where('id', '=', item.id).execute();
-          if (kind === 'work' && item.task_id) await tx.updateTable('tasks').set({ state: 'in_progress', updated_at: now() }).where('id', '=', item.task_id).where('state', 'in', ['backlog', 'assigned']).execute();
-          const started = await events.append(tx, [{ type: 'turn.started', actorKind: 'worker', projectId: item.project_id, agentId: item.agent_id, taskId: item.task_id, turnId, payload: { kind, workerId: request.workerId } }]);
-          return { expired: [...expired, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agent_id, projectId: item.project_id, taskId: item.task_id, taskKey, threadId: item.thread_id, grants, engine: seat?.engine ?? null, model: seat?.model ?? null, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, packet: await buildPacket(tx, { kind, agentId: item.agent_id, projectId: item.project_id, taskId: item.task_id, threadId: item.thread_id }) } satisfies Claimed };
+          const grants = await grantsFor(tx, item.agentId, item.projectId);
+          // Provider and model come from the agent unless a rule routed the turn elsewhere; the route is frozen on the turn.
+          const engine = route.providerId ? (await tx.selectFrom('providers').select('engine').where('id', '=', route.providerId).executeTakeFirst())?.engine ?? null : null;
+          const row = await tx.selectFrom('work_items').select('thread_id').where('id', '=', item.id).executeTakeFirstOrThrow();
+          const taskKey = item.taskId ? (await tx.selectFrom('tasks').select('key').where('id', '=', item.taskId).executeTakeFirst())?.key ?? null : null;
+          await tx.insertInto('turns').values({ id: turnId, work_item_id: item.id, agent_id: item.agentId, project_id: item.projectId, task_id: item.taskId, kind, lane: item.lane, access, state: 'running', stop_reason: null, worker_id: request.workerId, lease_token_hash: hashToken(leaseToken), lease_until: now() + LEASE_MS, grants: JSON.stringify(grants), summary: null, tokens_in: 0, tokens_out: 0, cost_minor: 0, started_at: now(), finished_at: null, provider_id: route.providerId, model: route.model }).execute();
+          await tx.updateTable('work_items').set({ state: 'leased', defer_reason: null }).where('id', '=', item.id).execute();
+          if (kind === 'work' && item.taskId) await tx.updateTable('tasks').set({ state: 'in_progress', updated_at: now() }).where('id', '=', item.taskId).where('state', 'in', ['backlog', 'assigned']).execute();
+          // A work turn resumes its (agent, task) session or starts a new one; everything else is a fresh packet.
+          const session = await sessions.open(tx, { turnId, workItemId: item.id, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, workerId: request.workerId, providerId: route.providerId, model: route.model, engine });
+          const started = await events.append(tx, [{ type: 'turn.started', actorKind: 'worker', projectId: item.projectId, agentId: item.agentId, taskId: item.taskId, turnId, payload: { kind, workerId: request.workerId, providerId: route.providerId } }]);
+          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, threadId: row.thread_id, grants, engine, model: route.model, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
         }
-        return { expired, claimed: null };
       });
       events.published(result.expired);
       return result.claimed;
@@ -151,10 +231,28 @@ export function createTurns(context: Context) {
         const turn = await leased(tx, turnId, workerId, leaseToken);
         if (turn.kind === 'work' && turn.task_id && outcome.state === 'completed' && (await tx.selectFrom('tasks').select('state').where('id', '=', turn.task_id).executeTakeFirst())?.state === 'in_review') reviewTaskId = turn.task_id;
         await tx.updateTable('turns').set({ state: outcome.state, stop_reason: outcome.stopReason ?? null, summary: outcome.summary?.slice(0, 2000) ?? null, tokens_in: outcome.tokensIn ?? 0, tokens_out: outcome.tokensOut ?? 0, cost_minor: outcome.costMinor ?? 0, finished_at: now() }).where('id', '=', turnId).execute();
+        // Sessions decide the two continuations that happen on their own: a lost resume and a turn without a report.
+        const after = await sessions.afterFinish(tx, turn, outcome);
+        const drafts = [...after.drafts];
+        const seat = await tx.selectFrom('agents').select(['provider_id', 'idle_at']).where('id', '=', turn.agent_id).executeTakeFirst();
+        const providerId = turn.provider_id ?? seat?.provider_id ?? null;
+        const agent = providerId ? { provider_id: providerId, kind: (await tx.selectFrom('providers').select('kind').where('id', '=', providerId).executeTakeFirst())?.kind } : undefined;
+        // A usage limit is nobody's fault: the provider is limited until its reset, every item routed to it waits with that reason, and work resumes by itself.
+        const limited = outcome.state === 'deferred' && RATE_LIMITED.test(outcome.stopReason ?? ''), until = limited && outcome.resetAt !== undefined && outcome.resetAt > now() ? outcome.resetAt : now() + LIMIT_BACKOFF_MS;
+        if (limited && providerId) {
+          await tx.updateTable('providers').set({ limited_until: until, status_detail: `Usage limit reached; resumes ${new Date(until).toISOString()}` }).where('id', '=', providerId).execute();
+          drafts.push({ type: 'provider.limited', actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, turnId, payload: { providerId, until } });
+        }
         // Deferred work returns to the queue; nobody is at fault. Everything else closes the item.
-        await tx.updateTable('work_items').set(outcome.state === 'deferred' ? { state: 'queued', defer_reason: outcome.stopReason ?? 'deferred', not_before: now() + 5 * 60_000 } : { state: 'done' }).where('id', '=', turn.work_item_id).execute();
+        const reason = limited ? 'provider-limited' : DeferReason.safeParse(outcome.stopReason).data ?? 'deferred';
+        await tx.updateTable('work_items').set(outcome.state === 'deferred' ? { state: 'queued', defer_reason: reason, not_before: until } : { state: 'done' }).where('id', '=', turn.work_item_id).execute();
         await tx.updateTable('agents').set({ doing: null }).where('id', '=', turn.agent_id).execute();
-        const agent = await tx.selectFrom('agents').leftJoin('providers', 'providers.id', 'agents.provider_id').select(['agents.provider_id', 'providers.kind']).where('agents.id', '=', turn.agent_id).executeTakeFirst();
+        // Idle is announced once per idle period: enqueue clears the mark.
+        const live = await tx.selectFrom('work_items').select(eb => eb.fn.countAll<number>().as('n')).where('agent_id', '=', turn.agent_id).where('state', 'in', ['queued', 'leased']).executeTakeFirstOrThrow();
+        if (scheduler.idleFires({ liveItems: Number(live.n), idleAt: seat?.idle_at === null || seat?.idle_at === undefined ? null : Number(seat.idle_at) })) {
+          await tx.updateTable('agents').set({ idle_at: now() }).where('id', '=', turn.agent_id).execute();
+          drafts.push({ type: 'agent.idle', actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, payload: { since: now() } });
+        }
         await costs.record(tx, { turnId, agentId: turn.agent_id, projectId: turn.project_id, providerId: agent?.provider_id ?? null, billingKind: (agent?.kind as 'metered' | 'subscription' | 'local' | undefined) ?? 'metered', tokensIn: outcome.tokensIn ?? 0, tokensOut: outcome.tokensOut ?? 0, amountMinor: outcome.costMinor ?? 0 });
         if (turn.task_id && outcome.prUrl) await tx.updateTable('tasks').set({ pr_url: outcome.prUrl }).where('id', '=', turn.task_id).execute();
         if (turn.kind === 'deliver' && turn.task_id && outcome.delivery) {
@@ -162,7 +260,6 @@ export function createTurns(context: Context) {
           await tx.updateTable('merge_queue').set({ state: merged ? 'merged' : 'blocked', reason: outcome.delivery.reason, finished_at: now() }).where('task_id', '=', turn.task_id).where('state', 'in', ['queued', 'running']).execute();
           await tx.updateTable('tasks').set(merged ? { state: 'done', updated_at: now() } : { state: 'blocked', blocked_reason: outcome.delivery.reason.slice(0, 200), updated_at: now() }).where('id', '=', turn.task_id).execute();
         }
-        const drafts = [];
         if (turn.kind === 'capture' && outcome.state !== 'deferred') {
           // A capture turn that ends without having uploaded its image has failed, whatever it says.
           const missed = await tx.selectFrom('snapshots').select(['id', 'env_id', 'viewport']).where('work_item_id', '=', turn.work_item_id).where('state', '=', 'requested').execute();
@@ -173,7 +270,7 @@ export function createTurns(context: Context) {
             drafts.push({ type: 'snapshot.failed', actorKind: 'worker' as const, projectId: turn.project_id, turnId, payload: { snapshotId: snapshot.id, envId: snapshot.env_id, viewport: snapshot.viewport, reason } });
           }
         }
-        if (turn.task_id && (outcome.state === 'failed' || outcome.state === 'timed_out')) await tx.updateTable('tasks').set({ state: 'blocked', blocked_reason: 'needs-attention', updated_at: now() }).where('id', '=', turn.task_id).execute();
+        if (turn.task_id && !after.requeued && (outcome.state === 'failed' || outcome.state === 'timed_out')) await tx.updateTable('tasks').set({ state: 'blocked', blocked_reason: 'needs-attention', updated_at: now() }).where('id', '=', turn.task_id).where('state', 'not in', ['quarantined', 'done', 'canceled', 'stopped']).execute();
         return events.append(tx, [...drafts, { type: `turn.${outcome.state}`, actorKind: 'worker', projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, turnId, payload: { stopReason: outcome.stopReason ?? null } }]);
       });
       events.published(published);

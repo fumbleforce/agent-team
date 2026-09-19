@@ -1,15 +1,8 @@
 import * as client from 'openid-client';
-import { z } from 'zod';
-import { newId } from '@agent-team/protocol';
+import { newId, OidcSettings } from '@agent-team/protocol';
 import { HttpError, type Context } from '../context.ts';
 
-export const OidcSettings = z.object({
-  issuer: z.url(), clientId: z.string().min(1), clientSecretEnv: z.string().regex(/^[A-Z][A-Z0-9_]*$/).default('AGENT_TEAM_OIDC_SECRET'),
-  allowedDomains: z.array(z.string().min(1)).default([]), defaultRole: z.enum(['member', 'viewer']).default('viewer'),
-  // Only for a test or development provider on plain HTTP.
-  allowInsecure: z.boolean().default(false),
-});
-export type OidcSettings = z.infer<typeof OidcSettings>;
+export { OidcSettings };
 const FLOW_MS = 10 * 60_000;
 
 // Authorization code with PKCE. An identity is the issuer and subject; email is only used to find or name the account.
@@ -58,7 +51,7 @@ export function createOidc(context: Context, env: NodeJS.ProcessEnv = process.en
       const claims = tokens.claims();
       const email = typeof claims?.email === 'string' ? claims.email.toLowerCase() : null;
       if (!claims?.sub || !email || claims.email_verified === false) throw new HttpError(401, 'oidc', 'The identity provider returned no verified email');
-      if (oidc.allowedDomains.length && !oidc.allowedDomains.includes(email.split('@')[1] ?? '')) throw new HttpError(403, 'oidc', 'This email domain is not allowed here');
+      if (oidc.allowedDomains.length && !oidc.allowedDomains.some(domain => domain.toLowerCase() === (email.split('@')[1] ?? ''))) throw new HttpError(403, 'oidc', 'This email domain is not allowed here');
 
       const issuer = String(claims.iss), subject = claims.sub;
       const result = await storage.transaction(async tx => {

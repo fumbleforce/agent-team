@@ -9,19 +9,26 @@ interface FieldSpec { name: string; label: string; type?: string; autoComplete?:
 // One form for sign-in, first-run setup and accepting an invitation; they differ only in fields and endpoint.
 function SessionForm({ title, note, fields, action, endpoint, extra, sso }: { title: string; note?: string; fields: FieldSpec[]; action: string; endpoint: string; extra?: Record<string, unknown>; sso?: boolean }) {
   const [error, setError] = useState<string | null>(null);
+  const [refused, setRefused] = useState<Record<string, string>>({});
   const [busy, setBusy] = useState(false);
   const submit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    setBusy(true); setError(null);
+    setBusy(true); setError(null); setRefused({});
     try {
       await api(endpoint, { ...Object.fromEntries(new FormData(event.currentTarget)), ...extra });
       window.location.assign('/');
-    } catch (failure) { setError(failure instanceof ApiError ? failure.message : 'Something went wrong'); setBusy(false); }
+    } catch (failure) {
+      // A refused field is shown under that field; anything else (wrong password, a lockout, an expired link) above the button.
+      const fields = failure instanceof ApiError ? failure.fields : {};
+      setRefused(fields);
+      setError(failure instanceof ApiError ? (Object.keys(fields).length ? 'Check the marked fields.' : failure.message) : 'Something went wrong');
+      setBusy(false);
+    }
   };
   return (
     <CenteredPanel title={title} {...(note ? { note } : {})}>
       <form onSubmit={submit} className="flex flex-col gap-3.5">
-        {fields.map(field => <Field key={field.name} label={field.label}><Input name={field.name} type={field.type ?? 'text'} autoComplete={field.autoComplete} required /></Field>)}
+        {fields.map(field => <Field key={field.name} label={field.label} error={refused[field.name]}><Input name={field.name} type={field.type ?? 'text'} autoComplete={field.autoComplete} required /></Field>)}
         {error && <Text size="small" tone="stop">{error}</Text>}
         <Button variant="primary" block type="submit" disabled={busy}>{action}</Button>
         {sso && <Button block onClick={() => window.location.assign('/api/auth/oidc/start')}>Sign in with single sign-on</Button>}

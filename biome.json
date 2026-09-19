@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/@biomejs/biome/configuration_schema.json",
+  "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
+  "files": { "includes": ["**/*.ts", "**/*.tsx", "!**/dist", "!**/node_modules", "!test-results"] },
+  "formatter": { "enabled": false },
+  "assist": { "enabled": false },
+  "linter": {
+    "enabled": true,
+    "rules": {
+      "recommended": true,
+      "style": { "noNonNullAssertion": "off", "useTemplate": "off" },
+      "suspicious": { "noAssignInExpressions": "off", "noExplicitAny": "off", "noArrayIndexKey": "off", "noImplicitAnyLet": "warn", "noShadowRestrictedNames": "warn" },
+      "correctness": { "useExhaustiveDependencies": "off" },
+      "security": { "noDangerouslySetInnerHtml": "error" },
+      "a11y": { "useSemanticElements": "off", "useFocusableInteractive": "warn", "noStaticElementInteractions": "warn", "useAriaPropsSupportedByRole": "warn", "useKeyWithClickEvents": "warn", "noLabelWithoutControl": "off" }
+    }
+  }
+}

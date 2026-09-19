@@ -1,7 +1,9 @@
-import type { ReactNode } from 'react';
-import { Link } from 'wouter';
+import { useEffect, useState, type ReactNode } from 'react';
+import { Link, useLocation } from 'wouter';
 import type { Agent, ProjectNode } from '../data/client';
-import { Avatar, Button, cx, Meter, SectionLabel, Text, type DotTone } from '../ui';
+import { Avatar, Button, cx, Dialog, IconButton, Meter, SectionLabel, Text, type DotTone } from '../ui';
+import { openPalette } from './CommandPalette';
+import { NewProject } from './NewProject';
 
 const agentStatus = (agent: Agent): DotTone => (agent.status === 'paused' ? 'attention' : agent.doing ? 'working' : 'idle');
 
@@ -22,8 +24,9 @@ function ProjectLink({ project, active, activeSub }: { project: ProjectNode; act
     <>
       <Link href={`/p/${project.slug}/tasks`} className={cx('flex flex-col gap-1.5 rounded-control px-2.5 py-2 hover:bg-active', active && !activeSub && 'bg-active')}>
         <span className="flex items-center gap-2">
-          <Text weight="medium" tone={active ? 'ink' : 'soft'} truncate>{project.name}</Text>
-          <Text size="caption" tone="muted" mono className="ml-auto whitespace-nowrap">{project.status === 'paused' ? 'paused' : project.team ? `${project.team.name} · ${project.team.seats}` : ''}</Text>
+          {/* The name keeps its room; the seat count is what the narrow rail can afford beside it. */}
+          <Text weight="medium" tone={active ? 'ink' : 'soft'} truncate className="min-w-0 grow">{project.name}</Text>
+          <Text size="caption" tone="muted" mono className="shrink-0 whitespace-nowrap">{project.status === 'paused' ? 'paused' : project.team ? `${project.team.seats} seats` : ''}</Text>
         </span>
         <Meter thin value={project.progress} tone={active ? 'working' : 'idle'} />
       </Link>
@@ -52,7 +55,7 @@ export function Sidebar({ orgName, projects, activeSlug, roster, teamName, links
           const sub = project.subprojects.find(item => item.slug === activeSlug) ?? null;
           return <ProjectLink key={project.id} project={project} active={project.slug === activeSlug || sub !== null} activeSub={sub?.slug ?? null} />;
         })}
-        <Button variant="dashed" block>+ New project</Button>
+        <NewProject projects={projects} />
       </div>
       {roster.length > 0 && (
         <div className="flex flex-col gap-0.5">
@@ -71,21 +74,40 @@ export function Sidebar({ orgName, projects, activeSlug, roster, teamName, links
   );
 }
 
-export function AppShell({ sidebar, children, rail }: { sidebar: ReactNode; children: ReactNode; rail?: ReactNode }) {
+// Three panes from the shell breakpoint up. Below it the sidebar is a drawer behind the menu button and the rail is a tab beside the main area.
+export function AppShell({ sidebar, children, rail, railLabel = 'Discussion' }: { sidebar: ReactNode; children: ReactNode; rail?: ReactNode; railLabel?: string }) {
+  const [drawer, setDrawer] = useState(false);
+  const [pane, setPane] = useState<'main' | 'rail'>('main');
+  const [location] = useLocation();
+  useEffect(() => setDrawer(false), [location]);
+  const railOpen = pane === 'rail' && Boolean(rail);
+  const tab = (value: 'main' | 'rail', label: string) => (
+    <button type="button" role="tab" aria-selected={pane === value} onClick={() => setPane(value)} className={cx('h-7.5 cursor-pointer border-0 border-b-2 bg-transparent px-2.5 text-small', pane === value ? 'border-accent font-semibold text-ink' : 'border-transparent font-medium text-ink-soft')}>{label}</button>
+  );
   return (
-    <div className="flex h-full overflow-hidden bg-ground">
-      <div className="hidden md:flex">{sidebar}</div>
-      <main className="flex min-w-0 grow flex-col">{children}</main>
-      {rail && <aside className="hidden w-100 shrink-0 flex-col border-l border-line bg-rail lg:flex">{rail}</aside>}
+    <div className="flex h-full flex-col overflow-hidden bg-ground shell:flex-row">
+      <div className="flex shrink-0 items-center gap-1.5 border-b border-line bg-rail px-2.5 py-1.5 shell:hidden">
+        <IconButton icon="menu" label="Open navigation" hint={false} onClick={() => setDrawer(true)} />
+        {rail && <div role="tablist" aria-label="Panes" className="flex gap-0.5">{tab('main', 'Board')}{tab('rail', railLabel)}</div>}
+        <span className="ml-auto"><IconButton icon="search" label="Search" hint={false} onClick={openPalette} /></span>
+      </div>
+      <Dialog open={drawer} onOpenChange={setDrawer} title="Navigation" place="left">{sidebar}</Dialog>
+      <div className="hidden shell:flex">{sidebar}</div>
+      <main className={cx('min-h-0 min-w-0 grow flex-col', railOpen ? 'hidden shell:flex' : 'flex')}>{children}</main>
+      {rail && <aside aria-label={railLabel} className={cx('min-h-0 shrink-0 flex-col bg-rail shell:flex shell:w-100 shell:grow-0 shell:border-l shell:border-line', railOpen ? 'flex grow' : 'hidden')}>{rail}</aside>}
     </div>
   );
 }
 
-export function PageHeader({ crumbs, title, children }: { crumbs?: string[]; title: string; children?: ReactNode }) {
+export type Crumb = string | { label: string; href: string };
+export function PageHeader({ crumbs, title, children }: { crumbs?: Crumb[]; title: string; children?: ReactNode }) {
   return (
     <header className="flex flex-col gap-2 border-b border-line px-5 pt-3">
       <div className="flex items-center gap-2 whitespace-nowrap">
-        {crumbs?.map(crumb => <span key={crumb} className="flex items-center gap-2"><Text tone="muted">{crumb}</Text><Text tone="faint">/</Text></span>)}
+        {crumbs?.map(crumb => {
+          const label = typeof crumb === 'string' ? crumb : crumb.label;
+          return <span key={label} className="flex items-center gap-2">{typeof crumb === 'string' ? <Text tone="muted">{label}</Text> : <Link href={crumb.href} className="rounded-chip text-ink-muted hover:text-ink hover:underline">{label}</Link>}<Text tone="faint">/</Text></span>;
+        })}
         <Text as="h1" size="title">{title}</Text>
       </div>
       {children}

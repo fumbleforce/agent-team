@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react';
 import { Link } from 'wouter';
 import { Card, Chip, cx, Meter, Text } from '../ui';
+import { Markdown } from './Markdown';
 
 export function SidePanel({ label, side = 'left', wide, children }: { label: string; side?: 'left' | 'right'; wide?: boolean; children: ReactNode }) {
   return <aside aria-label={label} className={cx('flex shrink-0 flex-col gap-0.5 overflow-y-auto bg-rail px-2.5 py-3.5', wide ? 'w-85' : 'w-65', side === 'left' ? 'border-r border-line' : 'border-l border-line')}>{children}</aside>;
@@ -16,9 +17,9 @@ export function ListLink({ href, active, indent, mark, children, aside }: { href
   );
 }
 
-// Article body. Pages are markdown; headings and lists keep their source form until a renderer is added.
+// Article body: a knowledge page's markdown, rendered and sanitized by Markdown.
 export function Prose({ children }: { children: string }) {
-  return <Text as="div" size="body" tone="soft" className="max-w-180 whitespace-pre-wrap leading-relaxed">{children}</Text>;
+  return <Markdown className="max-w-180">{children}</Markdown>;
 }
 
 export function NoteCard({ children, meta, tag }: { children: ReactNode; meta: ReactNode; tag?: string }) {
