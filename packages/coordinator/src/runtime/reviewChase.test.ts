@@ -122,7 +122,7 @@ test('an approved change that no longer merges goes back to its author with how 
     const db = coordinator.context.storage.db, turns = createTurns(coordinator.context);
     const names = Object.fromEntries((await db.selectFrom('agents').select(['id', 'name']).execute()).map(row => [row.name, row.id])) as Record<string, string>;
     const task = await db.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id']).where('key', '=', 'CK-31').executeTakeFirstOrThrow();
-    const refusal = { state: 'completed' as const, summary: 'x', delivery: { state: 'blocked' as const, reason: 'PR identity, head or mergeability gate failed', mergeAttempted: false } };
+    const refusal = { state: 'completed' as const, summary: 'x', delivery: { state: 'blocked' as const, reason: 'PR conflicts with the base branch', mergeAttempted: false } };
     const deliverOnce = async () => {
       await db.updateTable('tasks').set({ state: 'approved', head_sha: SHA }).where('id', '=', task.id).execute();
       await db.insertInto('merge_queue').values({ id: `q-${Date.now()}-${Math.random()}`, project_id: task.project_id, task_id: task.id, head_sha: SHA, state: 'queued', reason: null, created_at: Date.now(), finished_at: null }).execute();
@@ -143,6 +143,6 @@ test('an approved change that no longer merges goes back to its author with how 
     await db.updateTable('work_items').set({ state: 'done' }).where('task_id', '=', task.id).execute();
     await deliverOnce();
     const second = await db.selectFrom('tasks').select(['state', 'blocked_reason']).where('id', '=', task.id).executeTakeFirstOrThrow();
-    assert.deepEqual([second.state, /mergeability/.test(second.blocked_reason ?? '')], ['blocked', true]);
+    assert.deepEqual([second.state, /conflicts with the base/.test(second.blocked_reason ?? '')], ['blocked', true]);
   } finally { await coordinator.close(); }
 });

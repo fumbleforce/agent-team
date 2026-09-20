@@ -8,6 +8,7 @@ export type NeedsYouKind = 'decision' | 'quarantine' | 'delivery' | 'proposal' |
 const REFUSALS: [RegExp, string][] = [
   [/no required checks reported/i, 'The code host lists no required checks for the base branch, so the gate cannot confirm that this project\'s checks are enforced there. Either require them on the base branch at the code host, or have the gate itself require them (checkEnforcement: "runner" in the project\'s delivery settings). Then merge again.'],
   [/Required checks missing or not passing/i, 'A check this project requires is missing or did not pass on this change.'],
+  [/conflicts with the base branch/i, 'The change collides with the base branch, and its author could not put that right.'],
   [/identity, head or mergeability/i, 'The change cannot be merged as it stands: it conflicts with the base branch, is still a draft, or is not the revision that was approved.'],
   [/autoMergeAuthorized/i, 'This project\'s settings do not authorize the team to merge.'],
   [/No change was published/i, 'Nothing was published for this task, and the worker has nowhere to publish to.'],

@@ -128,3 +128,18 @@ test('a required check that has not finished is a reason to come back, not a ref
   const refused = await deliver({ config, scm: failed.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
   assert.deepEqual([refused.state, refused.waiting, failed.state.merges], ['blocked', undefined, 0]);
 });
+
+test('a host calls a change "not clean" while its checks run: that is a wait, never a conflict; a real conflict is named as one, for the author', async () => {
+  const { root, head } = worktree();
+  // Just brought up to date and pushed: checks running, so the host reports it as not mergeable yet.
+  const fresh = scm(head, { change: { mergeable: false }, checks: [{ name: 'verify', passed: false, pending: true } as { name: string; passed: boolean }] });
+  const waiting = await deliver({ config, scm: fresh.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([waiting.waiting, waiting.reason, fresh.state.merges], [true, 'Waiting for verify to finish', 0]);
+  // The host has not worked out yet whether it merges.
+  const undecided = scm(head, { change: { mergeable: false, undecided: true } });
+  assert.equal((await deliver({ config, scm: undecided.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' })).waiting, true);
+  // It really collides with the base.
+  const collides = scm(head, { change: { mergeable: false, conflicting: true } });
+  const refused = await deliver({ config, scm: collides.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([refused.state, refused.waiting, refused.reason, collides.state.merges], ['blocked', undefined, 'PR conflicts with the base branch', 0]);
+});

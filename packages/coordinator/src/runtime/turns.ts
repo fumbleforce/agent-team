@@ -314,7 +314,7 @@ export function createTurns(context: Context) {
           // Not mergeable as it stands (the base moved under it): that is the author's to put right, not a person's. Once per revision; if the
           // same revision comes back unmergeable, a person is asked after all.
           const task = await tx.selectFrom('tasks').select(['assignee_agent_id', 'head_sha']).where('id', '=', turn.task_id).executeTakeFirst();
-          const stale = !merged && /identity, head or mergeability/i.test(outcome.delivery.reason) && task?.assignee_agent_id && task.head_sha;
+          const stale = !merged && /conflicts with the base branch/i.test(outcome.delivery.reason) && task?.assignee_agent_id && task.head_sha;
           const told = stale ? await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select('messages.id').where('threads.subject_type', '=', 'task').where('threads.subject_id', '=', turn.task_id).where('messages.kind', '=', 'system').where('messages.payload', 'like', `%${task!.head_sha}%`).executeTakeFirst() : null;
           if (stale && !told) {
             let thread = await tx.selectFrom('threads').select('id').where('subject_type', '=', 'task').where('subject_id', '=', turn.task_id).executeTakeFirst();

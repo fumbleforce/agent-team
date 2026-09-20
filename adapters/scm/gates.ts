@@ -12,7 +12,7 @@ export const github: ScmGate = {
     const pr = JSON.parse(await gh(exec, context)('view', '--json', GH_FIELDS));
     return { url: pr.url, state: pr.state, isDraft: pr.isDraft, baseRef: pr.baseRefName, headRef: pr.headRefName, headSha: pr.headRefOid,
       sameRepository: pr.isCrossRepository === false && `${pr.headRepositoryOwner?.login}/${pr.headRepository?.name}` === context.repository,
-      mergeable: pr.mergeable === 'MERGEABLE' && pr.mergeStateStatus === 'CLEAN', mergeCommit: SHA.test(pr.mergeCommit?.oid ?? '') ? pr.mergeCommit.oid : null };
+      mergeable: pr.mergeable === 'MERGEABLE' && pr.mergeStateStatus === 'CLEAN', conflicting: pr.mergeable === 'CONFLICTING', undecided: pr.mergeable === 'UNKNOWN', mergeCommit: SHA.test(pr.mergeCommit?.oid ?? '') ? pr.mergeCommit.oid : null };
   },
   // `protected` is null when only configured checks are enforced; an unreadable required-check lookup throws, so the gate fails closed.
   async checks(exec, context, { includeProtected }) {
@@ -37,7 +37,7 @@ async function gitlabView(exec: Exec, context: GateContext): Promise<GitlabChang
   const merged = SHA.test(mr.squash_commit_sha ?? '') ? mr.squash_commit_sha : SHA.test(mr.merge_commit_sha ?? '') ? mr.merge_commit_sha : null;
   return { url: mr.web_url, state: mr.state === 'opened' ? 'OPEN' : mr.state === 'merged' ? 'MERGED' : String(mr.state ?? '').toUpperCase(), isDraft: mr.draft === true || mr.work_in_progress === true,
     baseRef: mr.target_branch, headRef: mr.source_branch, headSha: mr.sha, sameRepository: mr.source_project_id === mr.target_project_id && mr.project_id === mr.target_project_id,
-    mergeable: mr.detailed_merge_status === 'mergeable', mergeCommit: merged, pipelineId: mr.head_pipeline?.id ?? null, pipelineStatus: mr.head_pipeline?.status ?? null };
+    mergeable: mr.detailed_merge_status === 'mergeable', conflicting: mr.detailed_merge_status === 'conflict' || mr.has_conflicts === true, undecided: ['checking', 'unchecked', 'preparing'].includes(mr.detailed_merge_status), mergeCommit: merged, pipelineId: mr.head_pipeline?.id ?? null, pipelineStatus: mr.head_pipeline?.status ?? null };
 }
 
 export const gitlab: ScmGate = {

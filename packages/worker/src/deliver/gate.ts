@@ -4,7 +4,9 @@ import path from 'node:path';
 
 const SHA = /^[0-9a-f]{40}$/;
 export type Exec = (bin: string, args: string[], options: { cwd: string }) => Promise<string>;
-export interface Change { url: string; state: string; isDraft: boolean; baseRef: string; headRef: string; headSha: string; sameRepository: boolean; mergeable: boolean; mergeCommit?: string | null }
+export interface Change { url: string; state: string; isDraft: boolean; baseRef: string; headRef: string; headSha: string; sameRepository: boolean; mergeable: boolean; mergeCommit?: string | null;
+  /* The host says it collides with the base branch: only the author can put that right. */ conflicting?: boolean;
+  /* The host has not worked out yet whether it merges (just pushed): come back later. */ undecided?: boolean }
 export interface ScmGate {
   name: string; changeNoun: string;
   parseChangeUrl(url: string): { repository: string } | null;
@@ -92,8 +94,13 @@ export async function deliver(input: { config: DeliveryConfig; scm: ScmGate; app
       abortCheck();
       await scm.ready(exec, context);
     }
-    validateChange(await scm.view(exec, context));
+    // In this order: a real conflict is the author's to fix; a host that is still working it out, or a check that still runs, is a reason to
+    // come back (hosts report a change as not clean while its checks run, which is not a conflict); only then is the change held to be mergeable.
+    const current = await scm.view(exec, context);
+    if (current.conflicting) throw new Error(`${scm.changeNoun} conflicts with the base branch`);
+    if (current.undecided) throw new ChecksRunning('Waiting for the code host to work out whether it merges');
     await checks();
+    validateChange(await scm.view(exec, context));
     // Fresh reads immediately before the single mutation.
     if (await local() !== headSha) throw new Error('Local head changed between reads');
     validateApprovals(await input.approvals(), headSha, roles);
