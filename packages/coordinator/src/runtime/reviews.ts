@@ -95,7 +95,7 @@ export function createReviews(context: Context, turns: Turns) {
         }
         // The same task queued more than once (an earlier version did that): only the newest entry stays.
         const queued = await tx.selectFrom('merge_queue').select(['id', 'task_id']).where('state', '=', 'queued').orderBy('created_at', 'desc').execute(), kept = new Set<string>();
-        const extra = queued.filter(entry => (kept.has(entry.task_id) ? true : (kept.add(entry.task_id), false)));
+        const extra = queued.filter(entry => { if (kept.has(entry.task_id)) return true; kept.add(entry.task_id); return false; });
         if (extra.length) await tx.updateTable('merge_queue').set({ state: 'blocked', reason: 'Queued more than once; the newest entry runs', finished_at: now() }).where('id', 'in', extra.map(entry => entry.id)).execute();
         for (const task of await tx.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state']).where('state', 'in', ['in_review', 'approved', 'merging']).where('head_sha', 'is not', null).execute()) {
           const headSha = task.head_sha!, reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id);

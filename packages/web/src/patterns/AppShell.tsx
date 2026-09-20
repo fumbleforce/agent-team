@@ -1,7 +1,7 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
 import type { Agent, ProjectNode } from '../data/client';
-import { Avatar, Button, Chip, cx, Dialog, IconButton, Meter, SectionLabel, Text, type DotTone } from '../ui';
+import { Avatar, Chip, cx, Dialog, IconButton, Meter, SectionLabel, Text, type DotTone } from '../ui';
 import { useStream } from '../data/stream';
 import { useResource } from '../data/useResource';
 import { openPalette } from './CommandPalette';

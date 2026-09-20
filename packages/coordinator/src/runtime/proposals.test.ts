@@ -30,7 +30,7 @@ test('inside the delegated bounds a majority applies the change without a human'
 
 test('outside the bounds it waits for a human, who approves or declines; a lost vote is declined', async () => {
   const { storage, db, proposals, agents, turn, projectId } = await boot();
-  const everyone = async (id: string, by: string, stance: 'for' | 'against') => { let last; for (const name of ['Maren', 'Ada', 'Cleo', 'Rune'].filter(item => item !== by)) last = await proposals.vote(turn(name), id, { stance, note: 'n' }); return last; };
+  const everyone = async (id: string, by: string, stance: 'for' | 'against') => { let last: Awaited<ReturnType<typeof proposals.vote>> | undefined; for (const name of ['Maren', 'Ada', 'Cleo', 'Rune'].filter(item => item !== by)) last = await proposals.vote(turn(name), id, { stance, note: 'n' }); return last; };
 
   const retire = await proposals.create(turn('Maren'), { ...base, category: 'retire', title: 'Retire Rune', change: { kind: 'retire_agent', agentId: agents.Rune! } });
   assert.deepEqual(await everyone(retire.proposalId, 'Maren', 'for'), { state: 'needs_you' });

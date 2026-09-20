@@ -406,7 +406,7 @@ export function createApp(context: Context) {
   app.post('/api/projects/:slug/checks/:suite', async c => {
     const { project } = await projectFor(c, 'project.contribute');
     const xml = await c.req.text();
-    let parsed;
+    let parsed: ReturnType<typeof checks.parse>;
     try { parsed = checks.parse(xml); } catch (error) { throw new HttpError(400, 'junit', (error as Error).message); }
     return c.json(await checks.record({ projectId: project.id, suite: c.req.param('suite').slice(0, 60), branch: c.req.query('branch') ?? 'main', sha: c.req.query('sha') ?? null, source: 'upload', report: parsed }));
   });

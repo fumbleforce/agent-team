@@ -47,9 +47,9 @@ export function DiffView({ text, truncated, plain }: { text: string; truncated?:
             <Text size="small" mono truncate>{file.path}</Text>
             <span className="ml-auto flex shrink-0 items-center gap-1"><Chip tone="working" mono>+{file.added}</Chip><Chip tone="stop" mono>-{file.removed}</Chip></span>
           </div>}
-          <div role="table" aria-label={`Changes to ${file.path}`} className="overflow-x-auto py-1">
+          <div role="group" aria-label={`Changes to ${file.path}`} className="overflow-x-auto py-1">
             {file.lines.map((line, index) => (plain && line.kind === 'meta' ? null : plain && line.kind === 'hunk' ? (index > 3 ? <div key={index} className="my-1 border-t border-line" /> : null) : (
-              <div role="row" key={index} className={cx('flex items-start', !plain && 'min-w-max', ROW[line.kind])}>
+              <div key={index} className={cx('flex items-start', !plain && 'min-w-max', ROW[line.kind])}>
                 {line.kind === 'hunk' || line.kind === 'meta' ? <span className="w-18 shrink-0" /> : <><Gutter value={line.before} /><Gutter value={line.after} /></>}
                 <Text size="caption" tone={TONE[line.kind]} mono className="w-4 shrink-0 select-none text-center">{SIGN[line.kind]}</Text>
                 <Text size="caption" tone={TONE[line.kind]} mono className={cx('pr-3', plain ? 'min-w-0 whitespace-pre-wrap break-words' : 'whitespace-pre')}>{line.text || ' '}</Text>

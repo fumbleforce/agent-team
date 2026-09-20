@@ -161,7 +161,7 @@ export function createTurns(context: Context) {
 
   async function leased(tx: Tx, turnId: string, workerId: string, leaseToken: string) {
     const turn = await tx.selectFrom('turns').selectAll().where('id', '=', turnId).executeTakeFirst();
-    if (!turn || turn.state !== 'running' || turn.worker_id !== workerId || Number(turn.lease_until) < now() || !sameSecret(turn.lease_token_hash, hashToken(leaseToken))) throw new HttpError(409, 'lease', 'Lease lost or invalid');
+    if (turn?.state !== 'running' || turn.worker_id !== workerId || Number(turn.lease_until) < now() || !sameSecret(turn.lease_token_hash, hashToken(leaseToken))) throw new HttpError(409, 'lease', 'Lease lost or invalid');
     return turn;
   }
 

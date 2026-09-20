@@ -46,7 +46,7 @@ export function createMcp(context: Context, deps: McpDeps) {
     const match = /^Bearer (turn\.([0-9a-f-]{36})\.[\w-]+)$/.exec(header ?? '');
     if (!match) return null;
     const turn = await db.selectFrom('turns').selectAll().where('id', '=', match[2]!).executeTakeFirst();
-    if (!turn || turn.state !== 'running' || Number(turn.lease_until) < now()) return null;
+    if (turn?.state !== 'running' || Number(turn.lease_until) < now()) return null;
     return sameSecret(match[1]!, turnTokenFromHash(context.machineToken, turn.id, turn.lease_token_hash)) ? turn : null;
   }
 

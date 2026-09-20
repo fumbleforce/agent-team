@@ -15,7 +15,7 @@ export function MultiPicker({ name, label, options, value, onChange, loading, er
   // In a row the search stays out of the way until it is asked for.
   const [adding, setAdding] = useState(false), open = !inline || (adding && looking);
   return (
-    <div className="flex flex-col gap-1.5" onFocus={() => setLooking(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) { setLooking(false); setAdding(false); setQuery(''); } }}>
+    <fieldset className="m-0 flex min-w-0 flex-col gap-1.5 border-0 p-0" aria-label={label} onFocus={() => setLooking(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) { setLooking(false); setAdding(false); setQuery(''); } }}>
       {!inline && <Text size="small" tone="muted">{label}</Text>}
       <input type="hidden" name={name} value={value.join('\n')} />
       <div className="flex flex-wrap items-center gap-1.5">
@@ -26,25 +26,25 @@ export function MultiPicker({ name, label, options, value, onChange, loading, er
       </div>
       {!inline && <Input value={query} onChange={event => setQuery(event.target.value)} placeholder={options.length > 6 ? 'Search models' : 'Add a model by name'} aria-label={`Search ${label}`} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (addable) { toggle(typed); setQuery(''); } } }} />}
       {open && !disabled && (
-        <div onMouseDown={event => { if (inline) event.preventDefault(); }} className="flex max-h-56 flex-col gap-2 overflow-y-auto rounded-control border border-line bg-raised px-3 py-2.5">
+        <fieldset aria-label={`Choices for ${label}`} onMouseDown={event => { if (inline) event.preventDefault(); }} className="m-0 flex max-h-56 min-w-0 flex-col gap-2 overflow-y-auto rounded-control border border-line bg-raised px-3 py-2.5">
           {loading && <span className="flex items-center gap-2"><Spinner /><Text size="small" tone="muted">Loading the list…</Text></span>}
           {shown.map(option => <Checkbox key={option.id} label={option.name} {...(option.note ? { note: option.note } : {})} checked={value.includes(option.id)} onChange={() => toggle(option.id)} />)}
           {addable && <div><Button size="sm" onClick={() => { toggle(typed); setQuery(''); }}>Add “{typed}”</Button></div>}
           {!loading && shown.length === 0 && !addable && <Text size="small" tone="muted">{options.length ? 'Nothing matches.' : 'Type a model name and press Enter.'}</Text>}
-        </div>
+        </fieldset>
       )}
       {error && <Text size="caption" tone="stop">{error}</Text>}
-    </div>
+    </fieldset>
   );
 }
 
 // A key or token typed into the app. Once saved it is never shown again: the field says so and offers to replace it.
-export function SecretField({ name, label, saved, getAt, placeholder, error, required }: { name: string; label: string; saved: boolean; getAt?: string | undefined; placeholder?: string | undefined; error?: string | undefined; required?: boolean }) {
+export function SecretField({ name, label, saved, getAt, placeholder, error, required, onLeave }: { name: string; label: string; saved: boolean; getAt?: string | undefined; placeholder?: string | undefined; error?: string | undefined; required?: boolean; /* What was typed, when the field is left. */ onLeave?: (value: string) => void }) {
   const [replacing, setReplacing] = useState(false);
   if (saved && !replacing) return <div className="flex items-center gap-2"><Chip tone="working">{label} saved</Chip><Button size="sm" variant="ghost" onClick={() => setReplacing(true)}>Replace</Button></div>;
   return (
     <Field label={label} error={error}>
-      <Input name={name} type="password" autoComplete="off" spellCheck={false} placeholder={placeholder} required={required && !saved} />
+      <Input name={name} type="password" autoComplete="off" spellCheck={false} placeholder={placeholder} required={required && !saved} onBlur={event => onLeave?.(event.target.value)} />
       {getAt && <a href={getAt} target="_blank" rel="noreferrer noopener" className="text-caption text-accent">Get one ↗</a>}
     </Field>
   );

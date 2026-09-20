@@ -70,7 +70,7 @@ export function gate(item: TurnDraft, snapshot: Snapshot): Gate {
   if (!verdict.allow || !verdict.route) return refuse(verdict.deferReason ?? 'deferred', verdict.notices);
   if (verdict.route.providerId !== null) {
     const provider = snapshot.providers[verdict.route.providerId];
-    if (!provider || provider.status !== 'connected') return refuse('provider-unavailable', verdict.notices);
+    if (provider?.status !== 'connected') return refuse('provider-unavailable', verdict.notices);
     if (provider.limitedUntil !== null && provider.limitedUntil > snapshot.now) return refuse('provider-limited', verdict.notices);
     if (provider.maxConcurrent !== null && provider.running >= provider.maxConcurrent) return refuse('provider-busy', verdict.notices);
     if (provider.windowPct !== null && provider.windowPct >= 100) return refuse('provider-window', verdict.notices);

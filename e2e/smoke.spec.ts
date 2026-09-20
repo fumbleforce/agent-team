@@ -405,7 +405,7 @@ test('knowledge: search, write a page, edit it past a stale save, read its histo
   await main.getByRole('button', { name: 'History' }).click();
   await expect(main.getByRole('button', { name: /Version 3 .* Thirty days, as agreed with support/ })).toBeVisible();
   await main.getByRole('button', { name: /Version 1 / }).click();
-  await expect(main.getByRole('table', { name: /Changes to support\/refund-rules/ })).toContainText('Full refund within 14 days.');
+  await expect(main.getByRole('group', { name: /Changes to support\/refund-rules/ })).toContainText('Full refund within 14 days.');
   await page.screenshot({ path: 'walk-shots/knowledge-history.png', fullPage: true });
   await main.getByRole('button', { name: 'Restore this version' }).click();
   await expect(main.getByRole('button', { name: /Version 4 .* Restored version 1/ })).toBeVisible();
