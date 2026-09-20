@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from 'react';
-import { api, ApiError, type Agent, type TaskCardData } from '../../data/client';
+import { api, ApiError, type Agent, type TaskCardData, type ThreadPending } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
-import { DetailHeader, DetailRail, LogCard, Markdown, mentionOptions, Pipeline, RailFacts, RailSection, StatusLine, type PipelineStep } from '../../patterns';
+import { DetailHeader, DetailRail, LogCard, Markdown, mentionOptions, PendingLine, Pipeline, RailFacts, RailSection, StatusLine, type PipelineStep } from '../../patterns';
 import { Avatar, Button, Card, Chip, LinkButton, MarkerCanvas, SectionLabel, Select, Text, Textarea, type ChipTone, type Marker } from '../../ui';
 
 interface TaskView {
@@ -13,6 +13,7 @@ interface TaskView {
   log: { id: string; agentId: string; kind: string; state: string; summary: string | null; at: number }[];
   approvals: { kind: string; agentId: string; verdict: string; summary: string; stale: boolean; at: number }[];
   messages: { id: string; authorKind: string; authorId: string | null; kind: string; body: string; at: number }[];
+  pending: ThreadPending | null;
 }
 const STATE: Record<string, [string, ChipTone]> = { inbox: ['Inbox · triage', 'attention'], backlog: ['Backlog', 'neutral'], assigned: ['Assigned', 'neutral'], in_progress: ['In progress', 'working'], awaiting_decision: ['Waiting for a decision', 'attention'], in_review: ['In review', 'review'], approved: ['Approved', 'review'], merging: ['Merging', 'review'], done: ['Done', 'working'], blocked: ['Blocked', 'stop'], stopped: ['Stopped', 'stop'], canceled: ['Declined', 'neutral'], quarantined: ['Needs you', 'stop'] };
 const LINE: Record<string, Record<string, string>> = { work: { running: 'working now', completed: 'worked on it', failed: 'stopped with an error', deferred: 'waiting for a limit to reset', interrupted: 'was interrupted' }, review: { running: 'reviewing now', completed: 'reviewed it' }, publish: { completed: 'published the change' }, deliver: { running: 'merging now', completed: 'merged it', failed: 'could not merge it' } };
@@ -95,6 +96,7 @@ export function TaskPage({ slug, taskId, roster, board, navigate }: { slug: stri
             {task.branch && <LinkButton size="sm" href={`/p/${slug}/tests`}>Tests on {task.branch}</LinkButton>}
           </RailSection>}
           <RailSection label={inbox ? 'Reply' : 'Thread on this task'}>
+            {data.pending && <div className="pb-1"><PendingLine pending={data.pending} roster={roster} /></div>}
             {!inbox && data.messages.map(message => <div key={message.id} className="flex flex-col gap-0.5"><Text size="caption" tone="muted">{message.authorKind === 'user' ? 'You' : agent(message.authorId)?.name ?? 'The tracker'} · {time(message.at)}</Text><Text size="small" tone="soft">{message.body}</Text></div>)}
             {data.canWrite && <>
               <Textarea rows={3} value={text} onChange={event => setText(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) send(); }} placeholder={inbox ? 'Reply to the triage' : owner ? `Direction for ${owner.name}, or @${mentionOptions(roster)[0]?.label ?? 'someone'}` : 'Write on this task'} aria-label="Write on this task" />

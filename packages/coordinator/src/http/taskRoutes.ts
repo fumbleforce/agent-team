@@ -6,6 +6,7 @@ import { can, type Action, type Viewer } from '../auth/rbac.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
 import type { Turns } from '../runtime/turns.ts';
 import { teamIdOf } from '../repos/issueTasks.ts';
+import { threadPending } from '../repos/workspace.ts';
 import { parseBody } from './conventions.ts';
 
 type Env = { Variables: { viewer: Viewer } };
@@ -73,6 +74,8 @@ export function mountTaskRoutes(app: Hono<Env>, context: Context, turns: Turns) 
       approvals: approvals.map(row => ({ kind: row.kind, agentId: row.agent_id, verdict: row.verdict, summary: row.summary, stale: row.state === 'stale', at: Number(row.created_at) })),
       // The report itself is shown as the report, not again as the first message.
       messages: messages.reverse().filter(message => !(issue && message.id === first?.id)).map(message => ({ id: message.id, authorKind: message.author_kind, authorId: message.author_id, kind: message.kind, body: message.body, at: Number(message.created_at) })),
+      // What the thread is waiting for, from the same work items a claim picks from: nothing here means it has been answered.
+      pending: threadId ? await threadPending(db, threadId) : null,
       canWrite: can(c.get('viewer'), 'project.contribute', task.parent_id ?? task.project_id),
     });
   });
