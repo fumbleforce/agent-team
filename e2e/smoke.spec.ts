@@ -597,3 +597,20 @@ test('a team with a front desk can be asked what is going on from any project pa
   await page.screenshot({ path: info.outputPath('front-desk.png') });
   expect(errors).toEqual([]);
 });
+
+test('beside the discussion, a live feed collects what every agent does into one stream', async ({ page }, info) => {
+  const errors = await enter(page);
+  await page.goto(`${PROJECT}/tasks`);
+  await page.getByRole('radio', { name: 'Live feed' }).click();
+  const rail = page.getByRole('complementary').last();
+  await expect(rail.getByText(/working right now|Nobody is working right now/)).toBeVisible();
+  await expect(rail.getByText(/Ada/).first()).toBeVisible();
+  await expect(rail.getByRole('link', { name: 'CK-27' }).first()).toBeVisible();
+  await page.screenshot({ path: info.outputPath('feed.png') });
+  // The choice is remembered, and the discussion is one click back.
+  await page.reload();
+  await expect(page.getByRole('radio', { name: 'Live feed' })).toBeChecked();
+  await page.getByRole('radio', { name: 'Discussion' }).click();
+  await expect(page.getByPlaceholder(/Raise an issue or suggestion/)).toBeVisible();
+  expect(errors).toEqual([]);
+});

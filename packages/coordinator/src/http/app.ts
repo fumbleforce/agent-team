@@ -24,6 +24,7 @@ import { createNeedsYou, type NeedsYouKind } from '../runtime/needsYou.ts';
 import { mountProviderRoutes } from './providerSetupRoutes.ts';
 import { mountTaskRoutes } from './taskRoutes.ts';
 import { deskOf } from '../runtime/desk.ts';
+import { createWorkload } from '../runtime/workload.ts';
 import { SCM_KINDS, scmAdapter } from '../../../../adapters/scm/index.ts';
 import { TRACKER_KINDS } from '../../../../adapters/tracker/index.ts';
 import { createWorkspace } from '../repos/workspace.ts';
@@ -55,7 +56,7 @@ export function createApp(context: Context) {
   const workspace = createWorkspace(context);
   const turns = createTurns(context);
   const deliberation = createDeliberation(context, turns);
-  const reviews = createReviews(context, turns);
+  const reviews = createReviews(context, turns), workload = createWorkload(context, turns);
   let chased = 0;
   const retro = createRetro(context, turns);
   // Semantic search is on when an embeddings endpoint is named; otherwise search is lexical.
@@ -129,6 +130,7 @@ export function createApp(context: Context) {
     if (context.now() - chased > 30_000) {
       chased = context.now();
       await reviews.chase().catch(error => console.error(`Chasing reviews failed: ${(error as Error).message}`));
+      await workload.nudge().catch(error => console.error(`Looking at the workload failed: ${(error as Error).message}`));
       // This worker is here and asking for work, so whatever it was running when it lost contact is over: it ends its own processes when it
       // cannot confirm a lease, and again when it starts. Work it had in hand then is a known state and continues, without a person.
       const mine = await context.storage.db.selectFrom('quarantines').innerJoin('turns', 'turns.id', 'quarantines.turn_id').select('quarantines.id').where('quarantines.released_at', 'is', null).where('quarantines.scope', '=', 'task').where('turns.worker_id', '=', claim.workerId).where('turns.kind', '!=', 'deliver').where('quarantines.opened_at', '<', context.now() - 60_000).execute();
@@ -360,6 +362,8 @@ export function createApp(context: Context) {
   };
   app.post('/api/agents/:id/stop', async c => { await agentHome(c, 'project.operate'); return c.json(await controls.stopAgent(c.get('viewer').userId, c.req.param('id')!)); });
   app.get('/api/agents/:id/dm', async c => { const projectId = await agentHome(c, 'project.contribute'); return c.json(await controls.direct(c.get('viewer').userId, c.req.param('id')!, projectId)); });
+  // One stream of what the whole team is doing and just did.
+  app.get('/api/projects/:slug/feed', async c => { const { project } = await projectFor(c, 'project.read'); return c.json(await workload.feed(project.id)); });
   // Who answers the owner for this project: its front desk when it has one. The app offers to talk to them, by voice too.
   app.get('/api/projects/:slug/desk', async c => {
     const { project } = await projectFor(c, 'project.read'), id = await deskOf(context.storage.db, project.id);

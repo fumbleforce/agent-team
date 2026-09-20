@@ -59,6 +59,29 @@ export function createActions(context: Context, turns: Turns) {
       return { decisionId: result.decisionId, messageId: result.messageId, taskId: result.taskId };
     },
 
+    // The PM spreads the work: a task that waits behind its owner's other work goes to a teammate who is free and may do it.
+    async assign(turn: Actor, input: ToolInput<'task.assign'>) {
+      const result = await storage.transaction(async tx => {
+        const me = await tx.selectFrom('agents').select('is_pm').where('id', '=', turn.agent_id).executeTakeFirstOrThrow();
+        if (!me.is_pm) throw refuse('task', 'Only the PM moves tasks between teammates');
+        const owner = await teammate(tx, turn.project_id, input.ownerAgentId);
+        const task = await tx.selectFrom('tasks').select(['id', 'key', 'state', 'assignee_agent_id', 'blocked_reason']).where('id', '=', input.taskId).where('project_id', '=', turn.project_id).executeTakeFirst();
+        if (!task) throw refuse('task', 'Task not found in this project');
+        if (!['backlog', 'assigned', 'in_progress'].includes(task.state) || (task.state === 'backlog' && task.blocked_reason)) throw refuse('task', `${task.key} is ${task.state}${task.blocked_reason ? ' and held' : ''}; it cannot be given to someone now`);
+        if (await tx.selectFrom('turns').select('id').where('task_id', '=', task.id).where('state', '=', 'running').where('kind', '=', 'work').executeTakeFirst()) throw refuse('task', `${task.key} is being worked on right now; move one that is waiting`);
+        // Whoever takes it must be able to write: a reviewer or tester given a coding task would only fail at it.
+        const roles = (await tx.selectFrom('agent_roles').select('role_slug').where('agent_id', '=', owner.id).execute()).map(row => row.role_slug);
+        const docs = roles.length ? await tx.selectFrom('versioned_docs').select('doc').where('kind', '=', 'role').where('slug', 'in', roles).execute() : [];
+        if (!docs.some(row => { const write = (JSON.parse(row.doc) as { permissions?: { codeWrite?: unknown } }).permissions?.codeWrite; return write !== undefined && write !== 'none'; })) throw refuse('task', `${owner.name} has no role that may change the code. If nobody free can take it, propose a hire with proposal.create.`);
+        await tx.updateTable('work_items').set({ state: 'expired' }).where('task_id', '=', task.id).where('kind', '=', 'work').where('state', '=', 'queued').execute();
+        await tx.updateTable('tasks').set({ assignee_agent_id: owner.id, state: task.state === 'backlog' ? 'assigned' : task.state, updated_at: now() }).where('id', '=', task.id).execute();
+        return { key: task.key, ownerId: owner.id, published: await events.append(tx, [{ type: 'task.assigned', actorKind: 'agent', agentId: owner.id, projectId: turn.project_id, taskId: task.id, turnId: turn.id, payload: { by: turn.agent_id, from: task.assignee_agent_id, why: input.why } }]) };
+      });
+      events.published(result.published);
+      await turns.enqueue({ agentId: result.ownerId, projectId: turn.project_id, kind: 'work', taskId: input.taskId, dedupeKey: `work:${input.taskId}` });
+      return { taskId: input.taskId, key: result.key, assigneeAgentId: result.ownerId };
+    },
+
     // The front desk does not decide or do the work: it notes what was asked where the team sees it, and the PM takes it from there.
     async handover(turn: Actor, input: ToolInput<'desk.handover'>) {
       const result = await storage.transaction(async tx => {

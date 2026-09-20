@@ -267,3 +267,20 @@ test('an author who finds the base already does what the task asked closes it as
     assert.equal((await db.selectFrom('merge_queue').select('state').where('id', '=', 'waiting').executeTakeFirstOrThrow()).state, 'blocked', 'nothing of it waits to be merged');
   } finally { await work.coordinator.close(); }
 });
+
+test('the PM gives a waiting task to a teammate who may do it; not to one who may not write, and not a task being worked on', async () => {
+  const pm = await boot('triage', { agent: 'Maren', roles: ['pm'] });
+  try {
+    const { db, call, agents, taskId } = pm;
+    await db.insertInto('agent_roles').values({ agent_id: agents.Ada!, role_slug: 'developer' }).onConflict(oc => oc.doNothing()).execute();
+    // Someone whose only role reads and judges, and writes nothing.
+    await db.deleteFrom('agent_roles').where('agent_id', '=', agents.Cleo!).execute();
+    await db.insertInto('agent_roles').values({ agent_id: agents.Cleo!, role_slug: 'reviewer' }).execute();
+    assert.match((await call('task.assign', { taskId, ownerAgentId: agents.Cleo, why: 'She is free.' })).text, /has no role that may change the code[\s\S]*proposal\.create/);
+    const moved = await call('task.assign', { taskId, ownerAgentId: agents.Ada, why: 'Bram has three waiting; Ada is free.' });
+    assert.deepEqual([moved.error, moved.data.assigneeAgentId], [false, agents.Ada]);
+    assert.deepEqual((await db.selectFrom('work_items').select(['agent_id', 'kind']).where('task_id', '=', taskId).where('state', '=', 'queued').execute()).map(item => [item.agent_id, item.kind]), [[agents.Ada, 'work']]);
+  } finally { await pm.coordinator.close(); }
+  const other = await boot('reply', { agent: 'Bram' });
+  try { assert.match((await other.call('task.assign', { taskId: other.taskId, ownerAgentId: other.agents.Ada, why: 'x' })).text, /Only the PM moves tasks/); } finally { await other.coordinator.close(); }
+});

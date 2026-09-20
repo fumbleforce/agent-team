@@ -177,6 +177,7 @@ export function createMcp(context: Context, deps: McpDeps) {
       return { recorded: input.proposals.length };
     },
     'task.claim': async (turn, input) => actions.claim(turn, input.taskId),
+    'task.assign': (turn, input) => actions.assign(turn, input),
     'task.handoff': async (turn, input) => actions.handoff(turn, input),
     'issue.create': async (turn, input) => {
       const created = await issues.create(null, turn.project_id, { title: input.title, body: input.body, source: 'discussion', markers: [] }, turn.agent_id);

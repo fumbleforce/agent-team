@@ -170,6 +170,12 @@ export const TOOLS = {
     output: z.object({ taskId: z.string(), key: z.string(), state: z.string() }),
     permission: null, turnKinds: ['triage', 'reply', 'conclude', 'retro'], mutating: true, rateClass: 'few',
   }),
+  'task.assign': tool({
+    description: 'PM only. Give a task to another teammate: one that waits in the backlog, or one that waits behind its owner\'s other work. The new owner needs a role that lets it do the work (a developer for code). A task someone is working on right now cannot be moved.',
+    input: z.object({ taskId: z.string(), ownerAgentId: z.string(), why: Words(40) }),
+    output: z.object({ taskId: z.string(), key: z.string(), assigneeAgentId: z.string() }),
+    permission: null, turnKinds: ['triage', 'reply', 'conclude', 'retro'], mutating: true, rateClass: 'few',
+  }),
   'task.claim': tool({
     description: 'Take an unassigned backlog task of this project. The claim is atomic: if a teammate got there first it is refused.',
     input: z.object({ taskId: z.string() }),

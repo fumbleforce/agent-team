@@ -150,12 +150,13 @@ export function PageHeader({ crumbs, title, aside, children }: { crumbs?: Crumb[
   );
 }
 
-export function RailHeader({ title, note, live }: { title: string; note?: string; live?: boolean }) {
+export function RailHeader({ title, note, live, aside }: { title: string; note?: string; live?: boolean; aside?: ReactNode }) {
   return (
     <div className="flex h-11 shrink-0 items-center gap-2.5 border-b border-line px-4">
       <Text weight="semibold">{title}</Text>
       {note && <Text size="caption" tone="muted">{note}</Text>}
-      {live && <span className="ml-auto flex items-center gap-1.5"><span aria-hidden className="size-1.5 rounded-pill bg-working" /><Text size="caption" tone="working">live</Text></span>}
+      {aside && <span className="ml-auto">{aside}</span>}
+      {live && !aside && <span className="ml-auto flex items-center gap-1.5"><span aria-hidden className="size-1.5 rounded-pill bg-working" /><Text size="caption" tone="working">live</Text></span>}
     </div>
   );
 }
