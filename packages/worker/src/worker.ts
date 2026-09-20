@@ -199,7 +199,7 @@ export function createWorker(config: WorkerConfig) {
       const resume = turn.resume && adapter.capabilities.resume === 'id' && !config.ephemeral ? turn.resume : null;
       const moved = resume?.baseSha && worktree && resume.baseSha !== worktree.baseCommit ? `\n\n# The base moved\nThe base branch was at ${resume.baseSha.slice(0, 10)} when this session last ran and is at ${worktree.baseCommit.slice(0, 10)} now. Bring your branch up to date before you continue.` : '';
       const result = await executeTurn({
-        adapter, turnDir, env, ...(turn.secrets ? { secrets: turn.secrets } : {}), timeoutMs: config.timeoutMs ?? 45 * 60_000, signal,
+        adapter, turnDir, env, ...(turn.secrets ? { secrets: turn.secrets } : {}), timeoutMs: config.timeoutMs ?? (lane === 'work' ? 45 : 15) * 60_000, signal,
         spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? reviewTree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, effort: turn.effort ?? null, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
         onSteps: steps => tracer.steps(steps),
         onLine: keepLine,

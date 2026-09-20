@@ -6,6 +6,7 @@ import type { Turns } from './turns.ts';
 export type NeedsYouKind = 'decision' | 'quarantine' | 'delivery' | 'proposal' | 'blocked';
 // Why the merge gate refused, for someone who does not read command lines. The gate's own words stay available beside it.
 const REFUSALS: [RegExp, string][] = [
+  [/^needs-attention$/i, 'A turn on this task stopped with an error or ran out of time, and an earlier version set the whole task aside for it. Nothing is wrong with the task itself: carry on.'],
   [/no required checks reported/i, 'The code host lists no required checks for the base branch, so the gate cannot confirm that this project\'s checks are enforced there. Either require them on the base branch at the code host, or have the gate itself require them (checkEnforcement: "runner" in the project\'s delivery settings). Then merge again.'],
   [/Required checks missing or not passing/i, 'A check this project requires is missing or did not pass on this change.'],
   [/conflicts with the base branch/i, 'The change collides with the base branch, and its author could not put that right.'],
@@ -57,7 +58,7 @@ export function createNeedsYou(context: Context, turns: Turns) {
       for (const row of await db.selectFrom('proposals').select(['id', 'project_id', 'title', 'why', 'created_at']).where('state', '=', 'needs_you').execute())
         items.push({ kind: 'proposal', id: row.id, projectId: row.project_id, title: row.title, detail: row.why, since: Number(row.created_at), taskKey: null, href: `/proposals/${row.id}` });
       for (const row of await db.selectFrom('tasks').select(['id', 'project_id', 'key', 'title', 'blocked_reason', 'updated_at']).where('state', '=', 'blocked').execute())
-        items.push({ kind: 'blocked', id: row.id, projectId: row.project_id, title: `${row.key} · ${row.title}`, detail: inWords(row.blocked_reason) ?? row.blocked_reason ?? 'The team could not move this on.', ...(inWords(row.blocked_reason) ? { raw: row.blocked_reason, mergeRefused: true } : {}), since: Number(row.updated_at), taskKey: row.key, href: null, about: await about(row.id, null) });
+        items.push({ kind: 'blocked', id: row.id, projectId: row.project_id, title: `${row.key} · ${row.title}`, detail: inWords(row.blocked_reason) ?? row.blocked_reason ?? 'The team could not move this on.', ...(inWords(row.blocked_reason) ? { raw: row.blocked_reason, mergeRefused: !/^needs-attention$/i.test(row.blocked_reason ?? '') } : {}), since: Number(row.updated_at), taskKey: row.key, href: null, about: await about(row.id, null) });
       return items.sort((a, b) => a.since - b.since);
     },
 

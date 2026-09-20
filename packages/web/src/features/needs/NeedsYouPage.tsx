@@ -46,6 +46,7 @@ function NeedCard({ item, project, onDone }: { item: Item; project: string; onDo
           {needsText && <Field label={item.kind === 'decision' ? 'Your decision, in your own words' : 'A note, if you want to leave one'} error={error ?? undefined}><Textarea rows={2} value={text} onChange={event => setText(event.target.value)} placeholder={item.kind === 'decision' ? 'Go with option B, but keep the old endpoint for one release.' : ''} /></Field>}
           {!needsText && error && <Text size="small" tone="stop">{error}</Text>}
           <div className="flex flex-wrap gap-2">
+            {item.kind === 'blocked' && !item.mergeRefused && <Button variant="primary" disabled={busy} onClick={() => act(`/api/tasks/${item.id}/carry-on`, {})}>Carry on</Button>}
             {item.kind === 'blocked' && item.mergeRefused && <Button variant="primary" disabled={busy} onClick={() => act(`/api/tasks/${item.id}/merge-again`, {})}>Merge again</Button>}
             {item.kind === 'decision' && <Button variant="primary" disabled={busy || !text.trim()} onClick={() => act(`/api/decisions/${item.id}/resolve`, { answer: text })}>Record the decision</Button>}
             {item.kind === 'quarantine' && <><Button variant="primary" disabled={busy} onClick={() => act(`/api/quarantines/${item.id}/release`, { resolution: 'continue', note: text })}>Continue from where it is</Button><Button disabled={busy} onClick={() => act(`/api/quarantines/${item.id}/release`, { resolution: 'stop', note: text })}>Stop this task</Button></>}

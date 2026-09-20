@@ -63,6 +63,16 @@ export function createReviews(context: Context, turns: Turns) {
       return result.reviewers;
     },
 
+    // A task that was set aside carries on from where it was: back into review when it has a revision to review, else back to its owner.
+    async carryOn(taskId: string) {
+      const task = await storage.db.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state']).where('id', '=', taskId).executeTakeFirst();
+      if (!task || task.state !== 'blocked') throw refuse('Only a task that was set aside can carry on');
+      const reviewed = task.head_sha ? await storage.db.selectFrom('turns').select('id').where('task_id', '=', taskId).where('kind', '=', 'review').executeTakeFirst() : null;
+      await storage.db.updateTable('tasks').set({ state: reviewed ? 'in_review' : 'in_progress', blocked_reason: null, updated_at: now() }).where('id', '=', taskId).execute();
+      if (reviewed) await this.chase();
+      else if (task.assignee_agent_id) await turns.enqueue({ agentId: task.assignee_agent_id, projectId: task.project_id, kind: 'work', taskId, dedupeKey: `work:${taskId}` });
+    },
+
     // The gate refused and whatever it refused for was put right (a setting, the base branch, a check): the same approved revision is delivered again.
     async deliverAgain(taskId: string) {
       const result = await storage.transaction(async tx => {
@@ -97,7 +107,7 @@ export function createReviews(context: Context, turns: Turns) {
         const queued = await tx.selectFrom('merge_queue').select(['id', 'task_id']).where('state', '=', 'queued').orderBy('created_at', 'desc').execute(), kept = new Set<string>();
         const extra = queued.filter(entry => { if (kept.has(entry.task_id)) return true; kept.add(entry.task_id); return false; });
         if (extra.length) await tx.updateTable('merge_queue').set({ state: 'blocked', reason: 'Queued more than once; the newest entry runs', finished_at: now() }).where('id', 'in', extra.map(entry => entry.id)).execute();
-        for (const task of await tx.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state']).where('state', 'in', ['in_review', 'approved', 'merging']).where('head_sha', 'is not', null).execute()) {
+        for (const task of await tx.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state', 'updated_at']).where('state', 'in', ['in_review', 'approved', 'merging']).where('head_sha', 'is not', null).execute()) {
           const headSha = task.head_sha!, reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id);
           const live = await tx.selectFrom('work_items').select(['agent_id', 'kind']).where('task_id', '=', task.id).where('state', 'in', ['queued', 'leased']).execute();
           if (task.state === 'approved' || task.state === 'merging') {
@@ -108,8 +118,13 @@ export function createReviews(context: Context, turns: Turns) {
           const counted = await tx.selectFrom('approvals').select('kind').where('task_id', '=', task.id).where('head_sha', '=', headSha).where('state', 'in', LIVE).execute();
           for (const reviewer of reviewers) {
             if (counted.some(row => row.kind === reviewer.kind) || live.some(item => item.kind === 'review' && item.agent_id === reviewer.agentId)) continue;
-            const lost = await tx.selectFrom('turns').select(eb => eb.fn.countAll<number>().as('n')).where('task_id', '=', task.id).where('agent_id', '=', reviewer.agentId).where('kind', '=', 'review').where('state', 'in', ['uncertain', 'failed', 'timed_out', 'interrupted']).where('started_at', '>', now() - 24 * 3600_000).executeTakeFirstOrThrow();
-            if (Number(lost.n) <= 3) asked.push({ agentId: reviewer.agentId, projectId: task.project_id, taskId: task.id, kind: reviewer.kind, headSha });
+            // Every try counts, also one that ended without a verdict: a reviewer that cannot deliver one in four tries is a person's to look at.
+            const tries = await tx.selectFrom('turns').select(eb => eb.fn.countAll<number>().as('n')).where('task_id', '=', task.id).where('agent_id', '=', reviewer.agentId).where('kind', '=', 'review').where('state', '!=', 'deferred').where('started_at', '>', Math.max(now() - 24 * 3600_000, Number(task.updated_at) - 6 * 3600_000)).executeTakeFirstOrThrow();
+            if (Number(tries.n) < 4) asked.push({ agentId: reviewer.agentId, projectId: task.project_id, taskId: task.id, kind: reviewer.kind, headSha });
+            else {
+              const who = await tx.selectFrom('agents').select('name').where('id', '=', reviewer.agentId).executeTakeFirst();
+              await tx.updateTable('tasks').set({ state: 'blocked', blocked_reason: `${who?.name ?? 'A reviewer'} did not record a ${reviewer.kind} verdict in ${tries.n} tries`, updated_at: now() }).where('id', '=', task.id).execute();
+            }
           }
         }
       });

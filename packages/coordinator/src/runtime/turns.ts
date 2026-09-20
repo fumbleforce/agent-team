@@ -334,7 +334,9 @@ export function createTurns(context: Context) {
             drafts.push({ type: 'snapshot.failed', actorKind: 'worker' as const, projectId: turn.project_id, turnId, payload: { snapshotId: snapshot.id, envId: snapshot.env_id, viewport: snapshot.viewport, reason } });
           }
         }
-        if (turn.task_id && !after.requeued && (outcome.state === 'failed' || outcome.state === 'timed_out')) await tx.updateTable('tasks').set({ state: 'blocked', blocked_reason: 'needs-attention', updated_at: now() }).where('id', '=', turn.task_id).where('state', 'not in', ['quarantined', 'done', 'canceled', 'stopped']).execute();
+        // Only the work itself failing sets the task aside. A review, a merge or a reply that failed says nothing about the task: a review is
+        // asked for again, a merge has its own outcome, and the task stays where it was.
+        if (turn.task_id && turn.kind === 'work' && !after.requeued && (outcome.state === 'failed' || outcome.state === 'timed_out')) await tx.updateTable('tasks').set({ state: 'blocked', blocked_reason: outcome.state === 'timed_out' ? 'The work ran out of time before it reported' : `The work stopped with an error${outcome.summary ? `: ${outcome.summary.slice(0, 120)}` : ''}`, updated_at: now() }).where('id', '=', turn.task_id).where('state', 'not in', ['quarantined', 'done', 'canceled', 'stopped']).execute();
         return events.append(tx, [...drafts, { type: `turn.${outcome.state}`, actorKind: 'worker', projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, turnId, payload: { stopReason: outcome.stopReason ?? null } }]);
       });
       events.published(published);

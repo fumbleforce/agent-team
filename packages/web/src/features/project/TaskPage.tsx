@@ -16,6 +16,8 @@ interface TaskView {
 }
 const STATE: Record<string, [string, ChipTone]> = { inbox: ['Inbox · triage', 'attention'], backlog: ['Backlog', 'neutral'], assigned: ['Assigned', 'neutral'], in_progress: ['In progress', 'working'], awaiting_decision: ['Waiting for a decision', 'attention'], in_review: ['In review', 'review'], approved: ['Approved', 'review'], merging: ['Merging', 'review'], done: ['Done', 'working'], blocked: ['Blocked', 'stop'], stopped: ['Stopped', 'stop'], canceled: ['Declined', 'neutral'], quarantined: ['Needs you', 'stop'] };
 const LINE: Record<string, Record<string, string>> = { work: { running: 'working now', completed: 'worked on it', failed: 'stopped with an error', deferred: 'waiting for a limit to reset', interrupted: 'was interrupted' }, review: { running: 'reviewing now', completed: 'reviewed it' }, publish: { completed: 'published the change' }, deliver: { running: 'merging now', completed: 'merged it', failed: 'could not merge it' } };
+// Reasons an earlier version stored as a code, in words.
+const WHY: Record<string, string> = { 'needs-attention': 'A turn on this task stopped with an error or ran out of time, and the task was set aside for it. Carry on puts it back where it was.', 'no-report': 'The work ended twice without a report. Carry on starts it again.' };
 const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 
 // One task as a page. In the inbox: the report, its triage thread, and Accept / Merge into / Decline. Once accepted: the brief,
@@ -50,6 +52,7 @@ export function TaskPage({ slug, taskId, roster, board, navigate }: { slug: stri
             {inbox && <Button onClick={() => setMerging(value => !value)}>Merge into…</Button>}
             {inbox && <Button onClick={() => { const reason = window.prompt('Why is this declined? (optional)'); if (reason !== null) act(`/api/tasks/${task.id}/decline`, { reason }, () => navigate(`/p/${slug}/tasks`)); }}>Decline</Button>}
             {!inbox && !['done', 'canceled'].includes(task.state) && <span className="w-36"><Select aria-label="Reassign" value="" onChange={event => { if (event.target.value) act(`/api/tasks/${task.id}/assign`, { agentId: event.target.value }); }}><option value="">{owner ? 'Reassign…' : 'Assign…'}</option>{roster.filter(item => item.id !== task.assignee_agent_id).map(item => <option key={item.id} value={item.id}>{item.name} · {item.title}</option>)}</Select></span>}
+            {task.state === 'blocked' && <Button variant="primary" onClick={() => act(`/api/tasks/${task.id}/carry-on`, {})}>Carry on</Button>}
             {task.state === 'blocked' && task.pr_url && <Button onClick={() => act(`/api/tasks/${task.id}/merge-again`, {})}>Merge again</Button>}
             {!inbox && ['assigned', 'in_progress', 'blocked'].includes(task.state) && <Button variant="danger" onClick={() => { if (window.confirm(`Stop ${task.key}? The branch and any draft change are kept.`)) act(`/api/tasks/${task.id}/stop`, {}); }}>Stop</Button>}
           </div>}
@@ -61,7 +64,7 @@ export function TaskPage({ slug, taskId, roster, board, navigate }: { slug: stri
       <div className="flex min-h-0 grow flex-col lg:flex-row">
         <main className="flex min-w-0 grow flex-col gap-4 overflow-y-auto px-6 py-4.5">
           <Pipeline steps={data.steps} roster={roster} />
-          {task.blocked_reason && <StatusLine boxed tone="attention">{task.blocked_reason}</StatusLine>}
+          {task.blocked_reason && <StatusLine boxed tone="attention">{WHY[task.blocked_reason] ?? task.blocked_reason}</StatusLine>}
           <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
             <section className="flex min-w-0 flex-col gap-2.5">
               <SectionLabel>{inbox ? 'Report' : 'Brief'}</SectionLabel>
