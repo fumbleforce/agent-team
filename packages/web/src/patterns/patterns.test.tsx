@@ -204,15 +204,20 @@ describe('a seat and a thread say what is being done, never silence', () => {
   });
 
   it('names who has what was raised, whether they are answering, and why it waits', () => {
-    const { container } = render(<PendingLine roster={ROSTER} pending={{ agentId: 'a1', kind: 'triage', state: 'queued', deferReason: null }} />);
+    const { container } = render(<PendingLine roster={ROSTER} pending={{ agentId: 'a1', kind: 'triage', state: 'queued', deferReason: null, others: 0 }} />);
     expect(container.textContent).toBe('Queued for triage · Maren is next');
-    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a1', kind: 'triage', state: 'running', deferReason: null }} />).container.textContent).toBe('Maren is answering');
+    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a1', kind: 'triage', state: 'running', deferReason: null, others: 0 }} />).container.textContent).toBe('Maren is answering');
     // A reason the scheduler wrote down is said in a person's words, and an unknown one is still said.
-    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a2', kind: 'reply', state: 'queued', deferReason: 'provider-limited' }} />).container.textContent)
+    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a2', kind: 'reply', state: 'queued', deferReason: 'provider-limited', others: 0 }} />).container.textContent)
       .toBe('Queued for a reply · Cleo Vance is next — waiting: provider hit its usage limit');
-    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a2', kind: 'reply', state: 'queued', deferReason: 'some-new-reason' }} />).container.textContent)
+    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a2', kind: 'reply', state: 'queued', deferReason: 'some-new-reason', others: 0 }} />).container.textContent)
       .toContain('waiting: some new reason');
+    // A whole role asked at once is not one person answering.
+    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a2', kind: 'reply', state: 'queued', deferReason: null, others: 2 }} />).container.textContent)
+      .toBe('Queued for a reply · Cleo Vance and 2 more are next');
+    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a2', kind: 'reply', state: 'running', deferReason: null, others: 1 }} />).container.textContent)
+      .toBe('Cleo Vance and one more are answering');
     // A seat that has left the team still leaves the thread able to say something is being done about it.
-    expect(render(<PendingLine roster={[]} pending={{ agentId: 'gone', kind: 'work', state: 'running', deferReason: null }} />).container.textContent).toBe('A teammate is answering');
+    expect(render(<PendingLine roster={[]} pending={{ agentId: 'gone', kind: 'work', state: 'running', deferReason: null, others: 0 }} />).container.textContent).toBe('A teammate is answering');
   });
 });

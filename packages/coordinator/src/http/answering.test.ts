@@ -18,13 +18,13 @@ test('what a person writes in a thread carries a state from the moment it is acc
 
     // Accepted: the PM is queued for triage, and the answer to the POST already says so.
     const posted = await call(`/api/threads/${threadId}/messages`, { cookie, body: { body: 'The header repeats the team name.' } });
-    assert.deepEqual(posted.json.pending, { agentId: pm.id, kind: 'triage', state: 'queued', deferReason: null });
-    assert.deepEqual((await read()).pending, { agentId: pm.id, kind: 'triage', state: 'queued', deferReason: null });
+    assert.deepEqual(posted.json.pending, { agentId: pm.id, kind: 'triage', state: 'queued', deferReason: null, others: 0 });
+    assert.deepEqual((await read()).pending, { agentId: pm.id, kind: 'triage', state: 'queued', deferReason: null, others: 0 });
 
     // Claimed: the same thread now says that seat is answering, and its seat is no longer idle.
     const claim = await call('/worker/claim', { headers: machine, body: { workerId: 'atlas', free: { work: 1, bounded: 1 }, projects: [view.project.id] } });
     assert.equal(claim.json.turn.kind, 'triage');
-    assert.deepEqual((await read()).pending, { agentId: pm.id, kind: 'triage', state: 'running', deferReason: null });
+    assert.deepEqual((await read()).pending, { agentId: pm.id, kind: 'triage', state: 'running', deferReason: null, others: 0 });
     const busy = (await call('/api/projects/shop', { cookie })).json.roster.find((agent: { id: string }) => agent.id === pm.id);
     assert.equal(busy.activity, 'working');
 
@@ -112,7 +112,7 @@ test('naming a teammate with @ is the pick-up: the PM is not woken on top of the
     const view = (await call('/api/projects/shop', { cookie })).json;
     const other = view.roster.find((agent: { is_pm: boolean }) => !agent.is_pm);
     const posted = await call(`/api/threads/${view.discussionThreadId}/messages`, { cookie, body: { body: `@${other.name.toLowerCase()} could you look at the header?` } });
-    assert.deepEqual(posted.json.pending, { agentId: other.id, kind: 'reply', state: 'queued', deferReason: null });
+    assert.deepEqual(posted.json.pending, { agentId: other.id, kind: 'reply', state: 'queued', deferReason: null, others: 0 });
   } finally { await coordinator.close(); }
 });
 

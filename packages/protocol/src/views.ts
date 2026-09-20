@@ -32,7 +32,8 @@ export const MessageView = z.object({ id: z.string(), seq: z.number(), authorKin
 export type MessageView = z.infer<typeof MessageView>;
 // What is being done about what was raised in a thread: who has it, whether they are answering right now, and
 // why it waits if it does. Nothing pending means it has been answered, or that the thread says why nobody took it.
-export const ThreadPendingView = z.object({ agentId: z.string(), kind: z.string(), state: z.enum(['queued', 'running']), deferReason: z.string().nullable() });
+// `others` counts the teammates woken alongside this one, so naming @team does not read as one person answering.
+export const ThreadPendingView = z.object({ agentId: z.string(), kind: z.string(), state: z.enum(['queued', 'running']), deferReason: z.string().nullable(), others: z.number().int().min(0) });
 export type ThreadPendingView = z.infer<typeof ThreadPendingView>;
 export const ThreadMessagesView = z.object({ messages: z.array(MessageView), next: z.number().nullable(), pending: ThreadPendingView.nullable(), seq: z.number() });
 export type ThreadMessagesView = z.infer<typeof ThreadMessagesView>;

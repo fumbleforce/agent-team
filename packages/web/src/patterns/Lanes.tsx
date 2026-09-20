@@ -37,9 +37,10 @@ const WAITS: Record<string, string> = { 'agent-paused': 'agent is paused', 'task
 const ANSWERS: Record<string, string> = { triage: 'Queued for triage', reply: 'Queued for a reply', feedback: 'Queued for feedback', conclude: 'Queued for a decision', revise: 'Queued for a revision', work: 'Queued as work', review: 'Queued for review' };
 export function PendingLine({ pending, roster }: { pending: ThreadPending; roster: Agent[] }) {
   const name = roster.find(agent => agent.id === pending.agentId)?.name ?? 'A teammate';
-  if (pending.state === 'running') return <StatusLine tone="working" busy>{name} is answering</StatusLine>;
+  const also = pending.others === 0 ? '' : pending.others === 1 ? ' and one more' : ` and ${pending.others} more`;
+  if (pending.state === 'running') return <StatusLine tone="working" busy>{name}{also} {pending.others === 0 ? 'is' : 'are'} answering</StatusLine>;
   const waits = pending.deferReason ? ` — waiting: ${WAITS[pending.deferReason] ?? pending.deferReason.replaceAll('-', ' ')}` : '';
-  return <StatusLine tone={pending.deferReason ? 'attention' : 'review'}>{ANSWERS[pending.kind] ?? 'Queued'} · {name} is next{waits}</StatusLine>;
+  return <StatusLine tone={pending.deferReason ? 'attention' : 'review'}>{ANSWERS[pending.kind] ?? 'Queued'} · {name}{also} {pending.others === 0 ? 'is' : 'are'} next{waits}</StatusLine>;
 }
 
 // Why something waits is shown on the item itself; idle is a signal, so it is said out loud.

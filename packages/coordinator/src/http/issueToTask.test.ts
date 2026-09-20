@@ -9,10 +9,10 @@ test('a raised issue leads somewhere: the PM is told how to make it a task and w
     await call('/api/projects', { cookie, body: { name: 'Shop' } });
     const project = (await call('/api/projects/shop', { cookie })).json, pm = project.roster.find((agent: { is_pm: boolean }) => agent.is_pm), developer = project.roster.find((agent: { is_pm: boolean }) => !agent.is_pm);
     const raised = (await call('/api/projects/shop/issues', { cookie, body: { title: 'The team header repeats the team name', body: 'It says the name twice.' } })).json;
-    const listed = async () => ((await call('/api/projects/shop/issues', { cookie })).json.issues as { number: number; task: { id: string; key: string; state: string; assigneeAgentId: string | null }; pending: { agentId: string; kind: string; state: string; deferReason: string | null } | null }[]).find(issue => issue.number === raised.number)!;
+    const listed = async () => ((await call('/api/projects/shop/issues', { cookie })).json.issues as { number: number; task: { id: string; key: string; state: string; assigneeAgentId: string | null }; pending: { agentId: string; kind: string; state: string; deferReason: string | null; others: number } | null }[]).find(issue => issue.number === raised.number)!;
 
     // What is raised is a task from the start: it waits in the board's inbox, and the page can say the PM is up next.
-    assert.deepEqual([(await listed()).pending, (await listed()).task.state, raised.taskId], [{ agentId: pm.id, kind: 'triage', state: 'queued', deferReason: null }, 'inbox', (await listed()).task.id]);
+    assert.deepEqual([(await listed()).pending, (await listed()).task.state, raised.taskId], [{ agentId: pm.id, kind: 'triage', state: 'queued', deferReason: null, others: 0 }, 'inbox', (await listed()).task.id]);
     const inboxNow = (await call('/api/projects/shop', { cookie })).json.board.inbox as { key: string; raised: string }[];
     assert.deepEqual(inboxNow.map(card => [card.key, card.raised]), [[`ISSUE-${raised.number}`, 'raised']]);
 

@@ -113,11 +113,13 @@ test('a thread is pending on the turn running for it, else on the item that has 
   const thread = (over: Partial<ThreadItem>): ThreadItem => ({ agentId: 'a', kind: 'triage', state: 'queued', deferReason: null, createdAt: T0, ...over });
   assert.equal(pendingOf([]), null);
   // Nothing has started: the oldest item is what the thread waits on, whatever order the rows arrived in.
-  assert.deepEqual(pendingOf([thread({ agentId: 'b', createdAt: T0 + 5 }), thread({ createdAt: T0 })]), { agentId: 'a', kind: 'triage', state: 'queued', deferReason: null });
+  assert.deepEqual(pendingOf([thread({ agentId: 'b', createdAt: T0 + 5 }), thread({ createdAt: T0 })]), { agentId: 'a', kind: 'triage', state: 'queued', deferReason: null, others: 1 });
   // A refused item says why it waits; a running one is under way and has nothing to explain.
-  assert.deepEqual(pendingOf([thread({ deferReason: 'provider-limited' })]), { agentId: 'a', kind: 'triage', state: 'queued', deferReason: 'provider-limited' });
+  assert.deepEqual(pendingOf([thread({ deferReason: 'provider-limited' })]), { agentId: 'a', kind: 'triage', state: 'queued', deferReason: 'provider-limited', others: 0 });
   assert.deepEqual(pendingOf([thread({ createdAt: T0 - 10 }), thread({ agentId: 'b', kind: 'reply', state: 'leased', deferReason: 'lane-busy' })]),
-    { agentId: 'b', kind: 'reply', state: 'running', deferReason: null });
+    { agentId: 'b', kind: 'reply', state: 'running', deferReason: null, others: 1 });
+  // Two items for the same seat are one teammate, not two.
+  assert.equal(pendingOf([thread({}), thread({ kind: 'reply', createdAt: T0 + 1 })])!.others, 0);
 });
 
 test('rebalance.suggest is deterministic, levels queued work and never moves started or running work', () => {

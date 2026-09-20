@@ -103,12 +103,14 @@ export type SeatActivity = 'working' | 'queued' | 'idle';
 export const seatActivity = (seat: { running: number; queued: number }): SeatActivity => (seat.running > 0 ? 'working' : seat.queued > 0 ? 'queued' : 'idle');
 
 export interface ThreadItem { agentId: string; kind: TurnKind; state: 'queued' | 'leased'; deferReason: string | null; createdAt: number }
-export interface ThreadPending { agentId: string; kind: TurnKind; state: 'queued' | 'running'; deferReason: string | null }
+export interface ThreadPending { agentId: string; kind: TurnKind; state: 'queued' | 'running'; deferReason: string | null; others: number }
 
 // What a thread is waiting for: the turn already running on it, else the item that has waited longest, with the
-// reason that item last failed its gate. A running turn has no reason to give: it is under way.
+// reason that item last failed its gate. A running turn has no reason to give: it is under way. `others` counts
+// the teammates woken alongside it, which is how one line stays true when a whole role was asked.
 export function pendingOf(items: readonly ThreadItem[]): ThreadPending | null {
   const chosen = items.find(item => item.state === 'leased') ?? [...items].sort((a, b) => a.createdAt - b.createdAt)[0];
   if (!chosen) return null;
-  return { agentId: chosen.agentId, kind: chosen.kind, state: chosen.state === 'leased' ? 'running' : 'queued', deferReason: chosen.state === 'leased' ? null : chosen.deferReason };
+  const others = new Set(items.filter(item => item.agentId !== chosen.agentId).map(item => item.agentId));
+  return { agentId: chosen.agentId, kind: chosen.kind, state: chosen.state === 'leased' ? 'running' : 'queued', deferReason: chosen.state === 'leased' ? null : chosen.deferReason, others: others.size };
 }
