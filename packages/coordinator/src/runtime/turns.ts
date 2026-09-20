@@ -18,7 +18,7 @@ const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const RATE_LIMITED = /rate-limit|usage-limit/;
 
 export type ClaimRequest = z.infer<typeof ClaimBody>;
-export interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; threadId: string | null; packet: Packet; resume: Resume | null; grants: PermissionGrant; engine: string | null; model: string | null; capture: { url: string; viewport: Viewport } | null; /* A review turn: the head to look at, and which kind of reviewer looks, which names its detached worktree. */ review: { headSha: string; reviewer: string } | null }
+export interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; threadId: string | null; packet: Packet; resume: Resume | null; grants: PermissionGrant; engine: string | null; model: string | null; /* How much effort the model is asked to spend: the agent's own, else its team's. */ effort: string | null; capture: { url: string; viewport: Viewport } | null; /* A review turn: the head to look at, and which kind of reviewer looks, which names its detached worktree. */ review: { headSha: string; reviewer: string } | null }
 // The checkout a quarantine names is one worker's copy of one project.
 export const checkoutRef = (workerId: string, projectId: string) => `${workerId}:${projectId}`;
 export type Outcome = z.infer<typeof FinishBody>['outcome'];
@@ -75,8 +75,9 @@ export function createTurns(context: Context) {
     const today = day(now()), month = today.slice(0, 7);
     const spent = new Map((await tx.selectFrom('cost_daily').select('agent_id').select(eb => eb.fn.sum<number>('amount_minor').as('total')).where('agent_id', 'in', agentIds).where('day', '=', today).groupBy('agent_id').execute()).map(row => [row.agent_id, Number(row.total)]));
     const last = new Map((await tx.selectFrom('turns').select('agent_id').select(eb => eb.fn.max('started_at').as('at')).where('agent_id', 'in', agentIds).groupBy('agent_id').execute()).map(row => [row.agent_id, Number(row.at)]));
-    for (const agent of await tx.selectFrom('agents').select(['id', 'status', 'provider_id', 'model', 'daily_cap_minor']).where('id', 'in', agentIds).execute())
-      snapshot.agents[agent.id] = { status: agent.status, providerId: agent.provider_id, model: agent.model, dailyCapMinor: agent.daily_cap_minor, spentTodayMinor: spent.get(agent.id) ?? 0, lastStartedAt: last.get(agent.id) ?? 0 };
+    // An agent without a provider of its own runs on its team's; a team without one leaves it to the worker.
+    for (const agent of await tx.selectFrom('agents').innerJoin('teams', 'teams.id', 'agents.team_id').select(['agents.id', 'agents.status', 'agents.provider_id', 'agents.model', 'agents.daily_cap_minor', 'teams.default_provider_id', 'teams.default_model']).where('agents.id', 'in', agentIds).execute())
+      snapshot.agents[agent.id] = { status: agent.status, providerId: agent.provider_id ?? agent.default_provider_id, model: agent.provider_id ? agent.model : agent.model ?? (agent.default_provider_id ? agent.default_model : null), dailyCapMinor: agent.daily_cap_minor, spentTodayMinor: spent.get(agent.id) ?? 0, lastStartedAt: last.get(agent.id) ?? 0 };
 
     const running = await tx.selectFrom('turns').innerJoin('agents', 'agents.id', 'turns.agent_id').select(['turns.agent_id', 'turns.lane', 'turns.task_id', 'turns.access', 'turns.kind', 'turns.project_id', 'turns.provider_id', 'agents.provider_id as seat_provider_id']).where('turns.state', '=', 'running').execute();
     snapshot.running = running.map(turn => ({ agentId: turn.agent_id, lane: turn.lane as Lane }));
@@ -213,6 +214,7 @@ export function createTurns(context: Context) {
           const turnId = newId(now()), leaseToken = newToken();
           const grants = await grantsFor(tx, item.agentId, item.projectId);
           // Provider and model come from the agent unless a rule routed the turn elsewhere; the route is frozen on the turn.
+          const effortOf = await tx.selectFrom('agents').innerJoin('teams', 'teams.id', 'agents.team_id').select(['agents.effort', 'teams.default_effort']).where('agents.id', '=', item.agentId).executeTakeFirst();
           const engine = route.providerId ? (await tx.selectFrom('providers').select('engine').where('id', '=', route.providerId).executeTakeFirst())?.engine ?? null : null;
           const row = await tx.selectFrom('work_items').select(['thread_id', 'dedupe_key']).where('id', '=', item.id).executeTakeFirstOrThrow();
           const subject = item.taskId ? await tx.selectFrom('tasks').select(['key', 'head_sha']).where('id', '=', item.taskId).executeTakeFirst() : undefined, taskKey = subject?.key ?? null;
@@ -224,7 +226,7 @@ export function createTurns(context: Context) {
           // A work turn resumes its (agent, task) session or starts a new one; everything else is a fresh packet.
           const session = await sessions.open(tx, { turnId, workItemId: item.id, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, workerId: request.workerId, providerId: route.providerId, model: route.model, engine });
           const started = await events.append(tx, [{ type: 'turn.started', actorKind: 'worker', projectId: item.projectId, agentId: item.agentId, taskId: item.taskId, turnId, payload: { kind, workerId: request.workerId, providerId: route.providerId } }]);
-          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, threadId: row.thread_id, grants, engine, model: route.model, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, review, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
+          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, threadId: row.thread_id, grants, engine, model: route.model, effort: effortOf?.effort ?? effortOf?.default_effort ?? null, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, review, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
         }
       });
       events.published(result.expired);

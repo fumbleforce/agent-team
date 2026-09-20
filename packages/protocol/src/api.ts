@@ -37,4 +37,4 @@ export const CaptureBody = z.object({ viewport: Viewport });
 export const ProviderBody = z.object({ name: z.string().min(1).max(60), kind: z.enum(['subscription', 'metered', 'local']), engine: z.string().regex(/^[a-z][a-z0-9-]{0,30}$/), models: z.array(z.string().min(1).max(120)).min(1).max(40), maxConcurrentTurns: z.number().int().min(1).max(64).default(2),
   // What the scheduler holds the provider to: turns at once, and a usage allowance counted over a sliding window.
   limits: z.object({ concurrency: z.number().int().min(1).max(64), windowTokens: z.number().int().min(1), windowMs: z.number().int().min(60_000).max(31 * 24 * 3600_000) }).partial().default({}) });
-export const SeatProviderBody = z.object({ providerId: z.string().nullable(), model: z.string().max(120).nullable() });
+export const SeatProviderBody = z.object({ providerId: z.string().nullable(), model: z.string().max(120).nullable(), effort: z.string().regex(/^[a-z]{2,12}$/).nullable().optional() });

@@ -218,6 +218,7 @@ test('a model provider is added through its guided setup, and an agent is create
   const row = page.getByRole('region', { name: 'Model providers' });
   await expect(row.getByText('OpenRouter', { exact: true })).toBeVisible();
   await expect(row.getByLabel('Turns at once on OpenRouter')).toHaveValue('3');
+  await row.getByRole('button', { name: 'Add to models of OpenRouter' }).click();
   await row.getByLabel('Search models of OpenRouter').fill('openrouter/vendor/model-c');
   await row.getByLabel('Search models of OpenRouter').press('Enter');
   await row.getByRole('button', { name: 'Remove openrouter/vendor/model-a' }).click();

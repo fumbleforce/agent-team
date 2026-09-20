@@ -83,7 +83,7 @@ export function createWorkspace(context: Context) {
     },
 
     async roster(teamId: string) {
-      return db.selectFrom('agents').select(['id', 'name', 'initials', 'tint', 'title', 'persona', 'status', 'provider_id', 'model', 'is_pm', 'doing'])
+      return db.selectFrom('agents').select(['id', 'name', 'initials', 'tint', 'title', 'persona', 'status', 'provider_id', 'model', 'effort', 'is_pm', 'doing'])
         .where('team_id', '=', teamId).where('status', '!=', 'retired').orderBy('sort').execute();
     },
 

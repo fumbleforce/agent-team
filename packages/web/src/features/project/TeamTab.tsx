@@ -19,21 +19,38 @@ export function TeamTab({ roster, teamName, onChanged, children }: { roster: Age
   const act = (path: string, body: unknown) => { setProblem(null); void api(path, body).catch(failure => setProblem(failure instanceof ApiError ? failure.message : 'That did not work; try again.')).then(changed); };
   const move = (index: number, by: number) => { const ids = roster.map(agent => agent.id), [id] = ids.splice(index, 1); ids.splice(index + by, 0, id!); act(`/api/projects/${slug}/team/order`, { agentIds: ids }); };
   const assign = (agent: Agent, value: string) => { const [providerId, model] = value ? value.split('\n') : [null, null]; act(`/api/agents/${agent.id}/provider`, { providerId: providerId ?? null, model: model ?? null }); };
+  // The effort levels on offer are the ones the tool behind the choice says it takes: per model where it says so, else for the tool as a whole.
+  const effortsFor = (providerId: string | null | undefined, model: string | null | undefined): string[] => { const provider = list.find(item => item.id === providerId); return provider ? provider.modelEfforts?.[model ?? ''] ?? provider.efforts ?? [] : [...new Set((team.data?.workerRuns ?? []).flatMap(item => item.efforts))]; };
   const pm = roster.find(agent => agent.is_pm);
+  // What an agent without a choice of its own runs on, in words: the team's default when there is one, else what the worker itself runs.
+  const fallback = team.data?.fallback, fallbackProvider = list.find(provider => provider.id === fallback?.providerId);
+  const runs = team.data?.workerRuns ?? [], workerWords = runs.length ? [...new Set(runs.map(item => `${item.engine}${item.model ? ` · ${item.model}` : ', its own default model'}`))].join(' / ') : 'no worker is running to say';
+  const defaultWords = fallbackProvider ? `${fallbackProvider.name} · ${fallback?.model}` : `the worker's: ${workerWords}`;
+  const setDefault = (value: string) => { const [providerId, model] = value ? value.split('\n') : [null, null]; act(`/api/projects/${slug}/team/default`, { providerId: providerId ?? null, model: model ?? null }); };
+  const defaultEfforts = effortsFor(fallback?.providerId, fallback?.model);
 
   return (
     <div className="flex min-h-0 grow flex-col gap-5 overflow-y-auto p-5">
       <section className="flex flex-col gap-2">
         <SectionLabel aside={<span className="flex items-center gap-3">{canEdit && <Button size="sm" variant="primary" onClick={() => setEditor({ open: true, seat: null })}>+ Add an agent</Button>}</span>}>{teamName ?? 'Team'} · {roster.length}</SectionLabel>
+        {roster.length > 0 && <div className="flex flex-wrap items-center gap-2">
+          <Text size="small" tone="muted">Agents without a model of their own run on</Text>
+          {canEdit ? <Select compact aria-label="The team's default provider and model" value={fallbackProvider ? `${fallback?.providerId}\n${fallback?.model ?? ''}` : ''} onChange={event => setDefault(event.target.value)}>
+            <option value="">The worker's own: {workerWords}</option>
+            {list.flatMap(provider => provider.models.map(model => <option key={`${provider.id}${model}`} value={`${provider.id}\n${model}`}>{provider.name} · {model}</option>))}
+          </Select> : <Text size="small">{defaultWords}</Text>}
+          {canEdit && defaultEfforts.length > 0 && <Select compact aria-label="The team's default effort" value={fallback?.effort ?? ''} onChange={event => act(`/api/projects/${slug}/team/default`, { providerId: fallback?.providerId ?? null, model: fallback?.model ?? null, effort: event.target.value || null })}><option value="">Effort: the tool's own</option>{defaultEfforts.map(level => <option key={level} value={level}>Effort: {level}</option>)}</Select>}
+        </div>}
         {roster.map((agent, index) => {
           const seat = team.data?.seats.find(item => item.id === agent.id) ?? null, paused = agent.status === 'paused';
           return (
             <SeatRow key={agent.id} agent={agent}>
               {paused && <Chip tone="attention">Paused</Chip>}
               <Select compact aria-label={`Provider and model for ${agent.name}`} value={agent.provider_id ? `${agent.provider_id}\n${agent.model ?? ''}` : ''} onChange={event => assign(agent, event.target.value)}>
-                <option value="">The worker's default</option>
+                <option value="">Team default ({defaultWords})</option>
                 {list.flatMap(provider => provider.models.map(model => <option key={`${provider.id}${model}`} value={`${provider.id}\n${model}`}>{provider.name} · {model}</option>))}
               </Select>
+              {(() => { const levels = effortsFor(agent.provider_id ?? fallback?.providerId, agent.provider_id ? agent.model : fallback?.model); return levels.length > 0 && <Select compact aria-label={`Effort for ${agent.name}`} value={agent.effort ?? ''} onChange={event => act(`/api/agents/${agent.id}/provider`, { providerId: agent.provider_id, model: agent.model, effort: event.target.value || null })}><option value="">Effort: {fallback?.effort ?? 'default'}</option>{levels.map(level => <option key={level} value={level}>Effort: {level}</option>)}</Select>; })()}
               {canEdit && (
                 <span className="flex shrink-0 items-center">
                   <IconButton icon="up" label={`Move ${agent.name} up`} disabled={index === 0} onClick={() => move(index, -1)} />
@@ -56,7 +73,7 @@ export function TeamTab({ roster, teamName, onChanged, children }: { roster: Age
       </section>
 
       {children}
-      <AgentDialog slug={slug} seat={editor.seat} open={editor.open} roles={team.data?.roles ?? []} providers={list} onOpenChange={open => setEditor(previous => ({ ...previous, open }))} onSaved={changed} />
+      <AgentDialog slug={slug} defaultWords={defaultWords} seat={editor.seat} open={editor.open} roles={team.data?.roles ?? []} providers={list} onOpenChange={open => setEditor(previous => ({ ...previous, open }))} onSaved={changed} />
     </div>
   );
 }

@@ -37,12 +37,12 @@ export interface WorkerConfig {
   // A strict worker runs a restricted turn only on an engine that enforces the restriction itself; instructions are not isolation.
   isolation?: 'strict' | 'isolated';
   // What this machine can run, sent with every claim so the app can say which providers are ready here. Names only.
-  ready?: { engines: string[]; variables: string[]; models?: Record<string, { id: string; name: string; note?: string }[]> };
+  ready?: { engines: string[]; variables: string[]; models?: Record<string, { id: string; name: string; note?: string; efforts?: string[] }[]>; efforts?: Record<string, string[]>; runs?: { engine: string; model: string | null } };
   // A disposable host that is gone after its turn (`--once`): it keeps neither a session nor a worktree, so it serves a project only when
   // the committed manifest authorizes publishing, runs every turn from its packet and pushes the branch at the end of every turn.
   ephemeral?: boolean;
 }
-interface Claimed { /* Keys entered in the app that this turn's engine reads, by variable name. Held in memory for the turn only. */ secrets?: Record<string, string>; review?: { headSha: string; reviewer: string } | null; turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
+interface Claimed { /* Keys entered in the app that this turn's engine reads, by variable name. Held in memory for the turn only. */ secrets?: Record<string, string>; review?: { headSha: string; reviewer: string } | null; turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; effort?: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
 interface Lease { workerId: string; leaseToken: string }
 // What one turn shares with its heartbeat: whether it is inside an operation on the checkout's shared git state right now.
 interface TurnState { adminOpen: boolean }
@@ -192,7 +192,7 @@ export function createWorker(config: WorkerConfig) {
       const moved = resume?.baseSha && worktree && resume.baseSha !== worktree.baseCommit ? `\n\n# The base moved\nThe base branch was at ${resume.baseSha.slice(0, 10)} when this session last ran and is at ${worktree.baseCommit.slice(0, 10)} now. Bring your branch up to date before you continue.` : '';
       const result = await executeTurn({
         adapter, turnDir, env, ...(turn.secrets ? { secrets: turn.secrets } : {}), timeoutMs: config.timeoutMs ?? 45 * 60_000, signal,
-        spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? reviewTree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
+        spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? reviewTree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, effort: turn.effort ?? null, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
         onSteps: steps => tracer.steps(steps),
         onLine: keepLine,
         // What a crash leaves behind is found by the next start of this worker.

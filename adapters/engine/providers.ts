@@ -33,7 +33,7 @@ const pick = (names: string[]): ModelChoice[] => names.map(id => ({ id, name: id
 export const PROVIDERS: ProviderEntry[] = [
   {
     kind: 'claude-subscription', title: 'Claude subscription', billing: 'subscription', engine: 'claude', install: 'npm install -g @anthropic-ai/claude-code',
-    summary: 'Your Pro or Max plan, through Claude Code.', signIn: 'claude', aliases: ['sonnet', 'opus', 'haiku'], responsive: 'sonnet', window: true,
+    summary: 'Your Pro or Max plan, through Claude Code.', signIn: 'claude', responsive: 'sonnet', window: true,
   },
   {
     kind: 'anthropic-api', title: 'Anthropic API', billing: 'metered', engine: 'opencode', install: OPENCODE,

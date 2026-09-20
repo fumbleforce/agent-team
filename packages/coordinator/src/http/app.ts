@@ -534,7 +534,7 @@ export function createApp(context: Context) {
       if (input.model && !(JSON.parse(provider.models) as string[]).includes(input.model)) throw new HttpError(400, 'invalid', 'That provider does not offer this model');
     }
     // A running turn keeps the engine and model it was claimed with; the change applies from the next turn.
-    await context.storage.db.updateTable('agents').set({ provider_id: input.providerId, model: input.providerId ? input.model : null }).where('id', '=', agent.id).execute();
+    await context.storage.db.updateTable('agents').set({ provider_id: input.providerId, model: input.providerId ? input.model : null, ...(input.effort !== undefined ? { effort: input.effort } : {}) }).where('id', '=', agent.id).execute();
     return c.json({ ok: true });
   });
 

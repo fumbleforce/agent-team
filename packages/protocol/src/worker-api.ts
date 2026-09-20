@@ -12,7 +12,11 @@ export const ClaimBody = z.object({
   // What this worker can run: engines whose command-line tool it found, and which credential variables are set. Names only, never values.
   ready: z.object({ engines: z.array(z.string().max(40)).max(20), variables: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/)).max(40),
     // The models a tool on the worker says it has, by engine. Names and descriptions only.
-    models: z.record(z.string().max(40), z.array(z.object({ id: z.string().regex(/^\S{1,120}$/), name: z.string().max(120), note: z.string().max(160).optional() })).max(100)).optional() }).optional(),
+    models: z.record(z.string().max(40), z.array(z.object({ id: z.string().regex(/^\S{1,120}$/), name: z.string().max(120), note: z.string().max(160).optional(), efforts: z.array(z.string().regex(/^[a-z]{2,12}$/)).max(12).optional() })).max(100)).optional(),
+    // The effort levels each tool says it takes, by engine.
+    efforts: z.record(z.string().max(40), z.array(z.string().regex(/^[a-z]{2,12}$/)).max(12)).optional(),
+    // What a turn that names no provider runs on here: the worker's own tool, and that tool's own default model when its settings name one.
+    runs: z.object({ engine: z.string().max(40), model: z.string().max(120).nullable() }).optional() }).optional(),
 });
 export const TraceStepInput = z.object({ seq: z.number().int().min(0), kind: TraceKind, title: z.string().min(1).max(400), detail: z.string().max(200).optional(), status: z.enum(['running', 'ok', 'error']) });
 export type TraceStepInput = z.infer<typeof TraceStepInput>;

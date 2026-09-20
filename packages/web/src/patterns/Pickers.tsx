@@ -12,14 +12,17 @@ export function MultiPicker({ name, label, options, value, onChange, loading, er
   const shown = useMemo(() => options.filter(option => words.every(word => `${option.id} ${option.name}`.toLowerCase().includes(word))).slice(0, 60), [options, query]);
   const toggle = (id: string) => onChange(value.includes(id) ? value.filter(item => item !== id) : [...value, id]);
   const typed = query.trim(), addable = typed && !/\s/.test(typed) && !value.includes(typed) && !options.some(option => option.id === typed);
-  const open = !inline || looking;
+  // In a row the search stays out of the way until it is asked for.
+  const [adding, setAdding] = useState(false), open = !inline || (adding && looking);
   return (
-    <div className="flex flex-col gap-1.5" onFocus={() => setLooking(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) { setLooking(false); setQuery(''); } }}>
+    <div className="flex flex-col gap-1.5" onFocus={() => setLooking(true)} onBlur={event => { if (!event.currentTarget.contains(event.relatedTarget)) { setLooking(false); setAdding(false); setQuery(''); } }}>
       {!inline && <Text size="small" tone="muted">{label}</Text>}
       <input type="hidden" name={name} value={value.join('\n')} />
       <div className="flex flex-wrap items-center gap-1.5">
         {value.map(id => <button key={id} type="button" disabled={disabled} onClick={() => toggle(id)} aria-label={`Remove ${id}`} className="cursor-pointer disabled:cursor-default"><Chip tone="working">{options.find(option => option.id === id)?.name ?? id}{!disabled && ' ×'}</Chip></button>)}
-        {inline && !disabled && <span className="w-44"><Input value={query} onChange={event => setQuery(event.target.value)} placeholder="+ Add a model" aria-label={`Search ${label}`} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (addable) { toggle(typed); setQuery(''); } } if (event.key === 'Escape') event.currentTarget.blur(); }} /></span>}
+        {inline && !disabled && (adding
+          ? <span className="w-52"><Input compact autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Search, or type a name" aria-label={`Search ${label}`} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (addable) { toggle(typed); setQuery(''); } } if (event.key === 'Escape') event.currentTarget.blur(); }} /></span>
+          : <Button size="sm" variant="ghost" aria-label={`Add to ${label}`} onClick={() => setAdding(true)}>+ Model</Button>)}
       </div>
       {!inline && <Input value={query} onChange={event => setQuery(event.target.value)} placeholder={options.length > 6 ? 'Search models' : 'Add a model by name'} aria-label={`Search ${label}`} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (addable) { toggle(typed); setQuery(''); } } }} />}
       {open && !disabled && (
