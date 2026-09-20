@@ -4,6 +4,7 @@ import { HttpError, type Context } from '../context.ts';
 import type { Turns } from '../runtime/turns.ts';
 import { indexMessage } from '../knowledge/indexing.ts';
 import { newTask, taskFromIssue, teamIdOf } from '../repos/issueTasks.ts';
+import { wearsDesk } from '../runtime/desk.ts';
 
 interface Actor { id: string; agent_id: string; project_id: string; task_id: string | null }
 const refuse = (code: string, message: string) => new HttpError(409, code, message);
@@ -40,6 +41,8 @@ export function createActions(context: Context, turns: Turns) {
         const messageId = await post(tx, input.threadId, turn.agent_id, plain ? 'note' : 'decision', input.decision, { triage: true, outcome: input.outcome, ownerAgentId: owner?.id ?? null, priority: input.priority ?? null });
         if (decisionId) await tx.insertInto('decisions').values({ id: decisionId, project_id: turn.project_id, thread_id: input.threadId, message_id: messageId, deliberation_id: null, kind: 'triage', outcome: input.outcome, summary: input.decision, needs_human: needsHuman, resolved_by_user: null, resolved_at: null, created_at: now() }).execute();
         const closes = input.outcome === 'decline' || input.outcome === 'duplicate';
+        // Declined or a duplicate: it leaves the inbox.
+        if (issue && closes) { const waiting = await tx.selectFrom('links').innerJoin('tasks', 'tasks.id', 'links.to_id').select('tasks.id').where('links.from_type', '=', 'issue').where('links.from_id', '=', issue.id).where('tasks.state', '=', 'inbox').executeTakeFirst(); if (waiting) await tx.updateTable('tasks').set({ state: 'canceled', updated_at: now() }).where('id', '=', waiting.id).execute(); }
         if (issue) await tx.updateTable('issues').set({ ...(owner ? { owner_agent_id: owner.id } : {}), ...(input.priority ? { priority: input.priority } : {}), ...(closes && issue.state === 'open' ? { state: 'closed', closed_at: now() } : {}) }).where('id', '=', issue.id).execute();
         // Accepted outside an issue (in the discussion, say): what was raised becomes a task all the same, from the last thing a person wrote there.
         const raised = !issue && owner && input.outcome === 'accept' ? await tx.selectFrom('messages').select('body').where('thread_id', '=', input.threadId).where('author_kind', '=', 'user').orderBy('seq', 'desc').executeTakeFirst() : null;
@@ -54,6 +57,24 @@ export function createActions(context: Context, turns: Turns) {
       // The owner starts on it like on any assigned task.
       if (result.taskId && result.ownerId) await turns.enqueue({ agentId: result.ownerId, projectId: result.projectId, kind: 'work', taskId: result.taskId, dedupeKey: `work:${result.taskId}` });
       return { decisionId: result.decisionId, messageId: result.messageId, taskId: result.taskId };
+    },
+
+    // The front desk does not decide or do the work: it notes what was asked where the team sees it, and the PM takes it from there.
+    async handover(turn: Actor, input: ToolInput<'desk.handover'>) {
+      const result = await storage.transaction(async tx => {
+        if (!await wearsDesk(tx, turn.agent_id)) throw refuse('desk', 'Only the front desk passes things on this way');
+        const teamId = await teamIdOf(tx, turn.project_id);
+        const pm = teamId ? await tx.selectFrom('agents').select(['id', 'name']).where('team_id', '=', teamId).where('is_pm', '=', true).where('status', '=', 'active').executeTakeFirst() : null;
+        if (!pm) throw refuse('desk', 'This team has no PM to pass it to; tell the owner so');
+        // What was said in private is carried into the team\'s discussion, so the PM and the team can read it.
+        const thread = await tx.selectFrom('threads').select(['id', 'visibility']).where('id', '=', input.threadId).executeTakeFirstOrThrow();
+        const target = thread.visibility === 'team' ? thread.id : (await tx.selectFrom('threads').select('id').where('project_id', '=', turn.project_id).where('kind', '=', 'discussion').executeTakeFirst())?.id ?? thread.id;
+        const messageId = await post(tx, target, turn.agent_id, 'handoff', `For ${pm.name}, from the owner: ${input.wants}`, { desk: true });
+        return { messageId, pm, target, published: await events.append(tx, [{ type: 'message.posted', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, threadId: target, turnId: turn.id, payload: { messageId, kind: 'handoff' } }]) };
+      });
+      events.published(result.published);
+      await turns.enqueue({ agentId: result.pm.id, projectId: turn.project_id, kind: 'triage', threadId: result.target, dedupeKey: `triage:${result.target}` });
+      return { messageId: result.messageId, passedTo: result.pm.name };
     },
 
     // The PM puts work on the board. With an owner the task starts at once; without one it waits in the backlog for someone to be given it.

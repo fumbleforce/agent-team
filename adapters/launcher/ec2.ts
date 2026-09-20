@@ -39,7 +39,7 @@ export function refusal({ manifest, sessions = 'packet', publish }: Pick<Ec2Opti
 // read at boot through the instance role. User data is readable by anything on the instance and by
 // ec2:DescribeInstanceAttribute, so it carries parameter NAMES only, never a value: every parameter directly under
 // `ssmPrefix` (tracker key, SCM token, engine key) and then AGENT_TEAM_TOKEN from `tokenParameter`.
-const NAME_PATTERN = /^\/[\w.\/-]+$/;
+const NAME_PATTERN = /^\/[\w./-]+$/;
 export function userData({ job, coordinatorUrl, tokenParameter, checkout = '/srv/project', engine = 'claude', worktrees = { branchPrefix: 'agents/', base: 'HEAD' }, publish = null, workerConfig = {}, toolkit = '/opt/agent-team', shutdown = true, ssmPrefix = null, region = null }: UserDataInput): string {
   for (const name of [tokenParameter, ...(ssmPrefix ? [ssmPrefix] : [])]) if (!NAME_PATTERN.test(name)) throw new Error(`${name} is not a Parameter Store name`);
   const config = JSON.stringify({ coordinatorUrl, workerId: `ec2-${job.id}`, stateDir: '/var/lib/agent-team', engine, projects: { [job.projectId]: checkout }, worktrees, ...(publish ? { publish } : {}), ...workerConfig });

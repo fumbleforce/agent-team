@@ -25,13 +25,16 @@ test('an unknown outcome reaches the queue and only someone who may decide relea
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', task.id).executeTakeFirstOrThrow()).state, 'quarantined');
     assert.equal((await db.selectFrom('work_items').select('id').where('state', '=', 'queued').execute()).length, 0, 'never queued again by itself');
 
-    const queue = (await call('/api/needs-you', { cookie })).json.items as { kind: string; id: string; title: string; canDecide: boolean }[];
+    const queue = (await call('/api/needs-you', { cookie })).json.items as { kind: string; id: string; title: string; detail: string; canDecide: boolean; about: { taskHref: string; taskTitle: string; who: string | null } }[];
     const item = queue.find(entry => entry.kind === 'quarantine')!;
-    assert.match(item.title, new RegExp(`${task.key} stopped with an unknown outcome`));
+    // The card says what it is about in the task's own words, who was on it, and leads to the task.
+    assert.match(item.title, new RegExp(`^${task.key} · `));
+    assert.match(item.detail, /was working on it when the worker lost contact/);
+    assert.match(item.about.taskHref, /\/tasks\/[0-9a-f-]{36}$/);
     const seen = (await call('/api/needs-you', { cookie: member.cookie })).json.items as { kind: string; canDecide: boolean }[];
     assert.equal(seen.find(entry => entry.kind === 'quarantine')?.canDecide, false);
     assert.equal((await call(`/api/quarantines/${item.id}/release`, { cookie: member.cookie, body: { resolution: 'continue', note: 'looks fine' } })).status, 403);
-    assert.equal((await call(`/api/quarantines/${item.id}/release`, { cookie, body: { resolution: 'continue', note: '' } })).status, 400, 'what was checked must be said');
+    // A note is welcome and not demanded: the person's click is the decision.
 
     assert.equal((await call(`/api/quarantines/${item.id}/release`, { cookie, body: { resolution: 'continue', note: 'Two clean commits on the branch; tests pass.' } })).status, 200);
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', task.id).executeTakeFirstOrThrow()).state, 'in_progress');

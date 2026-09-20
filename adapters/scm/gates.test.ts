@@ -11,7 +11,8 @@ const HOSTS = {
     url: 'https://github.com/acme/app/pull/7', repository: 'acme/app',
     answers: (merged: boolean): [RegExp, unknown][] => [
       [/pr checks .* --required/, [{ name: 'verify', bucket: 'pass' }]],
-      [/pr checks/, [{ name: 'verify', bucket: 'pass' }, { name: 'lint', bucket: 'fail' }]],
+      // The change's own roll-up, as the host's CLI prints it: a finished run, a failed one, and one still going.
+      [/pr view .*statusCheckRollup/, { statusCheckRollup: [{ __typename: 'CheckRun', name: 'verify', status: 'COMPLETED', conclusion: 'SUCCESS' }, { __typename: 'CheckRun', name: 'lint', status: 'COMPLETED', conclusion: 'FAILURE' }, { __typename: 'CheckRun', name: 'e2e', status: 'IN_PROGRESS', conclusion: '' }] }],
       [/pr view/, { url: 'https://github.com/acme/app/pull/7', state: merged ? 'MERGED' : 'OPEN', isDraft: false, baseRefName: 'main', headRefName: 'agents/gh-7', headRefOid: HEAD, isCrossRepository: false, headRepository: { name: 'app' }, headRepositoryOwner: { login: 'acme' }, mergeable: 'MERGEABLE', mergeStateStatus: 'CLEAN', mergeCommit: merged ? { oid: MERGE } : null }],
     ],
   },
@@ -49,8 +50,10 @@ for (const [name, host] of Object.entries(HOSTS)) {
     const change = await gate.view(exec, context);
     assert.deepEqual([change.state, change.isDraft, change.baseRef, change.headRef, change.headSha, change.sameRepository, change.mergeable, change.mergeCommit], ['OPEN', false, 'main', 'agents/gh-7', HEAD, true, true, null]);
     const checks = await gate.checks(exec, context, { includeProtected: true });
-    assert.deepEqual(checks.all.find(check => check.name === 'verify'), { name: 'verify', passed: true });
-    assert.deepEqual(checks.all.find(check => check.name === 'lint'), { name: 'lint', passed: false });
+    const seen = (check: string) => { const found = checks.all.find(item => item.name === check); return found ? [found.passed, found.pending ?? false] : null; };
+    assert.deepEqual([seen('verify'), seen('lint')], [[true, false], [false, false]]);
+    // A check that still runs is told apart from one that failed, where the host says so.
+    if (name === 'github') assert.deepEqual(seen('e2e'), [false, true]);
     assert.ok(Array.isArray(checks.protected) && checks.protected.every(check => check.passed));
     assert.equal((await gate.checks(exec, context, { includeProtected: false })).protected, null);
     await gate.merge(exec, context, HEAD);

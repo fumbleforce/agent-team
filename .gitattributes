@@ -1,0 +1,6 @@
+# Line endings are decided here, not by each clone's core.autocrlf. The shell templates under
+# adapters/hosting are shipped to Linux hosts as a bake script and as cloud-init user data, so a
+# CRLF checkout breaks the shebang on the instance, not only the tests that assert on their text.
+* text=auto eol=lf
+*.sh text eol=lf
+Dockerfile text eol=lf

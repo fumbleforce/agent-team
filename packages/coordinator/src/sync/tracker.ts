@@ -33,7 +33,7 @@ export function taskStateOf(issue: TrackerIssue): Bucket {
   return 'backlog';
 }
 // What a local state looks like from the tracker: the finer states the platform owns collapse onto the tracker's few.
-const BUCKETS: Record<TaskState, Bucket> = { backlog: 'backlog', assigned: 'backlog', in_progress: 'in_progress', awaiting_decision: 'in_progress', blocked: 'in_progress', quarantined: 'in_progress', stopped: 'in_progress', in_review: 'in_review', approved: 'in_review', merging: 'in_review', done: 'done', canceled: 'canceled' };
+const BUCKETS: Record<TaskState, Bucket> = { inbox: 'backlog', backlog: 'backlog', assigned: 'backlog', in_progress: 'in_progress', awaiting_decision: 'in_progress', blocked: 'in_progress', quarantined: 'in_progress', stopped: 'in_progress', in_review: 'in_review', approved: 'in_review', merging: 'in_review', done: 'done', canceled: 'canceled' };
 const bucketOf = (state: string): Bucket => BUCKETS[state as TaskState] ?? 'backlog';
 const REMOTE: Record<Bucket, TrackerState> = { backlog: 'unstarted', in_progress: 'started', in_review: 'in_review', done: 'completed', canceled: 'canceled' };
 const tagOf = (issue: TrackerIssue) => issue.labels.map(label => label.name).find(name => !/^(agent|owner|idea)[:/]/i.test(name)) ?? null;

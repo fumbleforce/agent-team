@@ -218,6 +218,7 @@ test('a model provider is added through its guided setup, and an agent is create
   const row = page.getByRole('region', { name: 'Model providers' });
   await expect(row.getByText('OpenRouter', { exact: true })).toBeVisible();
   await expect(row.getByLabel('Turns at once on OpenRouter')).toHaveValue('3');
+  await row.getByRole('button', { name: 'Add to models of OpenRouter' }).click();
   await row.getByLabel('Search models of OpenRouter').fill('openrouter/vendor/model-c');
   await row.getByLabel('Search models of OpenRouter').press('Enter');
   await row.getByRole('button', { name: 'Remove openrouter/vendor/model-a' }).click();
@@ -404,7 +405,7 @@ test('knowledge: search, write a page, edit it past a stale save, read its histo
   await main.getByRole('button', { name: 'History' }).click();
   await expect(main.getByRole('button', { name: /Version 3 .* Thirty days, as agreed with support/ })).toBeVisible();
   await main.getByRole('button', { name: /Version 1 / }).click();
-  await expect(main.getByRole('table', { name: /Changes to support\/refund-rules/ })).toContainText('Full refund within 14 days.');
+  await expect(main.getByRole('group', { name: /Changes to support\/refund-rules/ })).toContainText('Full refund within 14 days.');
   await page.screenshot({ path: 'walk-shots/knowledge-history.png', fullPage: true });
   await main.getByRole('button', { name: 'Restore this version' }).click();
   await expect(main.getByRole('button', { name: /Version 4 .* Restored version 1/ })).toBeVisible();
@@ -531,18 +532,68 @@ test('an accent button has dark text on it, not the light text of the page', asy
   expect(light(background) - light(text)).toBeGreaterThan(0.4);
 });
 
-test('a card on the board opens to the task: what it asks for, who has it, and a place to give direction', async ({ page }, info) => {
+test('what is raised lands in the inbox column as a task, opens as a page with where it is, and is accepted from there; any card opens the same page', async ({ page }, info) => {
   const errors = await enter(page);
   await page.goto(`${PROJECT}/tasks`);
-  await page.getByRole('button', { name: 'Migrate billing webhooks to v2 payload' }).click();
-  const dialog = page.getByRole('dialog');
-  await expect(dialog.getByRole('heading', { name: /CK-27 · Migrate billing webhooks/ })).toBeVisible();
-  await expect(dialog.getByRole('link', { name: 'Ada' })).toBeVisible();
-  await dialog.getByPlaceholder('Give Ada direction on this').fill('Keep v1 working behind the version check.');
-  await dialog.getByRole('button', { name: 'Send' }).click();
-  await expect(dialog.getByText('Written on it')).toBeVisible();
-  await expect(dialog.getByPlaceholder('Give Ada direction on this')).toHaveValue('');
-  await expect(dialog.getByText('Keep v1 working behind the version check.')).toBeVisible();
-  await page.screenshot({ path: info.outputPath('task-open.png') });
+  // No separate issues tab any more: raising happens on the board.
+  await expect(page.getByRole('link', { name: 'Issues', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '+ Raise' }).click();
+  const form = page.getByRole('dialog');
+  const title = `Pay button hangs ${Date.now()}`;
+  await form.getByLabel('Title').fill(title);
+  await form.getByLabel('What is wrong, and where').fill('It stays on Processing after a network drop.');
+  await form.getByRole('button', { name: 'Send to team' }).click();
+
+  // Its own page: the strip lit at the PM's decision, the report, and Accept / Merge into / Decline.
+  await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
+  await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  await expect(page.getByText('Inbox · triage')).toBeVisible();
+  const strip = page.getByRole('list', { name: 'Where this is' });
+  await expect(strip.getByRole('listitem')).toHaveCount(6);
+  await expect(strip.locator('[aria-current="step"]')).toContainText('Accepted');
+  await expect(page.getByText('It stays on Processing after a network drop.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Merge into…' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Decline' })).toBeVisible();
+  await page.screenshot({ path: info.outputPath('task-inbox.png') });
+  await page.getByRole('link', { name: 'Back to the board' }).click();
+  const inbox = page.locator('section').filter({ has: page.getByText('Inbox', { exact: true }) });
+  await expect(inbox.getByRole('link', { name: title })).toBeVisible();
+  await inbox.getByRole('link', { name: title }).click();
+  await page.getByLabel('Accept and give it to').selectOption({ label: 'Bram · Frontend' });
+  await expect(page.getByText('Assigned', { exact: true })).toBeVisible();
+  await expect(page.getByText('Accepted. Bram takes it.')).toBeVisible();
+  await expect(strip.locator('[aria-current="step"]')).toContainText('Picked up');
+
+  // A task that is being worked on: the same page, with its work log and a place to give direction.
+  await page.goto(`${PROJECT}/tasks`);
+  await page.getByRole('link', { name: 'Migrate billing webhooks to v2 payload' }).click();
+  await expect(page.getByRole('heading', { name: 'Migrate billing webhooks to v2 payload' })).toBeVisible();
+  await expect(page.getByText('Work log')).toBeVisible();
+  await expect(page.getByText(/Webhook handler accepts the v2 payload/)).toBeVisible();
+  await page.getByLabel('Write on this task').fill('Keep v1 working behind the version check.');
+  await page.getByRole('button', { name: 'Send' }).click();
+  await expect(page.getByLabel('Write on this task')).toHaveValue('');
+  await expect(page.getByRole('complementary', { name: 'Task details' }).getByText('Keep v1 working behind the version check.')).toBeVisible();
+  await page.screenshot({ path: info.outputPath('task-page.png') });
+  expect(errors).toEqual([]);
+});
+
+test('a team with a front desk can be asked what is going on from any project page, typed or spoken', async ({ page }, info) => {
+  const errors = await enter(page);
+  const name = `Desk ${Date.now()}`, slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  expect((await page.request.post('/api/projects', { data: { name } })).ok()).toBe(true);
+  await page.goto(`/p/${slug}/tasks`);
+  await expect(page.getByRole('button', { name: /^Ask / })).toHaveCount(0);
+  expect((await page.request.post(`/api/projects/${slug}/team/hire`, { data: { library: 'jarvis' } })).ok()).toBe(true);
+  await page.reload();
+  await page.getByRole('button', { name: 'Ask Jarvis' }).click();
+  const desk = page.getByRole('dialog');
+  await expect(desk.getByRole('heading', { name: 'Jarvis' })).toBeVisible();
+  await desk.getByLabel('Ask Jarvis').fill('What is everyone doing?');
+  await desk.getByRole('button', { name: 'Send' }).click();
+  await expect(desk.getByText('What is everyone doing?')).toBeVisible();
+  await expect(desk.getByText('Jarvis is answering')).toBeVisible();
+  await expect(desk.getByLabel('Read answers aloud')).toBeVisible();
+  await page.screenshot({ path: info.outputPath('front-desk.png') });
   expect(errors).toEqual([]);
 });

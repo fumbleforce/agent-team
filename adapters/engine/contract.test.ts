@@ -78,10 +78,22 @@ test('claude: the context size is what the latest model call carried, not the su
   assert.equal(state.tokensIn, 81_022);
 });
 
-test('codex: the models offered are the ones the tool itself lists on the worker, without the ones it hides', async () => {
+test('what a tool offers is read from the tool itself: codex from the list it keeps, with the effort levels of each model; claude from its own help text', async () => {
   const { mkdtempSync, writeFileSync } = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
   const home = mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
-  writeFileSync(path.join(home, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'model-next', display_name: 'Model Next', description: 'The newest one', visibility: 'list' }, { slug: 'internal-review', visibility: 'hide' }] }));
-  assert.deepEqual(engineAdapter('codex').models?.({ CODEX_HOME: home }), [{ id: 'model-next', name: 'Model Next', note: 'The newest one' }]);
-  assert.deepEqual(engineAdapter('codex').models?.({ CODEX_HOME: path.join(home, 'missing') }), []);
+  writeFileSync(path.join(home, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'model-next', display_name: 'Model Next', description: 'The newest one', visibility: 'list', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }] }, { slug: 'internal-review', visibility: 'hide' }] }));
+  assert.deepEqual(await engineAdapter('codex').discover?.({ env: { CODEX_HOME: home }, help: async () => '' }), { models: [{ id: 'model-next', name: 'Model Next', note: 'The newest one', efforts: ['low', 'high'] }], efforts: ['low', 'high'] });
+  assert.deepEqual(await engineAdapter('codex').discover?.({ env: { CODEX_HOME: path.join(home, 'missing') }, help: async () => '' }), { models: [], efforts: [] });
+
+  // The help text as the tool prints it, wrapped over lines.
+  const help = `  --effort <level>                      Effort level for the current session
+                                        (quick, steady, deep)
+  --model <model>                       Model for the current session. Provide
+                                        an alias for the latest model (e.g.
+                                        'newest', 'middle', or 'small') or a
+                                        model's full name (e.g.
+                                        'vendor-model-1-2').`;
+  assert.deepEqual(await engineAdapter('claude').discover?.({ env: {}, help: async () => help }), { models: ['newest', 'middle', 'small'].map(id => ({ id, name: id, note: 'always the newest of its family' })), efforts: ['quick', 'steady', 'deep'] });
+  // A tool that says nothing yields nothing; nothing is made up in its place.
+  assert.deepEqual(await engineAdapter('claude').discover?.({ env: {}, help: async () => '' }), { models: [], efforts: [] });
 });

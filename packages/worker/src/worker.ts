@@ -12,8 +12,8 @@ import { createRedactor } from './redact.ts';
 import { createTracer, type StepArtifact } from './trace.ts';
 import { cappedBy, changedPaths, committedCeiling, ensureReviewWorktree, ensureWorktree, headSha, publishAuthorized, removeReviewWorktrees, reviewedTasks, untouchedOverlays, worktreeFor, type AdminHooks, type ReviewWorktree, type Worktree } from './worktree.ts';
 
-export interface DeliveryFacts { taskKey: string; headSha: string; prUrl: string; manifest: { scm?: { kind?: string }; delivery?: DeliveryConfig }; approvals: Approvals }
-export interface DeliveryResult { state: 'merged' | 'blocked'; reason: string; mergeAttempted: boolean; mergeCommit?: string }
+export interface DeliveryFacts { taskKey: string; title?: string; headSha: string; prUrl: string | null; manifest: { scm?: { kind?: string }; delivery?: DeliveryConfig }; approvals: Approvals }
+export interface DeliveryResult { state: 'merged' | 'blocked'; reason: string; mergeAttempted: boolean; mergeCommit?: string; waiting?: boolean }
 export type DeliverFn = (input: { config: DeliveryConfig; scm: string; prUrl: string; approvals: () => Promise<Approvals>; worktree: string; branch: string }) => Promise<DeliveryResult>;
 
 // The one path to the base branch, with the SCM chosen by the project's manifest.
@@ -37,12 +37,12 @@ export interface WorkerConfig {
   // A strict worker runs a restricted turn only on an engine that enforces the restriction itself; instructions are not isolation.
   isolation?: 'strict' | 'isolated';
   // What this machine can run, sent with every claim so the app can say which providers are ready here. Names only.
-  ready?: { engines: string[]; variables: string[]; models?: Record<string, { id: string; name: string; note?: string }[]> };
+  ready?: { engines: string[]; variables: string[]; models?: Record<string, { id: string; name: string; note?: string; efforts?: string[] }[]>; efforts?: Record<string, string[]>; runs?: { engine: string; model: string | null } };
   // A disposable host that is gone after its turn (`--once`): it keeps neither a session nor a worktree, so it serves a project only when
   // the committed manifest authorizes publishing, runs every turn from its packet and pushes the branch at the end of every turn.
   ephemeral?: boolean;
 }
-interface Claimed { /* Keys entered in the app that this turn's engine reads, by variable name. Held in memory for the turn only. */ secrets?: Record<string, string>; review?: { headSha: string; reviewer: string } | null; turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
+interface Claimed { /* Keys entered in the app that this turn's engine reads, by variable name. Held in memory for the turn only. */ secrets?: Record<string, string>; review?: { headSha: string; reviewer: string } | null; turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; effort?: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
 interface Lease { workerId: string; leaseToken: string }
 // What one turn shares with its heartbeat: whether it is inside an operation on the checkout's shared git state right now.
 interface TurnState { adminOpen: boolean }
@@ -111,10 +111,15 @@ export function createWorker(config: WorkerConfig) {
     if (!facts.manifest.delivery) throw new Error('The project manifest has no delivery section');
     // Approvals are re-read from the platform each time the gate asks, so one withdrawn in between stops the merge.
     const approvals = async () => (await call<DeliveryFacts>(`/worker/turns/${turn.turnId}/delivery`, lease)).approvals;
-    const delivery = await Promise.resolve().then(() => (config.deliver ?? defaultDeliver)({ config: facts.manifest.delivery!, scm, prUrl: facts.prUrl, approvals, worktree: worktree.path, branch: worktree.branch }))
+    // Approved but never published (the worker had nowhere to push at the time): the change is opened now, from the approved branch.
+    let prUrl = facts.prUrl;
+    if (!prUrl && config.publish) prUrl = (await publishChange(config.publish.scm, { worktree: worktree.path, repository: config.publish.repository, branch: worktree.branch, base: config.publish.base, title: `${facts.taskKey}: ${facts.title ?? facts.taskKey}`.slice(0, 200), body: '' }, config.publish.exec).catch((error: Error) => { console.error(`Publish failed: ${error.message}`); return null; }))?.url ?? null;
+    const delivery = await Promise.resolve().then(() => (prUrl ? (config.deliver ?? defaultDeliver)({ config: facts.manifest.delivery!, scm, prUrl, approvals, worktree: worktree.path, branch: worktree.branch }) : Promise.reject(new Error('No change was published for this task, and this worker has nowhere to publish to'))))
       .catch((error: Error): DeliveryResult => ({ state: 'blocked', reason: error.message, mergeAttempted: false }));
+    // A check that has not finished is no verdict: the delivery goes back to the queue and is tried again in a few minutes.
+    if (delivery.waiting) { await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'deferred', stopReason: 'checks-running', summary: delivery.reason.slice(0, 500), ...(prUrl && !facts.prUrl ? { prUrl } : {}) } }); return; }
     const result = { state: delivery.state, reason: delivery.reason.slice(0, 500), mergeAttempted: delivery.mergeAttempted, ...(delivery.mergeCommit ? { mergeCommit: delivery.mergeCommit } : {}) };
-    await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'completed', summary: result.reason, delivery: result } });
+    await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'completed', summary: result.reason, delivery: result, ...(prUrl && !facts.prUrl ? { prUrl } : {}) } });
   }
 
   // No model runs here either: one headless browser run, the image uploaded under the lease, then the outcome.
@@ -159,6 +164,9 @@ export function createWorker(config: WorkerConfig) {
       // other bounded turns read the checkout. A worktree that cannot be made safely fails the turn: nothing was run, so nothing is uncertain.
       let worktree: Worktree | null = null, reviewTree: ReviewWorktree | null = null, grants = turn.grants;
       try {
+        // The base is read fresh from the code host before a task's worktree is made from it; a task already under way keeps its own.
+        const remoteBase = config.worktrees ? /^origin\/(.+)$/.exec(config.worktrees.base)?.[1] : undefined;
+        if (lane === 'work' && remoteBase && config.publish) await config.publish.exec('git', ['-C', checkout, 'fetch', '--quiet', 'origin', remoteBase], { cwd: checkout }).catch((error: Error) => console.error(`Fetching ${remoteBase} failed: ${error.message}`));
         if (lane === 'work' && turn.taskKey && config.worktrees) worktree = await ensureWorktree({ checkout, taskKey: turn.taskKey, ...config.worktrees, admin });
         else if (turn.kind === 'review' && turn.taskKey && turn.review && config.worktrees) reviewTree = await ensureReviewWorktree({ checkout, taskKey: turn.taskKey, reviewer: turn.review.reviewer, headSha: turn.review.headSha, projectId: turn.projectId, admin });
         // The committed ceiling wins even over what the coordinator sent.
@@ -192,7 +200,7 @@ export function createWorker(config: WorkerConfig) {
       const moved = resume?.baseSha && worktree && resume.baseSha !== worktree.baseCommit ? `\n\n# The base moved\nThe base branch was at ${resume.baseSha.slice(0, 10)} when this session last ran and is at ${worktree.baseCommit.slice(0, 10)} now. Bring your branch up to date before you continue.` : '';
       const result = await executeTurn({
         adapter, turnDir, env, ...(turn.secrets ? { secrets: turn.secrets } : {}), timeoutMs: config.timeoutMs ?? 45 * 60_000, signal,
-        spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? reviewTree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
+        spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? reviewTree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, effort: turn.effort ?? null, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
         onSteps: steps => tracer.steps(steps),
         onLine: keepLine,
         // What a crash leaves behind is found by the next start of this worker.

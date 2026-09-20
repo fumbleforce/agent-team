@@ -9,7 +9,7 @@ export interface ScmGate {
   name: string; changeNoun: string;
   parseChangeUrl(url: string): { repository: string } | null;
   view(exec: Exec, context: GateContext): Promise<Change>;
-  checks(exec: Exec, context: GateContext, options: { includeProtected: boolean }): Promise<{ all: { name: string; passed: boolean }[]; protected: { name: string; passed: boolean }[] | null }>;
+  checks(exec: Exec, context: GateContext, options: { includeProtected: boolean }): Promise<{ all: { name: string; passed: boolean; pending?: boolean }[]; protected: { name: string; passed: boolean; pending?: boolean }[] | null }>;
   // Takes the change out of draft. The platform publishes drafts; this is the one place a change stops being one.
   ready(exec: Exec, context: GateContext): Promise<unknown>;
   merge(exec: Exec, context: GateContext, headSha: string): Promise<unknown>;
@@ -18,7 +18,8 @@ export interface GateContext { url: string; repository: string; cwd: string }
 export interface DeliveryConfig { repository: string; baseBranch: string; requiredChecks: string[]; autoMergeAuthorized: boolean; checkEnforcement?: 'protected' | 'runner' }
 export interface Approval { verdict: string; headSha: string; sessionId: string }
 export type Approvals = Partial<Record<'tester' | 'reviewer' | 'pm', Approval>>;
-export interface GateResult { state: 'merged' | 'blocked'; reason: string; mergeAttempted: boolean; headSha?: string; mergeCommit?: string }
+export interface GateResult { state: 'merged' | 'blocked'; reason: string; mergeAttempted: boolean; headSha?: string; mergeCommit?: string; /* Nothing is wrong: a required check has not finished yet, so the delivery comes back later. */ waiting?: boolean }
+class ChecksRunning extends Error {}
 
 const VERDICT = { tester: 'PASS', reviewer: 'APPROVE', pm: 'APPROVE' } as const;
 
@@ -74,6 +75,9 @@ export async function deliver(input: { config: DeliveryConfig; scm: ScmGate; app
       // Protected mode fails closed when the provider's required checks cannot be read.
       const status = await scm.checks(exec, context, { includeProtected: protectedChecks });
       const named = (name: string) => status.all.filter(check => check.name === name);
+      // Still running, and nothing failed: that is a reason to come back, not to stop.
+      const relevant = [...config.requiredChecks.flatMap(named), ...(status.protected ?? [])];
+      if (relevant.some(check => check.pending) && !relevant.some(check => !check.passed && !check.pending)) throw new ChecksRunning(`Waiting for ${[...new Set(relevant.filter(check => check.pending).map(check => check.name))].join(', ')} to finish`);
       if (!Array.isArray(status.all) || (protectedChecks && !Array.isArray(status.protected)) || config.requiredChecks.some(name => named(name).length === 0 || named(name).some(check => !check.passed)) || (status.protected ?? []).some(check => !check.passed)) throw new Error('Required checks missing or not passing');
     };
 
@@ -82,6 +86,8 @@ export async function deliver(input: { config: DeliveryConfig; scm: ScmGate; app
     // Work is published as a draft. With every required approval valid at this head, and only then, the change is marked ready;
     // a draft that is not exactly the change that was approved is left alone and fails the identity check below.
     const first = await scm.view(exec, context);
+    // Run again after a merge that was cut off: the host says whether it went through. The same change at the approved head, already merged, is done.
+    if (first.url === prUrl && first.state === 'MERGED' && first.headSha === headSha && SHA.test(first.mergeCommit ?? '')) return { state: 'merged', reason: `${scm.name} shows it already merged`, mergeAttempted, headSha, mergeCommit: first.mergeCommit! };
     if (first.isDraft === true && first.url === prUrl && first.state === 'OPEN' && first.baseRef === config.baseBranch && first.headRef === branch && first.headSha === headSha && first.sameRepository === true) {
       abortCheck();
       await scm.ready(exec, context);
@@ -100,6 +106,6 @@ export async function deliver(input: { config: DeliveryConfig; scm: ScmGate; app
     if (merged.url !== prUrl || merged.state !== 'MERGED' || merged.headSha !== headSha || !SHA.test(merged.mergeCommit ?? '')) throw new Error(`${scm.name} did not confirm MERGED with an actual merge commit`);
     return { state: 'merged', reason: `${scm.name} confirmed MERGED with an actual merge commit`, mergeAttempted, headSha, mergeCommit: merged.mergeCommit! };
   } catch (error) {
-    return { state: 'blocked', reason: (error as Error).message, mergeAttempted, ...(headSha ? { headSha } : {}) };
+    return { state: 'blocked', reason: (error as Error).message, mergeAttempted, ...(headSha ? { headSha } : {}), ...(error instanceof ChecksRunning ? { waiting: true } : {}) };
   }
 }

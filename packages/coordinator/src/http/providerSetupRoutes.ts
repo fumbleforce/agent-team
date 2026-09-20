@@ -42,7 +42,7 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
   // What the workers seen lately said they can run. A worker that never said anything is an older one.
   async function workersNow() {
     const rows = await db.selectFrom('workers').select(['name', 'providers']).where('last_seen_at', '>', now() - WORKER_FRESH_MS).orderBy('name').execute();
-    return rows.map(row => { const said = JSON.parse(row.providers) as { engines?: string[]; variables?: string[]; models?: Record<string, ModelChoice[]> } | unknown[]; return { name: row.name, reported: !Array.isArray(said), engines: Array.isArray(said) ? [] : said.engines ?? [], variables: Array.isArray(said) ? [] : said.variables ?? [], models: Array.isArray(said) ? {} : said.models ?? {} }; });
+    return rows.map(row => { const said = JSON.parse(row.providers) as { engines?: string[]; variables?: string[]; models?: Record<string, (ModelChoice & { efforts?: string[] })[]>; efforts?: Record<string, string[]> } | unknown[]; return { name: row.name, reported: !Array.isArray(said), engines: Array.isArray(said) ? [] : said.engines ?? [], variables: Array.isArray(said) ? [] : said.variables ?? [], models: Array.isArray(said) ? {} : said.models ?? {}, efforts: Array.isArray(said) ? {} : said.efforts ?? {} }; });
   }
   function readiness(workers: Awaited<ReturnType<typeof workersNow>>, engine: string, entry: ProviderEntry | null): Readiness {
     const variable = entry?.key?.variable, saved = Boolean(variable && context.secrets.has(variable)), withTool = workers.filter(worker => worker.engines.includes(engine));
@@ -56,10 +56,13 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
 
   app.get('/api/providers', async c => {
     const rows = await db.selectFrom('providers').selectAll().orderBy('name').execute(), workers = await workersNow();
+    // The effort levels a provider's tool takes are what the workers that have it said; per model where the tool says it per model.
+    const effortsOf = (engine: string) => [...new Set(workers.flatMap(worker => worker.efforts[engine] ?? []))];
+    const modelEfforts = (engine: string) => Object.fromEntries(workers.flatMap(worker => worker.models[engine] ?? []).flatMap(model => (model.efforts?.length ? [[model.id, model.efforts] as const] : [])));
     const seats = await db.selectFrom('agents').select('provider_id').select(eb => eb.fn.countAll<number>().as('n')).where('status', '!=', 'retired').groupBy('provider_id').execute();
     return c.json({ canEdit: can(c.get('viewer'), 'org.members'), providers: rows.map(row => {
       const limits = JSON.parse(row.limits) as Limits, kind = catalogKind(row.engine_config);
-      return { id: row.id, name: row.name, kind: row.kind, engine: row.engine, catalog: kind, models: JSON.parse(row.models) as string[], keyLabel: (kind ? providerEntry(kind)?.key?.label : undefined) ?? null, keySaved: Boolean(kind && providerEntry(kind)?.key && context.secrets.has(providerEntry(kind)!.key!.variable)), status: row.status, statusDetail: row.status_detail, limitedUntil: row.limited_until === null ? null : Number(row.limited_until),
+      return { id: row.id, name: row.name, kind: row.kind, engine: row.engine, catalog: kind, models: JSON.parse(row.models) as string[], efforts: effortsOf(row.engine), modelEfforts: modelEfforts(row.engine), keyLabel: (kind ? providerEntry(kind)?.key?.label : undefined) ?? null, keySaved: Boolean(kind && providerEntry(kind)?.key && context.secrets.has(providerEntry(kind)!.key!.variable)), status: row.status, statusDetail: row.status_detail, limitedUntil: row.limited_until === null ? null : Number(row.limited_until),
         limits: { concurrency: limits.maxConcurrentTurns ?? null, windowTokens: limits.windowTokens ?? null, windowHours: limits.windowTokens ? (limits.windowMs ?? 5 * HOUR) / HOUR : null },
         agents: Number(seats.find(seat => seat.provider_id === row.id)?.n ?? 0), readiness: readiness(workers, row.engine, kind ? providerEntry(kind) : null) };
     }) });
@@ -129,7 +132,9 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
   });
 
   // One thing changed in place, from the provider's own row: the models, how many turns at once, or its key. Everything else stays as it was.
-  const ChangeBody = z.object({ models: z.array(z.string().regex(/^\S{1,120}$/, 'A model name has no spaces')).max(40).optional(), concurrency: z.number().int().min(1).max(64).optional(), key: z.string().trim().min(8).max(400).regex(/^\S+$/).optional() });
+  const ChangeBody = z.object({ models: z.array(z.string().regex(/^\S{1,120}$/, 'A model name has no spaces')).max(40).optional(), concurrency: z.number().int().min(1).max(64).optional(), key: z.string().trim().min(8).max(400).regex(/^\S+$/).optional(),
+    // Off keeps the provider, its key and its models, and starts no turn on it; agents on it wait until it is on again.
+    on: z.boolean().optional() });
   app.post('/api/providers/:id/change', async c => {
     const userId = admin(c), input = await parseBody(c, ChangeBody);
     const row = await db.selectFrom('providers').selectAll().where('id', '=', c.req.param('id')).executeTakeFirst();
@@ -144,6 +149,10 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
     const variable = kind ? providerEntry(kind)?.key?.variable : undefined;
     if (input.key && !variable) throw new HttpError(400, 'invalid', 'This provider signs in on the worker; it takes no key', { key: 'This provider signs in on the worker; it takes no key' });
     if (input.key && variable) { await context.secrets.set(variable, input.key, userId); lists.clear(); }
+    if (input.on !== undefined) {
+      const published = await storage.transaction(async tx => { await tx.updateTable('providers').set({ status: input.on ? 'connected' : 'paused', status_detail: input.on ? null : 'Turned off' }).where('id', '=', row.id).execute(); return events.append(tx, [{ type: input.on ? 'provider.turned_on' : 'provider.turned_off', category: 'audit', actorKind: 'user', userId, payload: { providerId: row.id, name: row.name } }]); });
+      events.published(published);
+    }
     if (input.models || input.concurrency) await save(userId, ProviderBody.parse({ name: row.name, kind: row.kind, engine: row.engine, models, limits: { concurrency: input.concurrency ?? limits.maxConcurrentTurns, ...(limits.windowTokens ? { windowTokens: limits.windowTokens, windowMs: limits.windowMs } : {}) } }), { id: row.id });
     return c.json({ ok: true });
   });

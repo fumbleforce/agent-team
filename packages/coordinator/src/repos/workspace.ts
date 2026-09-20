@@ -9,7 +9,7 @@ interface Blueprint { slug: string; name: string; seats: { name: string; title: 
 const defaultTeam = (): Blueprint => JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'default-team.json'), 'utf8'));
 
 const DONE: readonly string[] = BOARD_COLUMNS.done;
-const OPEN_STATES: readonly string[] = [...BOARD_COLUMNS.backlog, ...BOARD_COLUMNS.in_progress, ...BOARD_COLUMNS.review, ...BOARD_COLUMNS.done];
+const OPEN_STATES: readonly string[] = [...BOARD_COLUMNS.inbox, ...BOARD_COLUMNS.backlog, ...BOARD_COLUMNS.in_progress, ...BOARD_COLUMNS.review, ...BOARD_COLUMNS.done];
 
 export function createWorkspace(context: Context) {
   const { storage, events, now } = context;
@@ -83,14 +83,19 @@ export function createWorkspace(context: Context) {
     },
 
     async roster(teamId: string) {
-      return db.selectFrom('agents').select(['id', 'name', 'initials', 'tint', 'title', 'persona', 'status', 'provider_id', 'model', 'is_pm', 'doing'])
+      return db.selectFrom('agents').select(['id', 'name', 'initials', 'tint', 'title', 'persona', 'status', 'provider_id', 'model', 'effort', 'is_pm', 'doing'])
         .where('team_id', '=', teamId).where('status', '!=', 'retired').orderBy('sort').execute();
     },
 
     async board(projectId: string) {
       const tasks = await db.selectFrom('tasks').select(['id', 'key', 'title', 'tag', 'state', 'assignee_agent_id', 'blocked_reason', 'priority', 'updated_at'])
         .where('project_id', '=', projectId).where('state', 'in', [...OPEN_STATES]).orderBy('priority').orderBy('updated_at', 'desc').execute();
-      return Object.fromEntries(Object.entries(BOARD_COLUMNS).map(([column, states]) => [column, tasks.filter(task => (states as readonly string[]).includes(task.state))])) as Record<BoardColumn, typeof tasks>;
+      // What waits in the inbox says where it came from.
+      const waiting = tasks.filter(task => task.state === 'inbox').map(task => task.id);
+      const sources = waiting.length ? await db.selectFrom('links').innerJoin('issues', 'issues.id', 'links.from_id').select(['links.to_id', 'issues.source']).where('links.from_type', '=', 'issue').where('links.to_type', '=', 'task').where('links.to_id', 'in', waiting).execute() : [];
+      const RAISED: Record<string, string> = { product: 'from the product', discussion: 'raised', agent: 'by the team', handoff: 'handed over', webhook: 'from outside' };
+      const cards = tasks.map(task => ({ ...task, raised: task.state === 'inbox' ? RAISED[sources.find(row => row.to_id === task.id)?.source ?? ''] ?? 'raised' : null }));
+      return Object.fromEntries(Object.entries(BOARD_COLUMNS).map(([column, states]) => [column, cards.filter(task => (states as readonly string[]).includes(task.state))])) as Record<BoardColumn, typeof cards>;
     },
 
     async moveTask(viewer: Viewer, taskId: string, state: TaskState) {
@@ -110,7 +115,7 @@ export function createWorkspace(context: Context) {
         if (!task) throw notFound('Task');
         // Held in the backlog means not to be worked on yet; handing it to someone would start exactly that.
         if (task.state === 'backlog' && task.blocked_reason) throw new HttpError(409, 'conflict', `This task is held: ${task.blocked_reason}. Approve it in the tracker (or lift the hold there) first.`);
-        await tx.updateTable('tasks').set({ assignee_agent_id: agentId, state: task.state === 'backlog' ? 'assigned' : task.state, updated_at: now() }).where('id', '=', taskId).execute();
+        await tx.updateTable('tasks').set({ assignee_agent_id: agentId, state: task.state === 'backlog' || task.state === 'inbox' ? 'assigned' : task.state, updated_at: now() }).where('id', '=', taskId).execute();
         return { projectId: task.project_id, events: await events.append(tx, [{ type: 'task.assigned', actorKind: 'user', userId: viewer.userId, projectId: task.project_id, taskId, agentId }]) };
       });
       events.published(published.events);

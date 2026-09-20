@@ -36,7 +36,7 @@ for (const kind of ['sqlite', 'postgres'] as const) test(`${kind}: the demo serv
     const read = async (path: string) => await (await fetch(coordinator.url + path, { headers: { cookie } })).json() as any;
     const studio = await read('/api/projects/nordlys-studio');
     assert.deepEqual([studio.project.kind, studio.roster.map((seat: { name: string }) => seat.name), studio.customTabs], ['documents', ['Ingrid', 'Sol', 'Tuva', 'Emil'], [{ label: 'Editorial calendar', url: 'https://calendar.nordlys.example/editorial' }]]);
-    assert.deepEqual(Object.values(studio.board as Record<string, unknown[]>).map(column => column.length), [2, 2, 1, 1]);
+    assert.deepEqual(Object.values(studio.board as Record<string, unknown[]>).map(column => column.length), [0, 2, 2, 1, 1]);
     const checks = await read('/api/projects/nordlys-studio/checks');
     assert.deepEqual([checks.suites, checks.branches.map((row: { branch: string }) => row.branch).sort(), checks.failing.length], [['Fact check', 'Links and images', 'Style guide'], ['Autumn issue', 'Winter issue, draft'], 2]);
     const integrations = await read('/api/projects/nordlys-studio/integrations');

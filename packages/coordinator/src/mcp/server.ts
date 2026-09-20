@@ -46,7 +46,7 @@ export function createMcp(context: Context, deps: McpDeps) {
     const match = /^Bearer (turn\.([0-9a-f-]{36})\.[\w-]+)$/.exec(header ?? '');
     if (!match) return null;
     const turn = await db.selectFrom('turns').selectAll().where('id', '=', match[2]!).executeTakeFirst();
-    if (!turn || turn.state !== 'running' || Number(turn.lease_until) < now()) return null;
+    if (turn?.state !== 'running' || Number(turn.lease_until) < now()) return null;
     return sameSecret(match[1]!, turnTokenFromHash(context.machineToken, turn.id, turn.lease_token_hash)) ? turn : null;
   }
 
@@ -121,10 +121,16 @@ export function createMcp(context: Context, deps: McpDeps) {
     },
     'task.update': async (turn, input) => {
       if (!turn.task_id) throw new ToolError('This turn has no task');
-      const state = input.state === 'ready_for_review' ? 'in_review' : input.state === 'blocked' ? 'blocked' : 'in_progress';
+      const state = input.state === 'ready_for_review' ? 'in_review' : input.state === 'blocked' ? 'blocked' : input.state === 'not_needed' ? 'canceled' : 'in_progress';
       const published = await storage.transaction(async tx => {
         await tx.updateTable('tasks').set({ state, blocked_reason: input.state === 'blocked' ? (input.blockedReason ?? 'blocked') : null, updated_at: now() }).where('id', '=', turn.task_id!).execute();
         await tx.updateTable('turns').set({ summary: input.summary }).where('id', '=', turn.id).execute();
+        // Closed as not needed: nothing of it waits to be merged, and the report it came from is closed with it.
+        if (state === 'canceled') {
+          await tx.updateTable('merge_queue').set({ state: 'blocked', reason: 'The task was closed as not needed', finished_at: now() }).where('task_id', '=', turn.task_id!).where('state', 'in', ['queued', 'uncertain']).execute();
+          const issue = await tx.selectFrom('links').select('from_id').where('from_type', '=', 'issue').where('to_type', '=', 'task').where('to_id', '=', turn.task_id!).executeTakeFirst();
+          if (issue) await tx.updateTable('issues').set({ state: 'closed', closed_at: now() }).where('id', '=', issue.from_id).execute();
+        }
         return events.append(tx, [{ type: 'task.state_changed', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, taskId: turn.task_id, turnId: turn.id, payload: { to: state, summary: input.summary } }]);
       });
       events.published(published);
@@ -153,6 +159,7 @@ export function createMcp(context: Context, deps: McpDeps) {
     'deliberation.revise': async (turn, input) => { await deliberation.revise(turn, input.deliberationId, input.revision); return RECORDED; },
     'deliberation.conclude': async (turn, input) => { await deliberation.conclude(turn, input.deliberationId, input.conclusion); return RECORDED; },
     'task.create': (turn, input) => actions.createTask(turn, input),
+    'desk.handover': async (turn, input) => { await threadInProject(turn, input.threadId); return actions.handover(turn, input); },
     'triage.decide': async (turn, input) => { await threadInProject(turn, input.threadId); return actions.triage(turn, input); },
     'retro.submit': async (turn, input) => {
       const item = await db.selectFrom('work_items').select('thread_id').where('id', '=', turn.work_item_id).executeTakeFirst();

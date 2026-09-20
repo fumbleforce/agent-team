@@ -26,8 +26,10 @@ test('a key typed into the app is kept sealed, makes the provider ready at once,
     assert.deepEqual((await call('/api/providers/catalog/codex-subscription/models', { cookie })).json, { models: [], live: false, error: null });
     await call('/worker/claim', { headers: machine, body: { workerId: 'bolt', free: {}, projects: [], ready: { engines: ['codex'], variables: [], models: { codex: [{ id: 'model-next', name: 'Model Next', note: 'The newest one' }] } } } });
     assert.deepEqual((await call('/api/providers/catalog/codex-subscription/models', { cookie })).json, { models: [{ id: 'model-next', name: 'Model Next', note: 'The newest one' }], live: true, error: null });
-    // The only names kept in the catalog are a tool's own standing aliases.
-    assert.deepEqual((await call('/api/providers/catalog/claude-subscription/models', { cookie })).json.models.map((model: { id: string }) => model.id), ['sonnet', 'opus', 'haiku']);
+    // The same for a tool that names its models in its help text: nothing until a worker read it, then exactly that, with the effort levels it takes.
+    assert.deepEqual((await call('/api/providers/catalog/claude-subscription/models', { cookie })).json.models, []);
+    await call('/worker/claim', { headers: machine, body: { workerId: 'bolt', free: {}, projects: [], ready: { engines: ['claude', 'codex'], variables: [], models: { claude: [{ id: 'newest', name: 'newest' }], codex: [{ id: 'model-next', name: 'Model Next', efforts: ['low', 'high'] }] }, efforts: { claude: ['quick', 'deep'] } } } });
+    assert.deepEqual((await call('/api/providers/catalog/claude-subscription/models', { cookie })).json.models.map((model: { id: string }) => model.id), ['newest']);
 
     // A worker has the tool but no key anywhere: the page asks for the key.
     await call('/worker/claim', { headers: machine, body: { workerId: 'atlas', free: {}, projects: [], ready: { engines: ['opencode'], variables: [] } } });

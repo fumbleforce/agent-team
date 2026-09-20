@@ -48,6 +48,7 @@ function Signed() {
     <Palette projects={tree.data.projects} agents={agents.data?.agents ?? []} />
     <Switch>
       <Route path="/p/:slug/knowledge/:pageId">{params => <ProjectPage slug={params.slug} tab="knowledge" pageId={params.pageId} me={me.data!} projects={tree.data!.projects} />}</Route>
+      <Route path="/p/:slug/tasks/:taskId">{params => <ProjectPage slug={params.slug} tab="tasks" pageId={params.taskId} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/p/:slug/issues/:number">{params => <ProjectPage slug={params.slug} tab="issues" pageId={params.number} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/p/:slug/integrations">{params => <IntegrationsPage slug={params.slug} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/settings/members"><MembersPage me={me.data} projects={tree.data.projects} /></Route>

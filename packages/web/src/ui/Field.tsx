@@ -9,7 +9,9 @@ export function Field({ label, help, error, children }: { label: string; help?: 
 }
 // A file picker is the same box; its built-in button is drawn as a small control inside it.
 const FILE = 'cursor-pointer py-1.5 text-small text-ink-soft file:mr-3 file:cursor-pointer file:rounded-chip file:border-0 file:bg-active file:px-2 file:py-0.5 file:text-small file:text-ink';
-export function Input({ className, ...rest }: InputHTMLAttributes<HTMLInputElement>) { return <input className={cx(BOX, 'h-9', rest.type === 'file' && FILE, className)} {...rest} />; }
+// `compact` is the input inside a row of a page, the size of the chips and small buttons beside it.
+const COMPACT = 'h-7 w-full rounded-control border border-line-strong bg-ground px-2 text-small text-ink placeholder:text-ink-faint outline-none focus:border-accent';
+export function Input({ className, compact, ...rest }: InputHTMLAttributes<HTMLInputElement> & { compact?: boolean }) { return <input className={cx(compact ? COMPACT : cx(BOX, 'h-9'), rest.type === 'file' && FILE, className)} {...rest} />; }
 export function Textarea({ className, bare, ...rest }: TextareaHTMLAttributes<HTMLTextAreaElement> & { bare?: boolean; ref?: Ref<HTMLTextAreaElement> }) {
   return <textarea className={cx(bare ? 'w-full resize-none bg-transparent text-body text-ink placeholder:text-ink-faint outline-none' : cx(BOX, 'py-2 resize-none'), className)} {...rest} />;
 }

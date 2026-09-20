@@ -7,7 +7,7 @@ export type ProjectRole = z.infer<typeof ProjectRole>;
 
 export const ProjectStatus = z.enum(['active', 'paused', 'archived']);
 export const AgentStatus = z.enum(['active', 'paused', 'retired']);
-export const TaskState = z.enum(['backlog', 'assigned', 'in_progress', 'awaiting_decision', 'in_review', 'approved', 'merging', 'done', 'blocked', 'quarantined', 'stopped', 'canceled']);
+export const TaskState = z.enum(['inbox', 'backlog', 'assigned', 'in_progress', 'awaiting_decision', 'in_review', 'approved', 'merging', 'done', 'blocked', 'quarantined', 'stopped', 'canceled']);
 export type TaskState = z.infer<typeof TaskState>;
 export const TurnKind = z.enum(['work', 'review', 'feedback', 'revise', 'conclude', 'triage', 'reply', 'retro', 'ideate', 'publish', 'deliver', 'capture']);
 export const Viewport = z.enum(['desktop', 'tablet', 'mobile']);
@@ -32,6 +32,8 @@ export const Stance = z.enum(['for', 'against', 'neutral']);
 
 // Board columns are a projection of task state.
 export const BOARD_COLUMNS = {
+  // Raised and not settled yet: a report from the product view, from a person, from an agent. Nobody works on it until it is accepted.
+  inbox: ['inbox'],
   backlog: ['backlog', 'assigned'],
   in_progress: ['in_progress', 'awaiting_decision', 'blocked', 'quarantined'],
   review: ['in_review', 'approved', 'merging'],

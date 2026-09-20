@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { api, ApiError } from './client';
+import { api, type ApiError } from './client';
 
 export interface Resource<T> { data: T | null; error: ApiError | null; reload(): void; set(update: (current: T) => T): void }
 

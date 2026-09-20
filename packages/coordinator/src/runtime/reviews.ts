@@ -40,7 +40,8 @@ export function createReviews(context: Context, turns: Turns) {
     const pm = reviewers.find(reviewer => reviewer.kind === 'pm')?.agentId ?? null;
     if (!approved) return { approved, pm, drafts: [] };
     await tx.updateTable('tasks').set({ state: 'approved', updated_at: now() }).where('id', '=', taskId).execute();
-    await tx.insertInto('merge_queue').values({ id: newId(now()), project_id: task.project_id, task_id: taskId, head_sha: headSha, state: 'queued', reason: null, created_at: now(), finished_at: null }).execute();
+    if (!await tx.selectFrom('merge_queue').select('id').where('task_id', '=', taskId).where('head_sha', '=', headSha).where('state', 'in', ['queued', 'running']).executeTakeFirst())
+      await tx.insertInto('merge_queue').values({ id: newId(now()), project_id: task.project_id, task_id: taskId, head_sha: headSha, state: 'queued', reason: null, created_at: now(), finished_at: null }).execute();
     return { approved, pm, drafts: [{ type: 'task.approved', actorKind: 'agent' as const, agentId: by.agentId, projectId: task.project_id, taskId, turnId: by.turnId, payload: { kind: by.kind, verdict: by.verdict, headSha } }] };
   }
 
@@ -60,6 +61,61 @@ export function createReviews(context: Context, turns: Turns) {
       events.published(result.published);
       for (const reviewer of result.reviewers) await turns.enqueue({ agentId: reviewer.agentId, projectId: result.projectId, kind: 'review', taskId, dedupeKey: `review:${taskId}:${reviewer.kind}:${headSha}` });
       return result.reviewers;
+    },
+
+    // The gate refused and whatever it refused for was put right (a setting, the base branch, a check): the same approved revision is delivered again.
+    async deliverAgain(taskId: string) {
+      const result = await storage.transaction(async tx => {
+        const task = await tx.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state']).where('id', '=', taskId).executeTakeFirst();
+        if (!task?.head_sha || !['blocked', 'approved'].includes(task.state)) throw refuse('Only a task whose merge was refused can be merged again');
+        const valid = await tx.selectFrom('approvals').select('kind').where('task_id', '=', taskId).where('state', '=', 'valid').where('head_sha', '=', task.head_sha).where('verdict', '=', 'pass').execute();
+        const reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id), pm = reviewers.find(reviewer => reviewer.kind === 'pm')?.agentId;
+        if (!pm || !reviewers.every(reviewer => valid.some(row => row.kind === reviewer.kind))) throw refuse('This revision does not have every approval any more; it has to be reviewed again first');
+        await tx.updateTable('tasks').set({ state: 'approved', blocked_reason: null, updated_at: now() }).where('id', '=', taskId).execute();
+        if (!await tx.selectFrom('merge_queue').select('id').where('task_id', '=', taskId).where('state', 'in', ['queued', 'running']).executeTakeFirst())
+          await tx.insertInto('merge_queue').values({ id: newId(now()), project_id: task.project_id, task_id: taskId, head_sha: task.head_sha, state: 'queued', reason: null, created_at: now(), finished_at: null }).execute();
+        return { pm, projectId: task.project_id, headSha: task.head_sha };
+      });
+      await turns.enqueue({ agentId: result.pm, projectId: result.projectId, kind: 'deliver', taskId, dedupeKey: `deliver:${taskId}:${result.headSha}` });
+    },
+
+    // A task must not sit in review because a review was lost. A review reads a throwaway checkout and changes nothing, so asking again
+    // is safe: whoever still owes a verdict at the task's head and has no review waiting or running is asked again, a few times at most.
+    // The same goes for an approved task whose merge is queued with nobody about to run it.
+    async chase() {
+      const asked: { agentId: string; projectId: string; taskId: string; kind: string; headSha: string }[] = [], merges: { agentId: string; projectId: string; taskId: string; headSha: string }[] = [];
+      await storage.transaction(async tx => {
+        // A merge that was cut off is not a question for a person: the gate asks the host whether it went through, so it is simply run again.
+        // Whatever put the task aside because of that cut-off delivery is lifted with it.
+        for (const entry of await tx.selectFrom('merge_queue').select(['id', 'task_id']).where('state', '=', 'uncertain').execute()) {
+          const held = await tx.selectFrom('quarantines').innerJoin('turns', 'turns.id', 'quarantines.turn_id').select('quarantines.id').where('quarantines.scope', '=', 'task').where('quarantines.ref_id', '=', entry.task_id).where('quarantines.released_at', 'is', null).where('turns.kind', '=', 'deliver').execute();
+          if (held.length) await tx.updateTable('quarantines').set({ released_at: now(), released_by: null }).where('id', 'in', held.map(row => row.id)).execute();
+          await tx.updateTable('merge_queue').set({ state: 'queued', reason: 'Cut off; run again to see whether it merged', finished_at: null }).where('id', '=', entry.id).execute();
+          await tx.updateTable('tasks').set({ state: 'approved', updated_at: now() }).where('id', '=', entry.task_id).where('state', 'in', ['merging', 'quarantined', 'approved']).execute();
+        }
+        // The same task queued more than once (an earlier version did that): only the newest entry stays.
+        const queued = await tx.selectFrom('merge_queue').select(['id', 'task_id']).where('state', '=', 'queued').orderBy('created_at', 'desc').execute(), kept = new Set<string>();
+        const extra = queued.filter(entry => { if (kept.has(entry.task_id)) return true; kept.add(entry.task_id); return false; });
+        if (extra.length) await tx.updateTable('merge_queue').set({ state: 'blocked', reason: 'Queued more than once; the newest entry runs', finished_at: now() }).where('id', 'in', extra.map(entry => entry.id)).execute();
+        for (const task of await tx.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state']).where('state', 'in', ['in_review', 'approved', 'merging']).where('head_sha', 'is not', null).execute()) {
+          const headSha = task.head_sha!, reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id);
+          const live = await tx.selectFrom('work_items').select(['agent_id', 'kind']).where('task_id', '=', task.id).where('state', 'in', ['queued', 'leased']).execute();
+          if (task.state === 'approved' || task.state === 'merging') {
+            const pm = reviewers.find(reviewer => reviewer.kind === 'pm')?.agentId, queued = await tx.selectFrom('merge_queue').select('id').where('task_id', '=', task.id).where('state', '=', 'queued').executeTakeFirst();
+            if (pm && queued && !live.some(item => item.kind === 'deliver')) merges.push({ agentId: pm, projectId: task.project_id, taskId: task.id, headSha });
+            continue;
+          }
+          const counted = await tx.selectFrom('approvals').select('kind').where('task_id', '=', task.id).where('head_sha', '=', headSha).where('state', 'in', LIVE).execute();
+          for (const reviewer of reviewers) {
+            if (counted.some(row => row.kind === reviewer.kind) || live.some(item => item.kind === 'review' && item.agent_id === reviewer.agentId)) continue;
+            const lost = await tx.selectFrom('turns').select(eb => eb.fn.countAll<number>().as('n')).where('task_id', '=', task.id).where('agent_id', '=', reviewer.agentId).where('kind', '=', 'review').where('state', 'in', ['uncertain', 'failed', 'timed_out', 'interrupted']).where('started_at', '>', now() - 24 * 3600_000).executeTakeFirstOrThrow();
+            if (Number(lost.n) <= 3) asked.push({ agentId: reviewer.agentId, projectId: task.project_id, taskId: task.id, kind: reviewer.kind, headSha });
+          }
+        }
+      });
+      for (const item of asked) await turns.enqueue({ agentId: item.agentId, projectId: item.projectId, kind: 'review', taskId: item.taskId, dedupeKey: `review:${item.taskId}:${item.kind}:${item.headSha}` });
+      for (const item of merges) await turns.enqueue({ agentId: item.agentId, projectId: item.projectId, kind: 'deliver', taskId: item.taskId, dedupeKey: `deliver:${item.taskId}:${item.headSha}` });
+      return { reviews: asked.length, merges: merges.length };
     },
 
     // `verification: 'worker'` is how a verdict arrives from an agent's turn: it is kept as pending and counts only once the
@@ -116,10 +172,10 @@ export function createReviews(context: Context, turns: Turns) {
 
     // Everything the worker's merge gate needs, read at the moment it asks.
     async deliveryFor(taskId: string) {
-      const task = await storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['tasks.key', 'tasks.head_sha', 'tasks.pr_url', 'tasks.state', 'projects.manifest']).where('tasks.id', '=', taskId).executeTakeFirstOrThrow();
+      const task = await storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['tasks.key', 'tasks.title', 'tasks.head_sha', 'tasks.pr_url', 'tasks.state', 'projects.manifest']).where('tasks.id', '=', taskId).executeTakeFirstOrThrow();
       if (task.state !== 'approved' && task.state !== 'merging') throw refuse(`The task is ${task.state}, not approved`);
-      if (!task.head_sha || !task.pr_url) throw refuse('The task has no published change to merge');
-      return { taskKey: task.key, headSha: task.head_sha, prUrl: task.pr_url, manifest: JSON.parse(task.manifest) as Record<string, unknown>, approvals: await this.approvalsFor(taskId, task.head_sha) };
+      if (!task.head_sha) throw refuse('The task has no revision to merge');
+      return { taskKey: task.key, title: task.title, headSha: task.head_sha, prUrl: task.pr_url, manifest: JSON.parse(task.manifest) as Record<string, unknown>, approvals: await this.approvalsFor(taskId, task.head_sha) };
     },
 
     // What the merge gate is fed immediately before it merges: current platform state, never a cached copy.
