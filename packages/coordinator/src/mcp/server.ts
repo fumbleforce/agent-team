@@ -152,6 +152,8 @@ export function createMcp(context: Context, deps: McpDeps) {
     'deliberation.stand': async (turn, input) => { await deliberation.stand(turn, input.deliberationId, input.reason); return RECORDED; },
     'deliberation.revise': async (turn, input) => { await deliberation.revise(turn, input.deliberationId, input.revision); return RECORDED; },
     'deliberation.conclude': async (turn, input) => { await deliberation.conclude(turn, input.deliberationId, input.conclusion); return RECORDED; },
+    'task.create': (turn, input) => actions.createTask(turn, input),
+    'desk.handover': async (turn, input) => { await threadInProject(turn, input.threadId); return actions.handover(turn, input); },
     'triage.decide': async (turn, input) => { await threadInProject(turn, input.threadId); return actions.triage(turn, input); },
     'retro.submit': async (turn, input) => {
       const item = await db.selectFrom('work_items').select('thread_id').where('id', '=', turn.work_item_id).executeTakeFirst();

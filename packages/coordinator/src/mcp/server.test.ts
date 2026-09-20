@@ -221,3 +221,37 @@ test('triage records the decision on the issue; a retro turn submits its one not
     assert.equal(await count(retro.db, 'retro.submitted'), 1);
   } finally { await retro.coordinator.close(); }
 });
+
+test('the PM puts work on the board: a plain answer is not a decision, what is accepted in the discussion becomes a task, and task.create adds the rest', async () => {
+  const pm = await boot('triage', { agent: 'Maren', roles: ['pm'] });
+  try {
+    const { db, call, agents, threadId, projectId } = pm;
+    const listed = (await pm.rpc('tools/list')).json.result.tools.map((tool: { name: string }) => tool.name) as string[];
+    assert.ok(listed.includes('task.create'));
+    // Several pieces of work: each its own task, the owner started on it, nothing added twice.
+    const made = await call('task.create', { title: 'Plain replies are not decisions', brief: 'Only a real outcome shows as a decision card.', ownerAgentId: agents.Ada });
+    assert.deepEqual([made.error, made.data.key, made.data.state], [false, 'TASK-1', 'assigned']);
+    assert.deepEqual((await db.selectFrom('work_items').select(['agent_id', 'kind']).where('task_id', '=', made.data.taskId).execute()).map(item => [item.agent_id, item.kind]), [[agents.Ada, 'work']]);
+    assert.match((await call('task.create', { title: 'Plain replies are not decisions', brief: 'Again.' })).text, /TASK-1 already has that title/);
+    const waiting = await call('task.create', { title: 'Edit a persona from the agent page', brief: 'With docs saying where.' });
+    assert.deepEqual([waiting.data.key, waiting.data.state], ['TASK-2', 'backlog']);
+    // Accepted in the discussion, where there is no issue: a task all the same.
+    await db.insertInto('messages').values({ id: 'raised-by-owner', thread_id: threadId, author_kind: 'user', author_id: null, kind: 'note', body: 'The header says the team name twice.\nSee the Team tab.', payload: '{}', created_at: Date.now() }).execute();
+    const accepted = await call('triage.decide', { threadId, outcome: 'accept', decision: 'Real; Bram takes it.', ownerAgentId: agents.Bram, title: 'Team header repeats the team name' });
+    assert.equal(accepted.error, false);
+    const task = await db.selectFrom('tasks').select(['key', 'title', 'state', 'assignee_agent_id', 'project_id']).where('id', '=', accepted.data.taskId).executeTakeFirstOrThrow();
+    assert.deepEqual({ ...task }, { key: 'TASK-3', title: 'Team header repeats the team name', state: 'assigned', assignee_agent_id: agents.Bram, project_id: projectId });
+  } finally { await pm.coordinator.close(); }
+
+  const chat = await boot('triage', { agent: 'Maren', roles: ['pm'] });
+  try {
+    const answered = await chat.call('triage.decide', { threadId: chat.threadId, outcome: 'answer', decision: 'Quiet on my end.' });
+    assert.deepEqual([answered.error, answered.data.decisionId], [false, null]);
+    const message = await chat.db.selectFrom('messages').select(['kind', 'body']).where('id', '=', answered.data.messageId).executeTakeFirstOrThrow();
+    assert.deepEqual([message.kind, message.body, (await chat.db.selectFrom('decisions').select('id').where('kind', '=', 'triage').where('summary', '=', 'Quiet on my end.').execute()).length], ['note', 'Quiet on my end.', 0]);
+  } finally { await chat.coordinator.close(); }
+
+  // Anyone else files an issue instead.
+  const developer = await boot('reply', { agent: 'Bram' });
+  try { assert.match((await developer.call('task.create', { title: 'Something', brief: 'Anything.' })).text, /Only the PM adds tasks/); } finally { await developer.coordinator.close(); }
+});

@@ -1,4 +1,6 @@
 import type { z } from 'zod';
+import { providerEntry } from '../../../../adapters/engine/providers.ts';
+import { DESK_ROLE } from '../runtime/desk.ts';
 import { newId, type AgentBody, type AgentPatch, type FromTemplateBody, type HireBody, type MilestoneBody, type MilestonePatch, type ProjectLinkBody, type SeatLoanBody, type TemplateSeat } from '@agent-team/protocol';
 import type { Db, Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
@@ -31,6 +33,14 @@ export function createOrg(context: Context) {
     const initials = input.name.split(/\s+/).map(word => word[0] ?? '').join('').slice(0, 2).toUpperCase() || input.name.slice(0, 2).toUpperCase();
     await tx.insertInto('agents').values({ id, team_id: teamId, name: input.name, initials, tint: String((sort % 8) + 1), title: input.title, persona: input.persona, status: 'active', provider_id: null, model: null, daily_cap_minor: null, is_pm: input.isPm, doing: null, sort, created_at: now() }).execute();
     for (const role of new Set(input.roles)) await tx.insertInto('agent_roles').values({ agent_id: id, role_slug: role }).execute();
+    // Whoever answers the owner should answer fast: the front desk starts on a provider's quick middle model when one that is set up names one.
+    // It is only a starting point; the seat's model is changed like anyone's.
+    if (input.roles.includes(DESK_ROLE)) {
+      for (const provider of await tx.selectFrom('providers').select(['id', 'engine_config', 'models']).orderBy('name').execute()) {
+        const quick = providerEntry((JSON.parse(provider.engine_config) as { catalog?: string }).catalog ?? '')?.responsive;
+        if (quick && (JSON.parse(provider.models) as string[]).includes(quick)) { await tx.updateTable('agents').set({ provider_id: provider.id, model: quick }).where('id', '=', id).execute(); break; }
+      }
+    }
     return id;
   }
   // What a hand-made seat may name: roles from the library, and a model its provider offers. Refusals say which field.

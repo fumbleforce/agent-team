@@ -5,11 +5,11 @@ import { Avatar, Card, Chip, Select, StatusDot, Text, type DotTone } from '../ui
 const HELD: [RegExp, string][] = [[/approval required/i, 'Waiting for your approval'], [/being marked ready/i, 'Approved: getting ready'], [/on hold/i, 'On hold'], [/is blocked/i, 'Blocked by another issue']];
 const heldWords = (reason: string) => HELD.find(([pattern]) => pattern.test(reason))?.[1] ?? reason;
 
-export function TaskCard({ task, owner, roster = [], onAssign }: { task: TaskCardData; owner: Agent | undefined; roster?: Agent[]; onAssign?: ((taskId: string, agentId: string) => void) | undefined }) {
+export function TaskCard({ task, owner, roster = [], onAssign, onOpen }: { task: TaskCardData; owner: Agent | undefined; roster?: Agent[]; onAssign?: ((taskId: string, agentId: string) => void) | undefined; onOpen?: ((taskId: string) => void) | undefined }) {
   const held = task.state === 'backlog' && Boolean(task.blocked_reason);
   return (
     <Card as="article" tone="raised" pad="sm" className="flex flex-col gap-2">
-      <Text size="small" weight="medium">{task.title}</Text>
+      {onOpen ? <button type="button" onClick={() => onOpen(task.id)} className="cursor-pointer text-left hover:underline focus-visible:outline-2 focus-visible:outline-accent"><Text size="small" weight="medium">{task.title}</Text></button> : <Text size="small" weight="medium">{task.title}</Text>}
       <div className="flex items-center gap-1.5">
         <Text size="caption" tone="muted" mono>{task.key}</Text>
         {task.tag && <Chip>{task.tag}</Chip>}
@@ -25,12 +25,12 @@ export function TaskCard({ task, owner, roster = [], onAssign }: { task: TaskCar
   );
 }
 
-export function BoardColumn({ name, tone, tasks, roster, onAssign }: { name: string; tone: DotTone; tasks: TaskCardData[]; roster: Agent[]; onAssign?: (taskId: string, agentId: string) => void }) {
+export function BoardColumn({ name, tone, tasks, roster, onAssign, onOpen }: { name: string; tone: DotTone; tasks: TaskCardData[]; roster: Agent[]; onAssign?: (taskId: string, agentId: string) => void; onOpen?: (taskId: string) => void }) {
   return (
     <section className="flex min-h-0 flex-col gap-2">
       <div className="flex h-5.5 items-center gap-2 px-0.5"><StatusDot tone={tone} /><Text size="small" weight="semibold">{name}</Text><Text size="caption" tone="muted" mono>{tasks.length}</Text></div>
       <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
-        {tasks.map(task => <TaskCard key={task.id} task={task} owner={roster.find(agent => agent.id === task.assignee_agent_id)} roster={roster} onAssign={onAssign} />)}
+        {tasks.map(task => <TaskCard key={task.id} task={task} owner={roster.find(agent => agent.id === task.assignee_agent_id)} roster={roster} onAssign={onAssign} onOpen={onOpen} />)}
       </div>
     </section>
   );

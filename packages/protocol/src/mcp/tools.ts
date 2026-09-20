@@ -141,9 +141,9 @@ export const TOOLS = {
     permission: null, turnKinds: ['feedback'], mutating: true, rateClass: 'once',
   }),
   'triage.decide': tool({
-    description: 'Record what happens with what was raised in this thread: answer, accept with an owner (an accepted issue becomes a task for that owner, linked to the issue), decline, duplicate, or escalate to the owner of the project. On an issue this is its decision.',
-    input: z.object({ threadId: z.string(), outcome: z.enum(['answer', 'accept', 'decline', 'duplicate', 'escalate']), decision: Words(120), ownerAgentId: z.string().optional(), priority: z.enum(['low', 'normal', 'high', 'urgent']).optional() }),
-    output: z.object({ decisionId: z.string(), messageId: z.string(), taskId: z.string().nullable().optional() }),
+    description: 'Settle what was raised in this thread: answer (a plain reply, not recorded as a decision), accept with an owner (it becomes a task on the board for that owner; give a title when the thread is not an issue), decline, duplicate, or escalate to the owner of the project. On an issue this is its decision.',
+    input: z.object({ threadId: z.string(), outcome: z.enum(['answer', 'accept', 'decline', 'duplicate', 'escalate']), decision: Words(120), ownerAgentId: z.string().optional(), priority: z.enum(['low', 'normal', 'high', 'urgent']).optional(), title: z.string().trim().min(3).max(140).optional() }),
+    output: z.object({ decisionId: z.string().nullable(), messageId: z.string(), taskId: z.string().nullable().optional() }),
     permission: null, turnKinds: ['triage'], mutating: true, rateClass: 'once',
   }),
   'retro.submit': tool({
@@ -157,6 +157,18 @@ export const TOOLS = {
     input: z.object({ proposals: z.array(IdeaProposal).min(1).max(10) }),
     output: z.object({ recorded: z.number().int() }),
     permission: null, turnKinds: ['ideate'], mutating: true, rateClass: 'rare',
+  }),
+  'desk.handover': tool({
+    description: 'Front desk only. Pass what the owner asked for in this thread to the PM, with one line saying what they want. The PM triages it: it may become a task, a decision or an answer.',
+    input: z.object({ threadId: z.string(), wants: Words(60) }),
+    output: z.object({ messageId: z.string(), passedTo: z.string() }),
+    permission: null, turnKinds: ['reply'], mutating: true, rateClass: 'once',
+  }),
+  'task.create': tool({
+    description: 'PM only. Put a new task on the board: a title, a brief that says what done looks like, and optionally the teammate who takes it (they are started on it at once; without one it waits in the backlog). One call per task. Check task.list first so nothing is added twice.',
+    input: z.object({ title: z.string().trim().min(3).max(140), brief: z.string().trim().min(1).max(4000), ownerAgentId: z.string().optional(), tag: z.string().trim().max(40).optional() }),
+    output: z.object({ taskId: z.string(), key: z.string(), state: z.string() }),
+    permission: null, turnKinds: ['triage', 'reply', 'conclude', 'retro'], mutating: true, rateClass: 'few',
   }),
   'task.claim': tool({
     description: 'Take an unassigned backlog task of this project. The claim is atomic: if a teammate got there first it is refused.',

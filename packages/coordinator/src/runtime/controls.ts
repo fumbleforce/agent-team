@@ -73,6 +73,9 @@ export function createControls(context: Context, turns: Turns) {
       });
       events.published(published);
       await turns.enqueue({ agentId, projectId, kind: 'reply', threadId, dedupeKey: `dm:${threadId}:${id}` });
+      // Direction for work in hand reaches that work: the agent's next turn on its task reads what was said. A turn already queued or running covers it.
+      const inHand = await db.selectFrom('tasks').select(['id', 'project_id']).where('assignee_agent_id', '=', agentId).where('state', 'in', ['assigned', 'in_progress']).orderBy('updated_at', 'desc').executeTakeFirst();
+      if (inHand) await turns.enqueue({ agentId, projectId: inHand.project_id, kind: 'work', taskId: inHand.id, dedupeKey: `work:${inHand.id}` }).catch(() => {});
       return { id };
     },
   };
