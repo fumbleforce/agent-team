@@ -69,7 +69,7 @@ export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: 
         : tab === 'product' ? <ProductTab slug={slug} navigate={navigate} />
         : tab === 'tests' || tab === 'checks' ? <ChecksTab slug={slug} code={data.project.kind === 'repo'} />
         : tab === 'workload' ? <WorkloadTab slug={slug} />
-        : tab === 'team' ? <TeamTab roster={data.roster} teamName={root?.team?.name ?? null} onChanged={view.reload}><TeamExtras slug={slug} roster={data.roster} onChanged={view.reload} /></TeamTab>
+        : tab === 'team' ? <TeamTab roster={data.roster} onChanged={view.reload}><TeamExtras slug={slug} roster={data.roster} onChanged={view.reload} /></TeamTab>
         : <div className="p-5"><Text tone="muted">This view arrives in a later phase of docs/SPEC.md.</Text></div>}
     </AppShell>
   );
