@@ -2,10 +2,11 @@ import { useState, type ClipboardEvent, type FormEvent } from 'react';
 import { api, postToThread, uploadImage, type Agent, type Me, type ThreadMessagesView } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
-import { Attachment, Composer, ListLink, mentionOptions, Message, resolveAuthor, SidePanel, SubHeader } from '../../patterns';
-import { Button, Chip, Field, Input, MarkerCanvas, SectionLabel, Text, Textarea, type Marker } from '../../ui';
+import { Attachment, Composer, ListLink, mentionOptions, Message, resolveAuthor, SidePanel, StatusLine, SubHeader } from '../../patterns';
+import { Button, Chip, Field, Input, LinkButton, MarkerCanvas, SectionLabel, Select, Spinner, Text, Textarea, type Marker } from '../../ui';
 
-interface Issue { id: string; number: number; title: string; state: string; source: string; thread_id: string; attachment_id: string | null }
+interface Issue { id: string; number: number; title: string; state: string; source: string; thread_id: string; attachment_id: string | null; task: { key: string; state: string; assigneeAgentId: string | null } | null; pending: { agentId: string; running: boolean } | null }
+const TASK_STATE: Record<string, string> = { backlog: 'waiting', assigned: 'assigned', in_progress: 'in progress', awaiting_decision: 'waiting for a decision', in_review: 'in review', approved: 'approved', merging: 'merging', done: 'done', blocked: 'blocked', stopped: 'stopped', canceled: 'canceled', quarantined: 'needs you' };
 
 async function upload(file: File): Promise<string> {
   const response = await fetch(`/api/attachments?name=${encodeURIComponent(file.name)}`, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': file.type }, body: file });
@@ -38,20 +39,25 @@ export function IssuesTab({ slug, number, roster, me, navigate }: { slug: string
   const list = useResource<{ issues: Issue[] }>(`/api/projects/${slug}/issues`);
   const selected = list.data?.issues.find(issue => issue.number === number) ?? null;
   const thread = useResource<ThreadMessagesView>(selected ? `/api/threads/${selected.thread_id}/messages` : null);
-  useStream(event => event.type.startsWith('issue.'), list.reload);
+  useStream(event => event.type.startsWith('issue.') || event.type.startsWith('turn.') || event.type.startsWith('task.') || event.type === 'decision.recorded', list.reload);
+  const nameOf = (agentId: string | null) => roster.find(agent => agent.id === agentId)?.name ?? 'Someone';
   useStream(event => event.type === 'message.posted' && event.threadId === selected?.thread_id, thread.reload);
 
   return (
     <div className="flex min-h-0 grow">
       <SidePanel label="Issues" wide>
         <div className="flex items-center px-1.5 pb-1.5"><SectionLabel aside={<Button size="sm" onClick={() => navigate(`/p/${slug}/issues`)}>+ Raise</Button>}>Issues</SectionLabel></div>
-        {list.data?.issues.map(issue => <ListLink key={issue.id} href={`/p/${slug}/issues/${issue.number}`} active={issue.number === number} mark={`#${issue.number}`} aside={issue.state === 'closed' ? <Chip>closed</Chip> : undefined}>{issue.title}</ListLink>)}
+        {list.data?.issues.map(issue => <ListLink key={issue.id} href={`/p/${slug}/issues/${issue.number}`} active={issue.number === number} mark={`#${issue.number}`} aside={issue.state === 'closed' ? <Chip>closed</Chip> : issue.task ? <Chip tone="working">{issue.task.key}</Chip> : issue.pending ? <Spinner /> : undefined}>{issue.title}</ListLink>)}
       </SidePanel>
       {selected ? (
         <div className="flex min-w-0 grow flex-col">
           <SubHeader>
             <Text size="small" tone="muted" mono>#{selected.number}</Text><Text size="title" truncate>{selected.title}</Text>
-            <span className="ml-auto flex items-center gap-1.5"><Chip>{selected.source}</Chip>{selected.state === 'open' && <Button onClick={() => { void api(`/api/projects/${slug}/issues/${selected.number}/close`, {}).then(list.reload); }}>Close</Button>}</span>
+            <span className="ml-auto flex items-center gap-1.5">
+              {selected.task
+                ? <LinkButton size="sm" href={`/p/${slug}/tasks`}>{selected.task.key} · {nameOf(selected.task.assigneeAgentId)} · {TASK_STATE[selected.task.state] ?? selected.task.state}</LinkButton>
+                : selected.state === 'open' && <Select compact aria-label="Make it a task for" value="" onChange={event => { if (event.target.value) void api(`/api/projects/${slug}/issues/${selected.number}/accept`, { agentId: event.target.value }).then(list.reload); }}><option value="">Make it a task for…</option>{roster.filter(agent => agent.status !== 'paused').map(agent => <option key={agent.id} value={agent.id}>{agent.name} · {agent.title}</option>)}</Select>}
+              {selected.state === 'open' && <Button onClick={() => { void api(`/api/projects/${slug}/issues/${selected.number}/close`, {}).then(list.reload); }}>Close</Button>}</span>
           </SubHeader>
           <div className="flex min-h-0 grow flex-col gap-3.5 overflow-y-auto px-6 py-4.5">
             {thread.data?.messages.map(message => (
@@ -61,6 +67,7 @@ export function IssuesTab({ slug, number, roster, me, navigate }: { slug: string
               </div>
             ))}
           </div>
+          {selected.pending && <div className="px-6 pb-2"><StatusLine tone="working" busy>{nameOf(selected.pending.agentId)} {selected.pending.running ? 'is answering' : 'is up next on this'}</StatusLine></div>}
           <Composer placeholder="Reply — the team sees this in the issue's thread" action="Reply" mentions={mentionOptions(roster)} onAttach={uploadImage} onSend={(body, images) => postToThread(selected.thread_id, body, images)} />
         </div>
       ) : <div className="min-w-0 grow overflow-y-auto px-6 py-5"><RaiseIssue slug={slug} onRaised={raised => { list.reload(); navigate(`/p/${slug}/issues/${raised}`); }} /></div>}

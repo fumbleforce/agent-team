@@ -3,6 +3,7 @@ import type { Tx } from '@agent-team/storage';
 import { HttpError, type Context } from '../context.ts';
 import type { Turns } from '../runtime/turns.ts';
 import { indexMessage } from '../knowledge/indexing.ts';
+import { taskFromIssue, teamIdOf } from '../repos/issueTasks.ts';
 
 interface Actor { id: string; agent_id: string; project_id: string; task_id: string | null }
 const refuse = (code: string, message: string) => new HttpError(409, code, message);
@@ -13,8 +14,7 @@ export function createActions(context: Context, turns: Turns) {
   const { storage, events, now } = context;
 
   async function teammate(tx: Tx, projectId: string, agentId: string) {
-    const project = await tx.selectFrom('projects').select(['team_id', 'parent_id']).where('id', '=', projectId).executeTakeFirstOrThrow();
-    const teamId = project.team_id ?? (project.parent_id ? (await tx.selectFrom('projects').select('team_id').where('id', '=', project.parent_id).executeTakeFirst())?.team_id ?? null : null);
+    const teamId = await teamIdOf(tx, projectId);
     const seat = teamId ? await tx.selectFrom('agents').select(['id', 'name']).where('id', '=', agentId).where('team_id', '=', teamId).where('status', '=', 'active').executeTakeFirst() : null;
     if (!seat) throw refuse('agent', 'That agent is not an active seat of this team');
     return seat;
@@ -39,16 +39,10 @@ export function createActions(context: Context, turns: Turns) {
         await tx.insertInto('decisions').values({ id: decisionId, project_id: turn.project_id, thread_id: input.threadId, message_id: messageId, deliberation_id: null, kind: 'triage', outcome: input.outcome, summary: input.decision, needs_human: needsHuman, resolved_by_user: null, resolved_at: null, created_at: now() }).execute();
         const closes = input.outcome === 'decline' || input.outcome === 'duplicate';
         if (issue) await tx.updateTable('issues').set({ ...(owner ? { owner_agent_id: owner.id } : {}), ...(input.priority ? { priority: input.priority } : {}), ...(closes && issue.state === 'open' ? { state: 'closed', closed_at: now() } : {}) }).where('id', '=', issue.id).execute();
-        // An accepted issue becomes work: one task for its owner, linked to the issue. Accepting twice keeps the first task.
-        let taskId: string | null = null;
-        if (issue && owner && input.outcome === 'accept' && !await tx.selectFrom('links').select('to_id').where('from_type', '=', 'issue').where('from_id', '=', issue.id).where('to_type', '=', 'task').where('rel', '=', 'fixes').executeTakeFirst()) {
-          taskId = newId(now());
-          const lowest = await tx.selectFrom('tasks').select(eb => eb.fn.max('priority').as('n')).where('project_id', '=', issue.project_id).executeTakeFirst();
-          await tx.insertInto('tasks').values({ id: taskId, project_id: issue.project_id, key: `ISSUE-${issue.number}`, source: 'internal', title: issue.title, brief: issue.body, tag: null, priority: Number(lowest?.n ?? -1) + 1, milestone_id: null, state: 'assigned', assignee_agent_id: owner.id, author_agent_id: turn.agent_id, branch: null, head_sha: null, pr_url: null, blocked_reason: null, created_at: now(), updated_at: now() }).execute();
-          await tx.insertInto('links').values({ from_type: 'issue', from_id: issue.id, to_type: 'task', to_id: taskId, rel: 'fixes', created_at: now() }).execute();
-        }
+        const made = issue && owner && input.outcome === 'accept' ? await taskFromIssue(tx, { issue, ownerId: owner.id, authorAgentId: turn.agent_id, actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, now: now() }) : { taskId: null, events: [] };
+        const taskId = made.taskId;
         const drafts = [{ type: 'decision.recorded', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, turnId: turn.id, payload: { decisionId, outcome: input.outcome, needsHuman, issueId: issue?.id ?? null } }, { type: 'message.posted', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, payload: { messageId, kind: 'decision' } }];
-        const more = [...(issue && closes && issue.state === 'open' ? [{ type: 'issue.closed', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, payload: { issueId: issue.id } }] : []), ...(taskId && issue && owner ? [{ type: 'task.assigned', actorKind: 'agent' as const, agentId: owner.id, projectId: issue.project_id, taskId, turnId: turn.id, payload: { fromIssue: issue.id } }, { type: 'link.added', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: issue.project_id, turnId: turn.id, payload: { from: { type: 'issue', id: issue.id }, to: { type: 'task', id: taskId }, rel: 'fixes' } }] : [])];
+        const more = [...(issue && closes && issue.state === 'open' ? [{ type: 'issue.closed', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, payload: { issueId: issue.id } }] : []), ...made.events];
         return { decisionId, messageId, taskId, ownerId: owner?.id ?? null, projectId: issue?.project_id ?? turn.project_id, published: await events.append(tx, [...drafts, ...more]) };
       });
       events.published(result.published);

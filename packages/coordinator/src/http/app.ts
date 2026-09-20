@@ -393,6 +393,12 @@ export function createApp(context: Context) {
     return c.json(created);
   });
   app.get('/api/projects/:slug/issues/:number', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ issue: await issues.get(project.id, Number(c.req.param('number'))) }); });
+  app.post('/api/projects/:slug/issues/:number/accept', async c => {
+    const { project } = await projectFor(c, 'project.contribute');
+    const made = await issues.accept(c.get('viewer').userId, project.id, Number(c.req.param('number')), (await body(c, z.object({ agentId: z.string().max(60) }))).agentId);
+    await turns.enqueue({ agentId: made.ownerId, projectId: project.id, kind: 'work', taskId: made.taskId, dedupeKey: `work:${made.taskId}` });
+    return c.json({ ok: true, taskId: made.taskId });
+  });
   app.post('/api/projects/:slug/issues/:number/close', async c => { const { project } = await projectFor(c, 'project.contribute'); await issues.close(c.get('viewer').userId, project.id, Number(c.req.param('number'))); return c.json({ ok: true }); });
 
   app.get('/api/projects/:slug/product', async c => {
