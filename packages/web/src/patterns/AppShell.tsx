@@ -134,7 +134,7 @@ export function AppShell({ sidebar, children, rail, railLabel = 'Discussion' }: 
 }
 
 export type Crumb = string | { label: string; href: string };
-export function PageHeader({ crumbs, title, children }: { crumbs?: Crumb[]; title: string; children?: ReactNode }) {
+export function PageHeader({ crumbs, title, aside, children }: { crumbs?: Crumb[]; title: string; aside?: ReactNode; children?: ReactNode }) {
   return (
     <header className="flex flex-col gap-2 border-b border-line px-5 pt-3">
       <div className="flex items-center gap-2 whitespace-nowrap">
@@ -143,6 +143,7 @@ export function PageHeader({ crumbs, title, children }: { crumbs?: Crumb[]; titl
           return <span key={label} className="flex items-center gap-2">{typeof crumb === 'string' ? <Text tone="muted">{label}</Text> : <Link href={crumb.href} className="rounded-chip text-ink-muted hover:text-ink hover:underline">{label}</Link>}<Text tone="faint">/</Text></span>;
         })}
         <Text as="h1" size="title">{title}</Text>
+        {aside && <span className="ml-auto flex items-center gap-2">{aside}</span>}
       </div>
       {children}
     </header>

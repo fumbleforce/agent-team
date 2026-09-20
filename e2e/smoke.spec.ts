@@ -546,3 +546,23 @@ test('a card on the board opens to the task: what it asks for, who has it, and a
   await page.screenshot({ path: info.outputPath('task-open.png') });
   expect(errors).toEqual([]);
 });
+
+test('a team with a front desk can be asked what is going on from any project page, typed or spoken', async ({ page }, info) => {
+  const errors = await enter(page);
+  const name = `Desk ${Date.now()}`, slug = name.toLowerCase().replace(/[^a-z0-9]+/g, '-');
+  expect((await page.request.post('/api/projects', { data: { name } })).ok()).toBe(true);
+  await page.goto(`/p/${slug}/tasks`);
+  await expect(page.getByRole('button', { name: /^Ask / })).toHaveCount(0);
+  expect((await page.request.post(`/api/projects/${slug}/team/hire`, { data: { library: 'jarvis' } })).ok()).toBe(true);
+  await page.reload();
+  await page.getByRole('button', { name: 'Ask Jarvis' }).click();
+  const desk = page.getByRole('dialog');
+  await expect(desk.getByRole('heading', { name: 'Jarvis' })).toBeVisible();
+  await desk.getByLabel('Ask Jarvis').fill('What is everyone doing?');
+  await desk.getByRole('button', { name: 'Send' }).click();
+  await expect(desk.getByText('What is everyone doing?')).toBeVisible();
+  await expect(desk.getByText('Jarvis is answering')).toBeVisible();
+  await expect(desk.getByLabel('Read answers aloud')).toBeVisible();
+  await page.screenshot({ path: info.outputPath('front-desk.png') });
+  expect(errors).toEqual([]);
+});

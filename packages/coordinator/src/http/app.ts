@@ -23,6 +23,7 @@ import { createControls } from '../runtime/controls.ts';
 import { createNeedsYou, type NeedsYouKind } from '../runtime/needsYou.ts';
 import { mountProviderRoutes } from './providerSetupRoutes.ts';
 import { mountTaskRoutes } from './taskRoutes.ts';
+import { deskOf } from '../runtime/desk.ts';
 import { SCM_KINDS, scmAdapter } from '../../../../adapters/scm/index.ts';
 import { TRACKER_KINDS } from '../../../../adapters/tracker/index.ts';
 import { createWorkspace } from '../repos/workspace.ts';
@@ -291,7 +292,11 @@ export function createApp(context: Context) {
     // @agent and @role are directed requests under the same limits as an agent's; whoever is named answers instead of the PM.
     const named = thread.project_id && thread.visibility === 'team' ? await mentions.fromText({ projectId: thread.project_id, threadId: thread.id, message: { id }, author: { kind: 'user', id: c.get('viewer').userId }, body: input.body }) : [];
     // What a human raises in a team thread otherwise goes to the PM, who answers or opens a deliberation.
-    const pm = thread.project_id && thread.visibility === 'team' && named.length === 0 ? await workspace.pm(thread.project_id) : null;
+    const open = thread.project_id && thread.visibility === 'team' && named.length === 0, issueThread = open ? Boolean(await context.storage.db.selectFrom('issues').select('id').where('thread_id', '=', thread.id).executeTakeFirst()) : false;
+    // A team with a front desk hears from it first, except on an issue, which is the PM's to settle. It answers, or passes it to the PM.
+    const desk = open && !issueThread ? await deskOf(context.storage.db, thread.project_id!) : null;
+    if (desk) { await turns.enqueue({ agentId: desk, projectId: thread.project_id!, kind: 'reply', threadId: thread.id, dedupeKey: `desk:${thread.id}:${id}` }); return c.json({ id }); }
+    const pm = open ? await workspace.pm(thread.project_id!) : null;
     if (pm && thread.project_id) await turns.enqueue({ agentId: pm, projectId: thread.project_id, kind: 'triage', threadId: thread.id, dedupeKey: `triage:${thread.id}` });
     return c.json({ id });
   });
@@ -335,6 +340,12 @@ export function createApp(context: Context) {
   };
   app.post('/api/agents/:id/stop', async c => { await agentHome(c, 'project.operate'); return c.json(await controls.stopAgent(c.get('viewer').userId, c.req.param('id')!)); });
   app.get('/api/agents/:id/dm', async c => { const projectId = await agentHome(c, 'project.contribute'); return c.json(await controls.direct(c.get('viewer').userId, c.req.param('id')!, projectId)); });
+  // Who answers the owner for this project: its front desk when it has one. The app offers to talk to them, by voice too.
+  app.get('/api/projects/:slug/desk', async c => {
+    const { project } = await projectFor(c, 'project.read'), id = await deskOf(context.storage.db, project.id);
+    const agent = id ? await context.storage.db.selectFrom('agents').select(['id', 'name', 'title', 'initials', 'tint', 'model']).where('id', '=', id).executeTakeFirst() : null;
+    return c.json({ desk: agent ?? null });
+  });
   app.post('/api/agents/:id/dm', async c => { const projectId = await agentHome(c, 'project.contribute'); const input = await body(c, z.object({ body: z.string().trim().min(1).max(8000) })); return c.json(await controls.say(c.get('viewer').userId, c.req.param('id')!, projectId, input.body)); });
   app.post('/api/tasks/:id/stop', async c => {
     const task = await context.storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['projects.id', 'projects.parent_id']).where('tasks.id', '=', c.req.param('id')).executeTakeFirst();

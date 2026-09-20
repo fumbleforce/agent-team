@@ -158,6 +158,12 @@ export const TOOLS = {
     output: z.object({ recorded: z.number().int() }),
     permission: null, turnKinds: ['ideate'], mutating: true, rateClass: 'rare',
   }),
+  'desk.handover': tool({
+    description: 'Front desk only. Pass what the owner asked for in this thread to the PM, with one line saying what they want. The PM triages it: it may become a task, a decision or an answer.',
+    input: z.object({ threadId: z.string(), wants: Words(60) }),
+    output: z.object({ messageId: z.string(), passedTo: z.string() }),
+    permission: null, turnKinds: ['reply'], mutating: true, rateClass: 'once',
+  }),
   'task.create': tool({
     description: 'PM only. Put a new task on the board: a title, a brief that says what done looks like, and optionally the teammate who takes it (they are started on it at once; without one it waits in the backlog). One call per task. Check task.list first so nothing is added twice.',
     input: z.object({ title: z.string().trim().min(3).max(140), brief: z.string().trim().min(1).max(4000), ownerAgentId: z.string().optional(), tag: z.string().trim().max(40).optional() }),

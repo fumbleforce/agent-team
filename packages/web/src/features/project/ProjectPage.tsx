@@ -9,6 +9,7 @@ import { ChecksTab } from './ChecksTab';
 import { IssuesTab } from './IssuesTab';
 import { ProductTab } from './ProductTab';
 import { KnowledgeTab } from './KnowledgeTab';
+import { FrontDesk } from '../desk/FrontDesk';
 import { TaskDialog } from './TaskDialog';
 import { TeamTab } from './TeamTab';
 import { TeamExtras } from '../org/TeamExtras';
@@ -58,7 +59,7 @@ export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: 
 
   return (
     <AppShell sidebar={sidebar} rail={tab === 'tasks' && data.discussionThreadId ? <Discussion threadId={data.discussionThreadId} view={data} me={me} /> : undefined}>
-      <PageHeader title={data.project.name} crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }, ...(data.project.parent ? [{ label: data.project.parent.name, href: `/p/${data.project.parent.slug}` }] : [])]}>
+      <PageHeader title={data.project.name} aside={<FrontDesk slug={slug} />} crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }, ...(data.project.parent ? [{ label: data.project.parent.name, href: `/p/${data.project.parent.slug}` }] : [])]}>
         <MilestoneStrip slug={slug} />
         <Tabs items={[...tabsFor(data.project.kind).map(label => ({ label, href: `/p/${slug}/${label.toLowerCase()}`, active: label.toLowerCase() === shown })), ...(data.customTabs ?? []).map(item => ({ label: item.label, href: item.url, external: true }))]} />
       </PageHeader>

@@ -1,5 +1,6 @@
 import type { TurnKind } from '@agent-team/protocol';
 import { teamIdOf } from '../repos/issueTasks.ts';
+import { DESK_RULE, goingOn, wearsDesk } from './desk.ts';
 import type { Tx } from '@agent-team/storage';
 import { failingChecks } from '../checks/wake.ts';
 
@@ -118,6 +119,8 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
   } else if (turn.threadId && (turn.kind === 'triage' || turn.kind === 'reply' || turn.kind === 'retro')) {
     const tail = await tx.selectFrom('messages').select(['author_kind', 'body']).where('thread_id', '=', turn.threadId).orderBy('seq', 'desc').limit(turn.kind === 'retro' ? 12 : 6).execute();
     parts.push(`# Thread ${turn.threadId}, latest last\n${tail.reverse().map(message => `- ${message.author_kind}: ${clip(message.body, 600)}`).join('\n')}`);
+    // The front desk answers from what is going on, in its own short way.
+    if (turn.kind === 'reply' && await wearsDesk(tx, turn.agentId)) { parts[0] = DESK_RULE; parts.push(await goingOn(tx, turn.projectId, Date.now())); }
     // A reply is often about the work in hand, so it says what that is.
     if (turn.kind === 'reply') {
       const mine = await tx.selectFrom('tasks').select(['key', 'title', 'state']).where('project_id', '=', turn.projectId).where('assignee_agent_id', '=', turn.agentId).where('state', 'not in', ['done', 'canceled']).orderBy('updated_at', 'desc').limit(8).execute();

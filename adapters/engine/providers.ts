@@ -19,6 +19,8 @@ export interface ProviderEntry {
   // No model names are written down here: they come from `listModels` or from the tool on the worker. The one exception is a
   // tool's own standing aliases (names it promises to keep pointing at its newest models), offered ticked. A name can always be typed.
   aliases?: string[];
+  // Which of those aliases is the tool's quick, inexpensive middle model: what a seat that must answer fast starts on.
+  responsive?: string;
   // The product's own list of models, when it publishes one. The key is passed when one is saved and the list needs it.
   listModels?(key: string | null, request: Fetch): Promise<ModelChoice[]>;
   // Whether a usage allowance over some hours makes sense here.
@@ -31,7 +33,7 @@ const pick = (names: string[]): ModelChoice[] => names.map(id => ({ id, name: id
 export const PROVIDERS: ProviderEntry[] = [
   {
     kind: 'claude-subscription', title: 'Claude subscription', billing: 'subscription', engine: 'claude', install: 'npm install -g @anthropic-ai/claude-code',
-    summary: 'Your Pro or Max plan, through Claude Code.', signIn: 'claude', aliases: ['sonnet', 'opus', 'haiku'], window: true,
+    summary: 'Your Pro or Max plan, through Claude Code.', signIn: 'claude', aliases: ['sonnet', 'opus', 'haiku'], responsive: 'sonnet', window: true,
   },
   {
     kind: 'anthropic-api', title: 'Anthropic API', billing: 'metered', engine: 'opencode', install: OPENCODE,
