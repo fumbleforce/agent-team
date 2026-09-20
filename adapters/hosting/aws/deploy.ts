@@ -9,7 +9,9 @@ import path from 'node:path';
 const HERE = import.meta.dirname;
 // The shell templates run on a Linux host, so they are read with LF endings whatever the checkout
 // did to them: a CRLF `#!/bin/bash` would fail on the instance long after the deploy looked fine.
-const shellTemplate = (name: string) => readFileSync(path.join(HERE, name), 'utf8').replace(/\r\n/g, '\n');
+// Templates handed in by a caller are made LF too, so nothing this file ships carries a carriage return.
+const lf = (text: string) => text.replace(/\r\n?/g, '\n');
+const shellTemplate = (name: string) => lf(readFileSync(path.join(HERE, name), 'utf8'));
 const PORT = 4310;
 // The network comes before the roles because the control role is limited to the deployment's subnet.
 export const STEPS = ['secrets', 'network', 'iam', 'controlPlane', 'image', 'verify'] as const;
@@ -243,7 +245,7 @@ export async function network(deployment: Deployment, { aws = defaultAws, myIp, 
 export function controlPlaneUserData(deployment: Deployment, { template = shellTemplate('control-plane-user-data.sh') }: { template?: string } = {}) {
   const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
   const head = ['#!/bin/bash', `export TOOLKIT_REPO=${quote(deployment.toolkit?.repo ?? TOOLKIT_REPO)} TOOLKIT_REF=${quote(deployment.toolkit?.ref ?? 'main')} SSM_PREFIX=${quote(deployment.ssmPrefix)}`];
-  return `${head.join('\n')}\n${template.replace(/^#!.*\n/, '')}`;
+  return `${head.join('\n')}\n${lf(template).replace(/^#!.*\n/, '')}`;
 }
 
 interface Instance { State?: { Name?: string }; PublicIpAddress?: string; PrivateIpAddress?: string; BlockDeviceMappings?: { DeviceName?: string; Ebs?: { VolumeId?: string } }[] }
@@ -291,7 +293,7 @@ export function bakeScript(deployment: Deployment, { template = shellTemplate('w
   const provisioning = deployment.worker.provisioning ?? { packages: [], setup: [] };
   const values: Record<string, string> = { REGION: deployment.aws.region ?? '', SSM_PREFIX: deployment.ssmPrefix, TOOLKIT_REPO: toolkitRepo, TOOLKIT_REF: toolkitRef, PROJECT_HOST: deployment.scm.host, PROJECT_REPO: deployment.scm.repository, TOKEN_VARIABLE: tokenVariable, PROJECT_SETUP: deployment.worker.setup,
     ENVIRONMENT_PACKAGES: provisioning.packages.join(' '), ENVIRONMENT_SETUP: provisioning.setup.length ? provisioning.setup.join(' && ') : 'true' };
-  return template.replace(/__([A-Z_]+)__/g, (_match, key: string) => { const value = values[key]; if (value === undefined) throw new Error(`Bake template has no value for ${key}`); return value; });
+  return lf(template).replace(/__([A-Z_]+)__/g, (_match, key: string) => { const value = values[key]; if (value === undefined) throw new Error(`Bake template has no value for ${key}`); return value; });
 }
 
 interface Image { ImageId: string; CreationDate: string; BlockDeviceMappings?: { Ebs?: { SnapshotId?: string } }[] }
