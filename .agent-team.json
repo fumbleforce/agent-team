@@ -11,6 +11,6 @@
   "memory": { "injectCapTokens": 4000 },
   "pm": { "autonomy": "suggest", "dailyCapUsd": 10 },
   "team": { "blueprint": "default", "roles": ["team-dev", "team-tester", "team-reviewer"] },
-  "delivery": { "repository": "fumbleforce/agent-team", "baseBranch": "main", "requiredChecks": ["verify"], "publishAuthorized": true, "autoMergeAuthorized": true },
+  "delivery": { "repository": "fumbleforce/agent-team", "baseBranch": "main", "requiredChecks": ["verify"], "checkEnforcement": "runner", "publishAuthorized": true, "autoMergeAuthorized": true },
   "ideation": { "enabled": true, "backlogCap": 8, "batchSize": 3, "minimumIntervalHours": 24, "ideaLabel": "idea", "proposedState": "idea:proposed", "approvedState": "agent:approved", "rejectedState": "closed" }
 }
