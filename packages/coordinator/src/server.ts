@@ -31,7 +31,7 @@ export type ScmFactory = (kind: string) => Promise<ScmApi | null>;
 // So are the code hosts: review state, test reports and environments are polled only where the host's token is present.
 const adapterScm: ScmFactory = async kind => scmApi(kind);
 
-export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; webRoot?: string | null; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; scm?: ScmFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string; /* Where large step artifacts are kept: `{ kind: 'local', dir }` by default, in a folder under the data directory. */ artifacts?: ArtifactsConfig; /* Days a trace outlives its terminal task; 30 by default. */ traceRetentionDays?: number }
+export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; webRoot?: string | null; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; scm?: ScmFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string; /* Where large step artifacts are kept: `{ kind: 'local', dir }` by default, in a folder under the data directory. */ artifacts?: ArtifactsConfig; /* Days a trace outlives its terminal task; 30 by default. */ traceRetentionDays?: number }
 
 export const isLoopback = (host: string): boolean => host === '127.0.0.1' || host === '::1' || host === 'localhost';
 
@@ -52,7 +52,8 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   await storage.migrate();
   const built = path.join(packageRoot(), 'packages', 'web', 'dist');
   const webRoot = config.webRoot === undefined ? (existsSync(built) ? built : null) : config.webRoot;
-  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), local: isLoopback(host), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null });
+  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), local: isLoopback(host), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null, ...(config.env ? { env: config.env } : {}), ...(config.fetch ? { fetch: config.fetch } : {}) });
+  await context.secrets.load();
   // The shipped role library is seeded once; an owner's edits are never overwritten.
   await createVersionedDocs(context).seed('role', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'roles.json'), 'utf8')) as Record<string, unknown>);
   // So is the agent library, from the seats of the default team; the PM seat belongs to a team, not to the library.

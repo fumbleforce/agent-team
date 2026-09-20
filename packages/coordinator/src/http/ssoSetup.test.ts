@@ -36,7 +36,7 @@ test('single sign-on is set up through the guided flow: checked in plain words, 
     assert.equal((await call('/api/settings/sso/catalog', { cookie: member.cookie })).status, 403);
     const catalog = (await call('/api/settings/sso/catalog', { cookie: admin.cookie })).json;
     assert.deepEqual(catalog.entries.map((entry: { title: string }) => entry.title), ['Google Workspace', 'Microsoft Entra ID', 'Okta', 'Auth0', 'Keycloak', 'Another OpenID Connect provider']);
-    assert.ok(catalog.entries.every((entry: { steps: string[]; issuer?: unknown; fields: { key: string }[] }) => entry.steps.length >= 4 && entry.issuer === undefined && entry.fields.some(field => field.key === 'clientId') && entry.steps.some(step => step.includes(SECRET))));
+    assert.ok(catalog.entries.every((entry: { steps: string[]; issuer?: unknown; fields: { key: string }[] }) => entry.steps.length >= 4 && entry.issuer === undefined && entry.fields.some(field => field.key === 'clientId') && entry.steps.some(step => /Client secret/.test(step)) && !entry.steps.some(step => step.includes(SECRET))));
     assert.match(catalog.redirectUri, /^http:\/\/127\.0\.0\.1:\d+\/api\/auth\/oidc\/callback$/);
     assert.deepEqual([catalog.current, catalog.canEdit, catalog.secret], [null, false, { variable: SECRET, present: false }]);
 
@@ -57,7 +57,7 @@ test('single sign-on is set up through the guided flow: checked in plain words, 
     // The check finds the service and says the secret is missing; an address that is something else is said so, without its body.
     const waiting = (await call('/api/settings/sso/test', { cookie, body: entered })).json;
     assert.deepEqual([waiting.ok, waiting.checks[0], waiting.checks[1].ok], [false, { ok: true, message: 'Found a sign-in service at that address.' }, false]);
-    assert.match(waiting.checks[1].message, /AGENT_TEAM_OIDC_SECRET is not set on the coordinator yet/);
+    assert.match(waiting.checks[1].message, /Paste the client secret/);
     for (const issuer of [`${identity.origin}/page`, `${identity.origin}/nothing`, 'http://127.0.0.1:1']) {
       const silent = await call('/api/settings/sso/test', { cookie, body: { kind: 'oidc', values: { issuer, clientId: 'agent-team' } } });
       assert.deepEqual(silent.json.checks[0], { ok: false, message: 'That address does not answer as a sign-in service.' }, issuer);
@@ -107,7 +107,7 @@ test('each product\'s sign-in address is derived from what was copied back, and 
     const check = async (kind: string, values: Record<string, string>) => (await app.request('/api/settings/sso/test', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kind, values }) })).json() as Promise<{ ok: boolean; checks: { ok: boolean; message: string }[] }>;
 
     const uuid = '3fa85f64-5717-4562-b3fc-2c963f66afa6';
-    assert.deepEqual(await check('microsoft-entra', { tenant: '72F988BF-86f1-41af-91ab-2d7cd011db47', clientId: uuid }), { ok: true, checks: [{ ok: true, message: 'Found Microsoft\'s sign-in service for your tenant.' }, { ok: true, message: 'AGENT_TEAM_OIDC_SECRET is set on the coordinator.' }] });
+    assert.deepEqual(await check('microsoft-entra', { tenant: '72F988BF-86f1-41af-91ab-2d7cd011db47', clientId: uuid }), { ok: true, checks: [{ ok: true, message: 'Found Microsoft\'s sign-in service for your tenant.' }, { ok: true, message: 'The client secret is here.' }] });
     assert.equal((await check('google-workspace', { clientId: '123-abc.apps.googleusercontent.com' })).checks[0]!.message, 'Found Google\'s sign-in service.');
     assert.equal((await check('okta', { domain: 'acme.okta.com', clientId: '0oa1b2c3d4' })).ok, true);
     assert.equal((await check('auth0', { domain: 'acme.eu.auth0.com', clientId: 'aBcD1234' })).ok, true, 'an issuer that ends with a slash is the same service');

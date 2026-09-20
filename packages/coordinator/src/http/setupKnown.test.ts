@@ -46,6 +46,6 @@ test('a project registered from a checkout already knows its repository, for the
     // And it shows as connected, the same as if it had been set up in the app; registering again does not duplicate it.
     await call('/machine/projects', { headers: machine, body: { slug: 'from-up', name: 'From up', manifest: { scm: { kind: 'github' }, delivery: { repository: 'acme/shop', baseBranch: 'trunk' } } } });
     const shown = (await call('/api/projects/from-up/integrations', { cookie })).json.connections as { name: string; statusDetail: string }[];
-    assert.deepEqual(shown.map(item => [item.name, item.statusDetail]), [['GitHub', 'Each worker signs in with its own GitHub token']]);
+    assert.deepEqual(shown.map(item => [item.name, item.statusDetail]), [['GitHub', 'Uses the sign-in on each worker']]);
   } finally { await coordinator.close(); }
 });

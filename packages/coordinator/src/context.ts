@@ -5,6 +5,7 @@ import type { StorageAdapter } from '@agent-team/storage';
 import { createEventLog, type EventLog } from './events/log.ts';
 import { createArtifacts, type ArtifactOptions } from '../../../adapters/artifacts/index.ts';
 import type { ArtifactStore } from '../../../adapters/artifacts/contract.ts';
+import { createSecretStore, type SecretStore } from './auth/secretStore.ts';
 
 // Where bodies too large for a database row are kept. `dir` is the local folder; every other option belongs to the named kind.
 export type ArtifactsConfig = { kind?: string; dir?: string } & Omit<ArtifactOptions, 'root' | 'run' | 'env'>;
@@ -14,6 +15,11 @@ export interface Context {
   events: EventLog;
   now: () => number;
   machineToken: string;
+  // Where credentials are looked up: this machine's variables, with the keys entered in the app placed over them.
+  env: NodeJS.ProcessEnv;
+  secrets: SecretStore;
+  // How the coordinator reaches other services; replaced in tests.
+  fetch: typeof fetch;
   webRoot: string | null;
   // Where files the coordinator owns live: attachments today.
   dataDir: string;
@@ -30,12 +36,13 @@ export interface Context {
   demoLogin: { email: string; password: string } | null;
 }
 
-export function createContext(options: { storage: StorageAdapter; machineToken: string; webRoot?: string | null; dataDir?: string; artifacts?: ArtifactsConfig; traceRetentionDays?: number; secureCookies?: boolean; trustedHeader?: string | null; local?: boolean; now?: () => number; demoLogin?: Context['demoLogin'] }): Context {
+export function createContext(options: { storage: StorageAdapter; machineToken: string; webRoot?: string | null; dataDir?: string; artifacts?: ArtifactsConfig; traceRetentionDays?: number; secureCookies?: boolean; trustedHeader?: string | null; local?: boolean; now?: () => number; demoLogin?: Context['demoLogin']; env?: NodeJS.ProcessEnv; fetch?: typeof fetch }): Context {
   const now = options.now ?? Date.now;
   const dataDir = options.dataDir ?? mkdtempSync(path.join(os.tmpdir(), 'agent-team-data-'));
   const { kind, dir, ...rest } = options.artifacts ?? {};
   const artifacts = createArtifacts(kind, { ...rest, root: dir ?? path.join(dataDir, 'artifacts') });
-  return { storage: options.storage, artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, demoLogin: options.demoLogin ?? null };
+  const env = options.env ?? process.env;
+  return { storage: options.storage, env, fetch: options.fetch ?? fetch, secrets: createSecretStore({ storage: options.storage, dataDir, env, now }), artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, demoLogin: options.demoLogin ?? null };
 }
 
 export class HttpError extends Error {

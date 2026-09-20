@@ -1,7 +1,7 @@
 import type { Context as Hc, Hono } from 'hono';
 import { z } from 'zod';
 import { newId, ProviderBody } from '@agent-team/protocol';
-import { PROVIDERS, providerEntry, type ProviderEntry } from '../../../../adapters/engine/providers.ts';
+import { PROVIDERS, providerEntry, type ModelChoice, type ProviderEntry } from '../../../../adapters/engine/providers.ts';
 import { can, type Viewer } from '../auth/rbac.ts';
 import { forbidden, HttpError, notFound, type Context } from '../context.ts';
 import { WORKER_FRESH_MS } from '../runtime/scheduler.ts';
@@ -10,13 +10,13 @@ import { parseBody } from './conventions.ts';
 type Env = { Variables: { viewer: Viewer } };
 type Input = z.infer<typeof ProviderBody>;
 interface Limits { maxConcurrentTurns?: number; windowTokens?: number; windowMs?: number }
-interface Readiness { state: 'ready' | 'waiting' | 'none'; message: string; workers: string[] }
-const SetupBody = z.object({ kind: z.string().max(40), values: z.record(z.string().max(40), z.string().max(6000)).default({}) });
+interface Readiness { state: 'ready' | 'waiting' | 'none'; message: string; workers: string[]; /* What is still missing, for the page to offer the right next thing. */ need: 'worker' | 'tool' | 'key' | null }
+const SetupBody = z.object({ kind: z.string().max(40), key: z.string().max(400).optional(), values: z.record(z.string().max(40), z.string().max(6000)).default({}) });
 const HOUR = 3600_000;
 
 // Model providers, organization-wide: which engine serves them, how they bill, which models an agent may be given and what the
-// scheduler holds them to. The guided setup's words come from the engine adapters' catalog; credentials stay on the workers,
-// which report only what they found, so "ready" here is what the workers said.
+// scheduler holds them to. The guided setup's words come from the engine adapters' catalog. A key is typed into the app, kept
+// sealed and handed to a worker only with a turn on that provider; a sign-in stays with the tool on the worker.
 export function mountProviderRoutes(app: Hono<Env>, context: Context) {
   const { storage, events, now } = context, db = storage.db;
   const admin = (c: Hc<Env>) => { if (!can(c.get('viewer'), 'org.members')) throw forbidden(); return c.get('viewer').userId; };
@@ -45,13 +45,12 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
     return rows.map(row => { const said = JSON.parse(row.providers) as { engines?: string[]; variables?: string[] } | unknown[]; return { name: row.name, reported: !Array.isArray(said), engines: Array.isArray(said) ? [] : said.engines ?? [], variables: Array.isArray(said) ? [] : said.variables ?? [] }; });
   }
   function readiness(workers: Awaited<ReturnType<typeof workersNow>>, engine: string, entry: ProviderEntry | null): Readiness {
-    const variable = entry?.credential?.variable, withTool = workers.filter(worker => worker.engines.includes(engine));
-    const ready = withTool.filter(worker => !variable || worker.variables.includes(variable));
-    if (ready.length) return { state: 'ready', workers: ready.map(worker => worker.name), message: `Ready on ${ready.length === 1 ? 'worker' : 'workers'} ${list(ready.map(worker => worker.name))}${entry?.credential?.login ? '. The sign-in itself is checked when the first turn runs.' : '.'}` };
-    if (withTool.length) return { state: 'waiting', workers: [], message: `${list(withTool.map(worker => worker.name))} has the command-line tool, but ${variable} is not set there yet. Set it and restart the worker.` };
-    if (workers.length === 0) return { state: 'none', workers: [], message: 'No worker is running yet. Start one and it will show here.' };
-    const silent = workers.filter(worker => !worker.reported);
-    return { state: 'none', workers: [], message: silent.length === workers.length ? `${list(silent.map(worker => worker.name))} has not said what it can run. Update and restart it.` : 'No worker has this command-line tool yet.' };
+    const variable = entry?.key?.variable, saved = Boolean(variable && context.secrets.has(variable)), withTool = workers.filter(worker => worker.engines.includes(engine));
+    const ready = withTool.filter(worker => !variable || saved || (!entry?.key?.inAppOnly && worker.variables.includes(variable)));
+    if (ready.length) return { state: 'ready', need: null, workers: ready.map(worker => worker.name), message: `Ready on ${list(ready.map(worker => worker.name))}` };
+    if (withTool.length) return { state: 'waiting', need: 'key', workers: [], message: `Add the ${entry!.key!.label}` };
+    if (workers.length === 0) return { state: 'none', need: 'worker', workers: [], message: 'No worker is running yet' };
+    return { state: 'none', need: 'tool', workers: [], message: workers.every(worker => !worker.reported) ? `Update and restart ${list(workers.map(worker => worker.name))}` : `${list(workers.map(worker => worker.name))} still ${workers.length === 1 ? 'needs' : 'need'} the tool installed` };
   }
   const catalogKind = (engineConfig: string): string | null => { try { return (JSON.parse(engineConfig) as { catalog?: string }).catalog ?? null; } catch { return null; } };
 
@@ -67,35 +66,59 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
   });
   app.post('/api/providers', async c => c.json({ id: await save(admin(c), await parseBody(c, ProviderBody)) }));
 
+  // What the app is told about an entry: never its functions, and of a key only whether one is saved.
+  const described = (entry: ProviderEntry) => { const { listModels, ...rest } = entry; return { ...rest, hasList: Boolean(listModels), keySaved: Boolean(entry.key && context.secrets.has(entry.key.variable)) }; };
   app.get('/api/providers/catalog', async c => {
     const workers = await workersNow();
     const added = new Map((await db.selectFrom('providers').select(['id', 'engine_config']).execute()).map(row => [catalogKind(row.engine_config), row.id]));
-    return c.json({ entries: PROVIDERS.map(entry => ({ ...entry, providerId: added.get(entry.kind) ?? null, readiness: readiness(workers, entry.engine, entry) })) });
+    return c.json({ entries: PROVIDERS.map(entry => ({ ...described(entry), providerId: added.get(entry.kind) ?? null, readiness: readiness(workers, entry.engine, entry) })) });
+  });
+
+  // The product's own list of models, fetched here so the page has something to pick from. Remembered for ten minutes.
+  const lists = new Map<string, { at: number; models: ModelChoice[] }>();
+  app.get('/api/providers/catalog/:kind/models', async c => {
+    const entry = providerEntry(c.req.param('kind'));
+    if (!entry) throw notFound('Provider');
+    const suggested = entry.models.suggested.map(id => ({ id, name: id }));
+    if (!entry.listModels) return c.json({ models: suggested, live: false, error: null });
+    const key = entry.key ? context.secrets.get(entry.key.variable) ?? context.env[entry.key.variable] ?? null : null, cacheKey = `${entry.kind}:${key ? 'key' : ''}`, cached = lists.get(cacheKey);
+    if (cached && cached.at > now() - 10 * 60_000) return c.json({ models: cached.models, live: true, error: null });
+    try {
+      const models = (await entry.listModels(key, context.fetch)).slice(0, 2000);
+      if (models.length === 0) return c.json({ models: suggested, live: false, error: null });
+      lists.set(cacheKey, { at: now(), models });
+      return c.json({ models, live: true, error: null });
+    } catch (error) { return c.json({ models: suggested, live: false, error: (error as Error).message.slice(0, 200) }); }
   });
 
   // What was typed, checked field by field in the person's words, then written through `save`.
   app.post('/api/providers/setup', async c => {
     const userId = admin(c), input = await parseBody(c, SetupBody), entry = providerEntry(input.kind);
     if (!entry) throw new HttpError(404, 'not_found', 'That provider is not supported');
-    const fields: Record<string, string> = {}, value = (key: string) => (entry.fields.some(field => field.key === key) ? (input.values[key] ?? '').trim() : '');
+    const fields: Record<string, string> = {}, value = (key: string) => ((key === 'name' && !entry.named) || (key.startsWith('window') && !entry.window) ? '' : (input.values[key] ?? '').trim());
+    const LABELS: Record<string, string> = { concurrency: 'Turns at once', windowTokens: 'The allowance', windowHours: 'The hours' };
     const whole = (key: string, low: number, high: number): number | undefined => {
-      const text = value(key).replace(/[\s,_]/g, ''), label = entry.fields.find(field => field.key === key)?.label ?? key;
+      const text = value(key).replace(/[\s,_]/g, ''), label = LABELS[key] ?? key;
       if (!text) return undefined;
       const number = Number(text);
       if (!Number.isInteger(number) || number < low || number > high) { fields[key] = `${label} should be a whole number between ${low.toLocaleString('en')} and ${high.toLocaleString('en')}`; return undefined; }
       return number;
     };
     const models = [...new Set(value('models').split(/[\n,]/).map(line => line.trim()).filter(Boolean))];
-    if (models.length === 0) fields.models = 'List at least one model, one per line';
+    if (models.length === 0) fields.models = 'Choose at least one model';
     else if (models.length > 40) fields.models = 'That is more than 40 models; keep the ones the team will really use';
-    else { const odd = models.find(model => /\s/.test(model) || model.length > 120); if (odd) fields.models = `"${odd.slice(0, 40)}" does not look like a model name: each model goes on its own line, without spaces`; }
-    const named = entry.fields.some(field => field.key === 'name'), name = named ? value('name') : entry.title;
+    else { const odd = models.find(model => /\s/.test(model) || model.length > 120); if (odd) fields.models = `"${odd.slice(0, 40)}" does not look like a model name: a model name has no spaces`; }
+    const key = input.key?.trim() ?? '';
+    if (key && !entry.key) fields.key = 'This provider signs in on the worker; it takes no key';
+    else if (key && (/\s/.test(key) || key.length < 8)) fields.key = 'That does not look like a key';
+    const named = Boolean(entry.named), name = named ? value('name') : entry.title;
     if (named && !name) fields.name = 'Give it a name the team will recognise';
     if (name.length > 60) fields.name = 'Keep the name under 60 characters';
     const concurrency = whole('concurrency', 1, 64), windowTokens = whole('windowTokens', 1000, 10_000_000_000), windowHours = whole('windowHours', 1, 744);
     if (windowHours !== undefined && windowTokens === undefined && !fields.windowTokens) fields.windowTokens = 'Set the allowance too, or leave both empty';
     if (Object.keys(fields).length) throw new HttpError(400, 'invalid', 'Some fields need another look', fields);
     const existing = (await db.selectFrom('providers').select(['id', 'engine_config']).execute()).find(row => catalogKind(row.engine_config) === entry.kind);
+    if (key && entry.key) { await context.secrets.set(entry.key.variable, key, userId); lists.clear(); }
     const body = ProviderBody.parse({ name, kind: entry.billing, engine: entry.engine, models, limits: { ...(concurrency ? { concurrency } : {}), ...(windowTokens ? { windowTokens, windowMs: (windowHours ?? 5) * HOUR } : {}) } });
     const id = await save(userId, body, { catalog: entry.kind, ...(existing ? { id: existing.id } : {}) });
     return c.json({ id, readiness: readiness(await workersNow(), entry.engine, entry) });
@@ -104,16 +127,26 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
   // Agents are never moved silently: a provider still in use stays until its agents were given another.
   app.post('/api/providers/:id/remove', async c => {
     const userId = admin(c), id = c.req.param('id');
+    let forget: string | null = null;
     const published = await storage.transaction(async tx => {
-      const provider = await tx.selectFrom('providers').select(['id', 'name']).where('id', '=', id).executeTakeFirst();
+      const provider = await tx.selectFrom('providers').select(['id', 'name', 'engine_config']).where('id', '=', id).executeTakeFirst();
       if (!provider) throw notFound('Provider');
       const seated = await tx.selectFrom('agents').select('name').where('provider_id', '=', id).where('status', '!=', 'retired').execute();
       if (seated.length) throw new HttpError(409, 'in_use', `${list(seated.map(agent => agent.name))} still ${seated.length === 1 ? 'runs' : 'run'} on ${provider.name}. Give ${seated.length === 1 ? 'that agent' : 'them'} another provider first.`);
       await tx.updateTable('agents').set({ provider_id: null, model: null }).where('provider_id', '=', id).execute();
       await tx.deleteFrom('providers').where('id', '=', id).execute();
+      forget = providerEntry(catalogKind(provider.engine_config) ?? '')?.key?.variable ?? null;
       return events.append(tx, [{ type: 'provider.removed', category: 'audit', actorKind: 'user', userId, payload: { providerId: id, name: provider.name } }]);
     });
     events.published(published);
+    if (forget) await context.secrets.remove(forget);
     return c.json({ ok: true });
   });
+
+  // The key a worker needs for one turn, by the variable its tool reads it from. Nothing else is ever sent to a worker.
+  return { async turnSecrets(turnId: string): Promise<Record<string, string>> {
+    const row = await db.selectFrom('turns').innerJoin('providers', 'providers.id', 'turns.provider_id').select('providers.engine_config').where('turns.id', '=', turnId).executeTakeFirst();
+    const variable = row ? providerEntry(catalogKind(row.engine_config) ?? '')?.key?.variable : undefined, value = variable ? context.secrets.get(variable) : null;
+    return variable && value ? { [variable]: value } : {};
+  } };
 }

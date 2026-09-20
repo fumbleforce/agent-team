@@ -63,14 +63,14 @@ function UploadResults({ slug, branch, onDone }: { slug: string; branch: string;
   return (
     <form className="flex flex-col gap-3" onSubmit={event => { event.preventDefault(); void send(); }}>
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field label="What do these results cover?" help="The name this group of tests gets on the page, for example “Unit tests”.">
+        <Field label="What do these results cover?">
           <Input value={suite} onChange={event => setSuite(event.target.value)} placeholder="Unit tests" maxLength={60} required />
         </Field>
         <Field label="Which branch were they run on?" help={`Leave it as “${branch}” for the version everyone shares.`}>
           <Input value={where} onChange={event => setWhere(event.target.value)} maxLength={120} />
         </Field>
       </div>
-      <Field label="Results file" help="A file ending in .xml that your test tool saved. Ask for “JUnit XML” if it offers a choice of formats.">
+      <Field label="Results file" help="JUnit XML.">
         <Input type="file" accept=".xml,text/xml,application/xml" onChange={event => setFile(event.target.files?.[0] ?? null)} />
       </Field>
       {result && <Notice tone={result.ok ? 'working' : 'stop'} title={result.ok ? 'Uploaded' : 'The file could not be read'}>{result.text}</Notice>}
@@ -83,11 +83,11 @@ function UploadResults({ slug, branch, onDone }: { slug: string; branch: string;
 function NoResultsYet({ slug, branch, onDone }: { slug: string; branch: string; onDone(): void }) {
   return (
     <div className="flex max-w-180 flex-col gap-3.5 p-5">
-      <EmptyState title="No test results yet" note="This page shows which tests pass on each branch, what is failing right now and who is looking at it." />
+      <EmptyState title="No test results yet" note="Which tests pass on each branch, and who is on a failure." />
       <Card className="flex flex-col gap-3">
         <SectionLabel>How results get here</SectionLabel>
         <Steps items={[
-          'Connect the place your code is hosted. Every time it runs your tests, the results appear here on their own.',
+          'Connect your code host and its test results appear here.',
           'Agents report the tests they run while they work. There is nothing to set up for that.',
           'Or upload a results file yourself, below.',
         ]} />
@@ -109,7 +109,7 @@ export function ChecksTab({ slug, code = true }: { slug: string; code?: boolean 
   const data = matrix.data;
   if (!data) return <div className="p-5"><Text tone="muted">Loading…</Text></div>;
   const refresh = () => { matrix.reload(); health.reload(); };
-  if (data.branches.length === 0) return code ? <NoResultsYet slug={slug} branch={health.data?.branch ?? 'main'} onDone={refresh} /> : <div className="max-w-180 p-5"><EmptyState title="No checks yet" note="The team writes down what it checked each time it reviews its work, and the results show up here." /></div>;
+  if (data.branches.length === 0) return code ? <NoResultsYet slug={slug} branch={health.data?.branch ?? 'main'} onDone={refresh} /> : <div className="max-w-180 p-5"><EmptyState title="No checks yet" note="What the team checked when it reviewed its work." /></div>;
   return (
     <div className="flex min-h-0 grow flex-col gap-3.5 overflow-y-auto px-5 pt-4 pb-5">
       <MatrixTable rowLabel={code ? 'Branch' : 'Version'}
@@ -125,7 +125,7 @@ export function ChecksTab({ slug, code = true }: { slug: string; code?: boolean 
       {code && (
         <Card className="flex flex-col gap-3">
           <SectionLabel>Upload a results file</SectionLabel>
-          <Text size="small" tone="muted">Results normally arrive from your code host and from the agents. You can also bring in a file a test tool saved.</Text>
+          <Text size="small" tone="muted">Results arrive from the code host and the agents. A file works too.</Text>
           <UploadResults slug={slug} branch={health.data?.branch ?? 'main'} onDone={refresh} />
         </Card>
       )}

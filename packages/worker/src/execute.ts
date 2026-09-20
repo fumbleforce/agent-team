@@ -8,10 +8,10 @@ export interface TurnResult { state: 'completed' | 'failed' | 'deferred' | 'inte
 const GRACE_MS = 5000;
 
 // Runs one engine process for one turn. The caller owns the lease; aborting the signal kills the process.
-export function executeTurn(options: { adapter: EngineAdapter; spec: TurnSpec; turnDir: string; env: NodeJS.ProcessEnv; timeoutMs: number; signal: AbortSignal; onSteps(steps: EngineStep[]): void; onSession?(sessionId: string): void; onSpawn?(pid: number | undefined): void; /* Every line the engine writes, as it came: the raw stream the worker archives. */ onLine?(line: string): void }): Promise<TurnResult> {
+export function executeTurn(options: { adapter: EngineAdapter; spec: TurnSpec; turnDir: string; env: NodeJS.ProcessEnv; /* Keys the coordinator sent for this turn's provider: the only secrets that pass the adapter's allowlist by name. */ secrets?: Record<string, string>; timeoutMs: number; signal: AbortSignal; onSteps(steps: EngineStep[]): void; onSession?(sessionId: string): void; onSpawn?(pid: number | undefined): void; /* Every line the engine writes, as it came: the raw stream the worker archives. */ onLine?(line: string): void }): Promise<TurnResult> {
   const { adapter, spec, turnDir, signal } = options;
   mkdirSync(turnDir, { recursive: true, mode: 0o700 });
-  const prepared = adapter.prepare(spec, turnDir, adapter.environment(options.env));
+  const prepared = adapter.prepare(spec, turnDir, { ...adapter.environment(options.env), ...options.secrets });
   for (const file of prepared.files) writeFileSync(file.path, file.content, { mode: 0o600 });
   const state = newParseState();
 

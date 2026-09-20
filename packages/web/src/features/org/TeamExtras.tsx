@@ -50,7 +50,7 @@ export function TeamExtras({ slug, roster, onChanged }: { slug: string; roster: 
       {canEdit && (
         <section className="flex flex-col gap-2">
           <SectionLabel>Hire from the library</SectionLabel>
-          {library.data?.items.length === 0 && <Text size="small" tone="muted">The library is empty. An organization admin adds agents to it under Organization → Agent library.</Text>}
+          {library.data?.items.length === 0 && <Text size="small" tone="muted">The library is empty. Add agents under Organization → Agent library.</Text>}
           <div className="grid grid-cols-1 gap-2 md:grid-cols-2 xl:grid-cols-3">
             {library.data?.items.map(item => (
               <Card key={item.slug} tone="raised" pad="sm" className="flex items-center gap-2.5">
@@ -66,7 +66,7 @@ export function TeamExtras({ slug, roster, onChanged }: { slug: string; roster: 
       <section className="flex flex-col gap-2">
         <SectionLabel aside={canEdit ? <Button size="sm" variant="ghost" onClick={() => setImporting(value => !value)}>{importing ? 'Close import' : 'Import JSON'}</Button> : undefined}>Team templates</SectionLabel>
         {templates.data?.items.map(template => (
-          <ListRow key={template.slug} title={template.doc.name} note={`${template.slug} · v${template.version} · ${template.doc.seats.length} seat${template.doc.seats.length === 1 ? '' : 's'} · ${template.doc.seats.map(seat => seat.title || seat.name).join(', ')}`}
+          <ListRow key={template.slug} title={template.doc.name} note={template.doc.seats.map(seat => seat.title || seat.name).join(', ')}
             aside={<span className="flex gap-1.5">
               <Button size="sm" variant="ghost" onClick={() => window.location.assign(`/api/templates/${template.slug}/export`)}>Export</Button>
               {canEdit && <Button size="sm" disabled={stamp.busy} onClick={() => { void stamp.run(() => api(`/api/projects/${slug}/team/from-template`, { template: template.slug, mode: roster.length ? 'append' : 'create' }, stampKey.headers())).then(ok => { if (ok) { stampKey.renew(); onChanged(); } }); }}>{roster.length ? 'Add these seats' : 'Create team'}</Button>}
@@ -88,7 +88,7 @@ export function TeamExtras({ slug, roster, onChanged }: { slug: string; roster: 
             templates.reload(); setImporting(false);
           })}>
             <Field label="Exported template (JSON)"><Textarea name="json" required rows={6} /></Field>
-            <div className="flex flex-wrap items-end gap-2.5"><Field label="Save it under another name (optional)" help="Leave empty to keep the name in the file."><Input name="slug" pattern="[a-z0-9][a-z0-9-]*" placeholder="product-team" /></Field><Button type="submit" disabled={bring.busy}>Import</Button></div>
+            <div className="flex flex-wrap items-end gap-2.5"><Field label="Save it under another name (optional)"><Input name="slug" pattern="[a-z0-9][a-z0-9-]*" placeholder="product-team" /></Field><Button type="submit" disabled={bring.busy}>Import</Button></div>
             <ActionError error={bring.error} />
           </form>
         )}

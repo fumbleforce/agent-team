@@ -19,7 +19,7 @@ export function NeedsYouPage({ me, projects }: { me: Me; projects: ProjectNode[]
   return (
     <OrgShell me={me} projects={projects} title="Needs you" active={null}>
       <SettingsBody><div className="flex max-w-3xl flex-col gap-3">
-        {view.data?.items.length === 0 && <EmptyState title="Nothing needs you" note="Decisions, unknown outcomes and proposals that need a person will appear here." />}
+        {view.data?.items.length === 0 && <EmptyState title="Nothing needs you" note="What needs a person shows up here." />}
         {view.data?.items.map(item => <NeedCard key={`${item.kind}:${item.id}`} item={item} project={names.get(item.projectId) ?? ''} onDone={view.reload} />)}
       </div></SettingsBody>
     </OrgShell>
@@ -34,8 +34,8 @@ function NeedCard({ item, project, onDone }: { item: Item; project: string; onDo
     <Card tone={item.kind === 'blocked' ? 'raised' : 'decision'} className="flex flex-col gap-2.5">
       <div className="flex items-center gap-2"><Chip tone={LABEL[item.kind].tone}>{LABEL[item.kind].chip}</Chip><Text weight="semibold" truncate>{item.title}</Text><Text size="caption" tone="muted" className="ml-auto whitespace-nowrap">{project} · {ago(item.since)}</Text></div>
       <Text size="small" tone="soft">{item.detail}</Text>
-      {item.kind === 'quarantine' && <StatusLine tone="attention">A turn lost contact while it could still change things, so nobody knows how far it got. Look at the task's branch and worktree on the worker first. Continuing starts a fresh turn from what is there; stopping parks the task with everything kept.</StatusLine>}
-      {item.kind === 'delivery' && <StatusLine tone="attention">Open the change on the code host and see whether it was merged. Merging for this project is paused until you answer.</StatusLine>}
+      {item.kind === 'quarantine' && <StatusLine tone="attention">A turn lost contact mid-work. Check its branch on the worker, then continue from what is there or stop and keep everything.</StatusLine>}
+      {item.kind === 'delivery' && <StatusLine tone="attention">Check on the code host whether it merged. Merging is paused until you answer.</StatusLine>}
       {!item.canDecide ? <Text size="caption" tone="muted">Someone who may decide for this project has to settle this.</Text> : (
         <>
           {needsText && <Field label={item.kind === 'decision' ? 'Your decision, in your own words' : 'What you checked'} error={error ?? undefined}><Textarea rows={2} value={text} onChange={event => setText(event.target.value)} placeholder={item.kind === 'decision' ? 'Go with option B, but keep the old endpoint for one release.' : 'The branch has two clean commits and the tests pass.'} /></Field>}

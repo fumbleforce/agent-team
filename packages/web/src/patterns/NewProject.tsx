@@ -26,7 +26,7 @@ export function NewProject({ projects, primary, to = 'integrations' }: { project
   }
 
   return (
-    <Dialog open={open} onOpenChange={setOpen} title="New project" description="It starts with the default team of four. Next you connect its code, task board and chat, step by step." trigger={primary ? <Button variant="primary">Create your first project</Button> : <Button variant="dashed" block>+ New project</Button>}>
+    <Dialog open={open} onOpenChange={setOpen} title="New project" description="Starts with the default team of four." trigger={primary ? <Button variant="primary">Create your first project</Button> : <Button variant="dashed" block>+ New project</Button>}>
       <form className="flex flex-col gap-3" onSubmit={event => { event.preventDefault(); void create(new FormData(event.currentTarget)); }}>
         <Field label="Name"><Input name="name" required maxLength={80} autoFocus placeholder="Web shop" /></Field>
         <div className="grid grid-cols-2 gap-3">

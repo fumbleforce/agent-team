@@ -37,7 +37,7 @@ export function MemoryRail({ slug, memories, pages, canWrite, focus, onChanged, 
     <div className="flex flex-col gap-2 px-1.5">
       <SectionLabel>Memory</SectionLabel>
       {stale.length > 0 && <Segmented<'all' | 'stale'> options={[{ value: 'all', label: `All (${memories.length})` }, { value: 'stale', label: `Review stale (${stale.length})` }]} value={filter} onChange={setFilter} />}
-      {filter === 'stale' && <Text size="caption" tone="muted">Nobody has used these for two months. Keep what is still true, make a page of what deserves one, and retire the rest.</Text>}
+      {filter === 'stale' && <Text size="caption" tone="muted">Unused for two months. Keep, make a page, or retire.</Text>}
       {failed && <Notice tone="stop" title="That did not work">{failed}</Notice>}
       {shown.map(memory => {
         const status = memory.stale ? STATUS.stale! : STATUS[memory.status] ?? STATUS.filed!;

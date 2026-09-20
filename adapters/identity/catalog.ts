@@ -3,7 +3,7 @@
 // names a product itself. Every entry speaks OpenID Connect; they differ in where the app is registered and what is copied.
 import type { SetupField, Values } from '../integration/catalog.ts';
 
-// The client secret never enters the app: it is set as this variable where the coordinator runs, and only its presence is checked.
+// The client secret is typed into the app and kept sealed under this name; the same variable set where the coordinator runs still counts.
 export const SECRET_VARIABLE = 'AGENT_TEAM_OIDC_SECRET';
 // Where the identity product sends a person back to, after this app's own address.
 export const REDIRECT_PATH = '/api/auth/oidc/callback';
@@ -21,7 +21,7 @@ export interface IdentityEntry {
   found: string; notFound: string;
 }
 
-const SECRET_STEP = (what: string) => `On the coordinator machine set ${SECRET_VARIABLE} to ${what}, then restart the coordinator. The secret is never entered in this app.`;
+const SECRET_STEP = (what: string) => `Paste ${what} into "Client secret" below.`;
 const CLIENT_ID: SetupField = { key: 'clientId', label: 'Client ID', required: true, pattern: '\\S{4,200}' };
 const UUID = '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
 const HOST = '[a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?(\\.[a-zA-Z0-9]([a-zA-Z0-9\\-]*[a-zA-Z0-9])?)+';

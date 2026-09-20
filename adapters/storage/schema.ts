@@ -11,6 +11,7 @@ export interface SessionsTable { id: string; user_id: string; token_hash: string
 export interface InvitesTable { id: string; email: string; org_role: string; project_grants: Json; token_hash: string; invited_by: string; expires_at: Ms; accepted_at: Ms | null }
 export interface ProjectMembersTable { project_id: string; user_id: string; role: string }
 export interface SetupTokensTable { token_hash: string; expires_at: Ms; used_at: Ms | null }
+export interface SecretsTable { name: string; sealed: string; updated_by: string | null; updated_at: Ms }
 export interface MachineTokensTable { id: string; name: string; token_hash: string; kind: string; created_by: string | null; created_at: Ms; revoked_at: Ms | null; last_used_at: Ms | null }
 
 export interface ProjectsTable { id: string; slug: string; name: string; kind: string; parent_id: string | null; status: string; manifest: Json; manifest_sha: string | null; team_id: string | null; sort: number; created_at: Ms }
@@ -36,7 +37,7 @@ export interface LinksTable { from_type: string; from_id: string; to_type: strin
 
 export interface Schema extends RuntimeSchema, KnowledgeSchema, DeliberationSchema, DeliverySchema, ChecksSchema, ProposalsSchema, IssuesSchema, IntegrationsSchema, ProductSchema, SchedulesSchema, EmbeddingsSchema, MentionsSchema, SessionsSchema, OrgAuthSchema, SyncSchema {
   org: OrgTable; users: UsersTable; identities: IdentitiesTable; sessions: SessionsTable; invites: InvitesTable;
-  project_members: ProjectMembersTable; setup_tokens: SetupTokensTable; machine_tokens: MachineTokensTable;
+  project_members: ProjectMembersTable; setup_tokens: SetupTokensTable; machine_tokens: MachineTokensTable; secrets: SecretsTable;
   projects: ProjectsTable; milestones: MilestonesTable;
   teams: TeamsTable; agents: AgentsTable; agent_roles: AgentRolesTable; providers: ProvidersTable;
   versioned_docs: VersionedDocsTable; versioned_doc_history: VersionedDocHistoryTable;

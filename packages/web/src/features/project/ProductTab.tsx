@@ -58,7 +58,7 @@ export function ProductTab({ slug, navigate }: { slug: string; navigate(to: stri
         )}
         {environment ? <PreviewFrame url={environment.url} /> : (
           <form className="flex max-w-120 flex-col gap-3" onSubmit={event => { event.preventDefault(); void addEnvironment(new FormData(event.currentTarget)); }}>
-            <Text tone="muted">Name where the product runs to look at it here: staging, a preview branch, production.</Text>
+            <Text tone="muted">Add where the product runs: staging, a preview, production.</Text>
             <Field label="Name"><Input name="name" placeholder="staging" required /></Field>
             <Field label="Address"><Input name="url" type="url" placeholder="https://staging.example.com" required /></Field>
             <div><Button variant="primary" type="submit">Add environment</Button></div>

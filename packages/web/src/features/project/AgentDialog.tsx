@@ -31,17 +31,17 @@ export function AgentDialog({ slug, seat, open, roles, providers, onOpenChange, 
           <Field label="Name" error={errors.name}><Input name="name" required maxLength={60} defaultValue={seat?.name} placeholder="Noor" autoFocus /></Field>
           <Field label="What they do on the team (optional)" error={errors.title}><Input name="title" maxLength={80} defaultValue={seat?.title} placeholder="Backend developer" /></Field>
         </div>
-        <Field label="Personality and way of working (optional)" help="The agent reads this at the start of every turn. A few plain sentences work best." error={errors.persona}>
-          <Textarea name="persona" rows={4} maxLength={2000} defaultValue={seat?.persona} placeholder={'Careful and direct. Writes the test first, keeps changes small, and asks when a requirement is unclear instead of guessing.'} />
+        <Field label="Personality and way of working (optional)" error={errors.persona}>
+          <Textarea name="persona" rows={4} maxLength={2000} defaultValue={seat?.persona} placeholder="Careful and direct. Keeps changes small." />
         </Field>
         <section className="flex flex-col gap-2">
           <SectionLabel>Roles</SectionLabel>
-          <Text size="caption" tone="muted">Roles decide what the agent may touch and what it is asked to review. They add up: an agent may do what any of its roles allows.</Text>
+          <Text size="caption" tone="muted">Roles decide what the agent may touch. They add up.</Text>
           {roles.map(role => <Checkbox key={role.slug} name="roles" value={role.slug} defaultChecked={seat?.roles.includes(role.slug) ?? false} label={roleName(role.slug)} note={role.summary} />)}
           {roles.length === 0 && <Text size="small" tone="muted">The role library is empty.</Text>}
           {errors.roles && <Text size="caption" tone="stop">{errors.roles}</Text>}
         </section>
-        <Field label="Runs on" help={providers.length ? 'Which provider and model this agent uses. "The worker\'s default" is whatever the worker machine was set up with.' : 'No model provider has been added yet, so this agent uses whatever the worker machine was set up with.'} error={errors.provider}>
+        <Field label="Runs on" help={providers.length ? 'Which provider and model this agent uses. "The worker\'s default" is whatever the worker machine was set up with.' : 'No provider yet: it uses what the worker has.'} error={errors.provider}>
           <Select name="route" defaultValue={seat?.providerId ? `${seat.providerId}\n${seat.model ?? ''}` : ''}>
             <option value="">The worker's default</option>
             {providers.flatMap(provider => provider.models.map(model => <option key={`${provider.id}${model}`} value={`${provider.id}\n${model}`}>{provider.name} · {model}</option>))}

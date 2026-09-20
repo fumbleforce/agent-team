@@ -13,7 +13,7 @@ interface AuthSettings { password: { minimumLength: number }; trustedHeader: { e
 interface MachineToken { id: string; name: string; kind: string; createdBy: string | null; createdAt: number; revokedAt: number | null; lastUsedAt: number | null }
 
 const day = (at: number | null) => (at ? new Date(at).toLocaleDateString(undefined, { year: 'numeric', month: 'short', day: 'numeric' }) : 'never');
-const AdminsOnly = ({ me, projects, title }: { me: Me; projects: ProjectNode[]; title: string }) => <OrgShell me={me} projects={projects} title={title} active={null}><SettingsBody><EmptyState title="For administrators" note="Ask an owner or an administrator of the organization for access to this page." /></SettingsBody></OrgShell>;
+const AdminsOnly = ({ me, projects, title }: { me: Me; projects: ProjectNode[]; title: string }) => <OrgShell me={me} projects={projects} title={title} active={null}><SettingsBody><EmptyState title="For administrators" note="Ask an owner or admin for access." /></SettingsBody></OrgShell>;
 
 export function MembersPage({ me, projects }: { me: Me; projects: ProjectNode[] }) {
   const members = useResource<{ users: User[]; invites: Invite[] }>(isOrgAdmin(me) ? '/api/users' : null);
@@ -53,7 +53,7 @@ export function MembersPage({ me, projects }: { me: Me; projects: ProjectNode[] 
           <ActionError error={grant.error} />
         </SettingsSection>
 
-        <SettingsSection title="Invitations" note="Single-use links, good for seven days. Nothing is emailed: copy the link to the person.">
+        <SettingsSection title="Invitations" note="Single-use links, good for seven days. Copy the link to the person.">
           <DataTable rows={members.data?.invites ?? []} rowKey={item => item.id} empty={<Text size="small" tone="muted">Nobody is waiting on an invitation.</Text>} columns={[
             { label: 'Email', width: 'lg', cell: item => <Text size="small" truncate>{item.email}</Text> },
             { label: 'Role', width: 'sm', cell: item => <Chip>{item.orgRole}</Chip> },
@@ -95,8 +95,8 @@ export function AuthPage({ me, projects }: { me: Me; projects: ProjectNode[] }) 
         <SettingsSection title="Passwords">
           <Card tone="raised" pad="sm" className="flex flex-col gap-1">
             <Text size="small" tone="soft">A password has at least {data?.password.minimumLength ?? 12} characters.</Text>
-            <Text size="small" tone="soft">After 8 failed sign-ins an account is locked for 15 minutes. An address that fails 40 times is locked out for as long, whichever accounts it tried.</Text>
-            <Text size="small" tone="soft">{data?.secureCookies ? 'The cookie that keeps a person signed in is only ever sent over HTTPS.' : 'This coordinator is reached over plain HTTP, so the cookie that keeps a person signed in is not protected on the network. That is fine on your own machine; put it behind HTTPS before others use it.'}</Text>
+            <Text size="small" tone="soft">8 failed sign-ins lock an account for 15 minutes.</Text>
+            <Text size="small" tone="soft">{data?.secureCookies ? 'Sign-in cookies only travel over HTTPS.' : 'Served over plain HTTP. Fine on your own machine; put it behind HTTPS before others use it.'}</Text>
           </Card>
         </SettingsSection>
 
@@ -127,7 +127,7 @@ export function AuthPage({ me, projects }: { me: Me; projects: ProjectNode[] }) 
           <ActionError error={machine.error} />
           {secret && (
             <Card tone="decision" pad="sm" className="flex flex-col gap-2">
-              <Text size="small" tone="attention">Copy this token now; it is not shown again. On the machine that will use it, set it as AGENT_TEAM_TOKEN.</Text>
+              <Text size="small" tone="attention">Copy this token now; it is not shown again.</Text>
               <CodeBlock text={secret} />
               <div className="flex"><Button size="sm" variant="ghost" onClick={() => setSecret(null)}>Done, I copied it</Button></div>
             </Card>

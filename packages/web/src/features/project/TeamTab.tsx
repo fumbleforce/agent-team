@@ -51,7 +51,7 @@ export function TeamTab({ roster, teamName, onChanged, children }: { roster: Age
             </SeatRow>
           );
         })}
-        {roster.length === 0 && <Text tone="muted">This project has no team yet. Add the first agent, or create the team from a template below.</Text>}
+        {roster.length === 0 && <Text tone="muted">No team yet. Add an agent, or start from a template below.</Text>}
         {problem?.about === 'team' && <StatusLine boxed tone="stop">{problem.text}</StatusLine>}
       </section>
 
@@ -72,7 +72,7 @@ export function TeamTab({ roster, teamName, onChanged, children }: { roster: Age
           ))}
         </div>
         {problem?.about === 'providers' && <StatusLine boxed tone="stop">{problem.text}</StatusLine>}
-        {list.length === 0 && <Text size="small" tone="muted">No provider yet. Until one is added, every agent runs on whatever its worker machine was set up with.</Text>}
+        {list.length === 0 && <Text size="small" tone="muted">No provider yet. Agents use what their worker has.</Text>}
       </section>
       {children}
       <ProviderFlow open={flow.open} kind={flow.kind} providers={list} onOpenChange={(open, kind) => setFlow(previous => ({ open, kind: kind === undefined ? previous.kind : kind }))} onDone={changed} />

@@ -41,4 +41,4 @@ export function useAction() {
   };
   return { error, busy, run, submit };
 }
-export const ActionError = ({ error }: { error: ApiError | null }) => (error ? <Text size="small" tone="stop">{error.status === 412 ? 'Someone else saved this while you were editing. Reload to see their version, then make your change again.' : error.message}</Text> : null);
+export const ActionError = ({ error }: { error: ApiError | null }) => (error ? <Text size="small" tone="stop">{error.status === 412 ? 'Someone else changed this. Reload and try again.' : error.message}</Text> : null);

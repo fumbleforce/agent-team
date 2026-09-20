@@ -4,17 +4,18 @@ import { githubCredential } from '../tracker/githubCredential.ts';
 
 type Fetch = typeof fetch;
 export type Values = Record<string, string>;
-export interface SetupField { key: string; label: string; placeholder?: string; help?: string; required?: boolean; pattern?: string }
+// What a field can be picked from once the credential is known, so nobody copies an ID by hand. `also` fills other fields of the same entry.
+export interface Choice { value: string; label: string; also?: Values }
+export interface SetupField { key: string; label: string; placeholder?: string; help?: string; required?: boolean; pattern?: string; /* Filled in by picking another field from its list; asked for only when that list cannot be had. */ filledBy?: string; choices?(token: string, request: Fetch): Promise<Choice[]> }
 export interface SetupEntry {
   kind: string; title: string; category: 'issue-boards' | 'code' | 'comms' | 'storage' | 'business' | 'other';
   summary: string;
-  // What the team does with it once connected, in a sentence a non-developer understands.
-  does: string[];
-  // How to get the credential, in order. Shown as a numbered list.
+  // How to get the credential, as briefly as it can be said. Shown only when asked for.
   steps: string[];
   fields: SetupField[];
-  // The secret never enters the app: the person sets this variable where `runsOn` says, and the app only checks that it is there.
-  credential: { variable: string; alternatives?: string[]; label: string; runsOn: 'coordinator' | 'workers' } | null;
+  // A credential the coordinator uses is typed into the app and kept sealed; the same variable set on the machine still counts.
+  // One that only workers use stays with the sign-in on the worker.
+  credential: { variable: string; alternatives?: string[]; label: string; runsOn: 'coordinator' | 'workers'; getAt?: string; placeholder?: string } | null;
   // Where the settings go: a plain connection, or the project's tracker or code host.
   target: 'connection' | 'tracker' | 'scm';
   // Entries of one product (its code host and its issues, say) share what was entered: a value known for one is never asked for by another.
@@ -28,31 +29,31 @@ export interface SetupEntry {
 }
 
 const ok = async (response: Response, what: string) => { if (!response.ok) throw new Error(`${what} answered ${response.status}. Check the token and what it may access.`); return response; };
-const REPOSITORY: SetupField = { key: 'repository', label: 'Repository', placeholder: 'owner/name', help: 'As it appears in the address bar, without the site name.', required: true, pattern: '[\\w.\\-]+(/[\\w.\\-]+)+' };
-const BASE: SetupField = { key: 'baseBranch', label: 'Main branch', placeholder: 'main', help: 'Where finished work is merged. Leave empty for "main".' };
+const REPOSITORY: SetupField = { key: 'repository', label: 'Repository', placeholder: 'owner/name', required: true, pattern: '[\\w.\\-]+(/[\\w.\\-]+)+' };
+const BASE: SetupField = { key: 'baseBranch', label: 'Main branch', placeholder: 'main' };
 
 export const CATALOG: SetupEntry[] = [
   {
     kind: 'github', product: 'github', title: 'GitHub', category: 'code', target: 'scm', mode: 'read and write',
-    summary: 'Where the code lives. The team opens draft pull requests here and merges them when checks and reviews pass.',
-    does: ['Pushes each task\'s branch and opens a draft pull request', 'Reads check results and reviews before merging', 'Never force-pushes; merging needs your authorization in the repository\'s .agent-team.json'],
-    steps: ['On GitHub open Settings → Developer settings → Personal access tokens → Fine-grained tokens, choose Generate new token and under "Repository access" choose "Only select repositories" with this repository.', 'Under repository permissions give it Contents: read and write, Pull requests: read and write, Commit statuses: read.', 'Fine-grained tokens have no permission for check runs (the results of GitHub Actions). If check results cannot be read on a private repository, sign in with "gh auth login" on the worker instead, or use a classic token with the "repo" scope.', 'On every worker machine set GH_TOKEN to that token (or run "gh auth login" there), then restart the worker.'],
+    summary: 'Where the code lives. The team opens pull requests here.',
+    steps: ['Workers push with the GitHub sign-in already on their machine. If a worker has none, run "gh auth login" there.'],
     fields: [REPOSITORY, BASE], credential: { variable: 'GH_TOKEN', label: 'GitHub token', runsOn: 'workers' },
   },
   {
     kind: 'gitlab', product: 'gitlab', title: 'GitLab', category: 'code', target: 'scm', mode: 'read and write',
-    summary: 'Where the code lives. The team opens draft merge requests here and merges them when pipelines and approvals pass.',
-    does: ['Pushes each task\'s branch and opens a draft merge request', 'Reads pipeline results and approvals before merging', 'Never force-pushes; merging needs your authorization in the repository\'s .agent-team.json'],
-    steps: ['In GitLab open the project → Settings → Access tokens, choose Add new token and select the Developer role (Maintainer if only maintainers may merge). On GitLab.com project access tokens need a Premium or Ultimate subscription; a personal access token works the same way.', 'Give it the scopes api and write_repository, then choose Create project access token and copy the token (it starts with glpat-).', 'On every worker machine set GITLAB_TOKEN to that token (and GITLAB_HOST to your server\'s hostname, such as gitlab.example.com, if you self-host), then restart the worker.'],
+    summary: 'Where the code lives. The team opens merge requests here.',
+    steps: ['Workers push with the GitLab sign-in on their machine. If a worker has none, run "glab auth login" there.'],
     fields: [{ ...REPOSITORY, label: 'Project path', placeholder: 'group/project' }, BASE], credential: { variable: 'GITLAB_TOKEN', label: 'GitLab token', runsOn: 'workers' },
   },
   {
     kind: 'github-issues', adapterKind: 'github', product: 'github', title: 'GitHub Issues', category: 'issue-boards', target: 'tracker', mode: 'two-way',
     findCredential: env => { const found = githubCredential(env); return found ? { token: found.token, source: found.source === 'cli' ? 'the GitHub command-line login on this machine' : 'a variable on this machine' } : null; },
-    summary: 'Use a repository\'s issues as the task board. Issues appear as tasks within a minute.',
-    does: ['Every issue becomes a task; closed issues move to Done', 'Labels "agent:in-progress" and "agent:in-review" move a card between columns'],
-    steps: ['Easiest: on the coordinator machine run "gh auth login" once with the GitHub command-line tool. That login is used and nothing else is needed.', 'Or use a token instead: on GitHub open Settings → Developer settings → Personal access tokens → Fine-grained tokens, choose Generate new token, select the repository and give it the repository permission Issues: read and write.', 'On the coordinator machine set GITHUB_ISSUES_TOKEN to that token and restart the coordinator. If GH_TOKEN is already set there it is used instead.'],
-    fields: [REPOSITORY], credential: { variable: 'GITHUB_ISSUES_TOKEN', alternatives: ['GH_TOKEN'], label: 'GitHub token', runsOn: 'coordinator' },
+    summary: 'Use a repository\'s issues as the task board.',
+    steps: ['On GitHub: Settings → Developer settings → Fine-grained tokens → Generate new token.', 'Select the repository and allow Issues: read and write.'],
+    fields: [{ ...REPOSITORY, async choices(token, request) {
+      const response = await ok(await request('https://api.github.com/user/repos?per_page=100&sort=pushed', { headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-team' } }), 'GitHub');
+      return ((await response.json()) as { full_name: string }[]).map(repository => ({ value: repository.full_name, label: repository.full_name }));
+    } }], credential: { variable: 'GITHUB_ISSUES_TOKEN', alternatives: ['GH_TOKEN'], label: 'GitHub token', runsOn: 'coordinator', getAt: 'https://github.com/settings/personal-access-tokens/new', placeholder: 'github_pat_…' },
     async test(values, token, request) {
       const response = await ok(await request(`https://api.github.com/repos/${values.repository}`, { headers: { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-team' } }), 'GitHub');
       const repository = await response.json() as { full_name?: string; open_issues_count?: number; has_issues?: boolean };
@@ -62,11 +63,13 @@ export const CATALOG: SetupEntry[] = [
   },
   {
     kind: 'linear', title: 'Linear', category: 'issue-boards', target: 'tracker', mode: 'two-way',
-    summary: 'Use a Linear project as the task board. Its issues appear as tasks within a minute.',
-    does: ['Every issue in the project becomes a task, in the column its Linear state maps to', 'Titles, labels and states follow Linear; who on the team owns a task stays here'],
-    steps: ['In Linear open Settings → Account → Security & access and create a key under "Personal API keys" with read and write access. If you are not an admin, an admin must first allow member API keys.', 'On the coordinator machine set LINEAR_API_KEY to that key and restart the coordinator.', 'Open the project in Linear, press Ctrl/Cmd+K, choose "Copy model UUID" and paste it below.'],
-    fields: [{ key: 'projectId', label: 'Linear project ID', placeholder: '9d6c1c2e-…', help: 'The UUID copied in step 3, not the project\'s name.', required: true, pattern: '[0-9a-fA-F\\-]{36}' }],
-    credential: { variable: 'LINEAR_API_KEY', label: 'Linear API key', runsOn: 'coordinator' },
+    summary: 'Use a Linear project as the task board.',
+    steps: ['In Linear: Settings → Security & access → Personal API keys → New key.'],
+    fields: [{ key: 'projectId', label: 'Project', placeholder: '9d6c1c2e-…', required: true, pattern: '[0-9a-fA-F\\-]{36}', async choices(token, request) {
+      const response = await ok(await request('https://api.linear.app/graphql', { method: 'POST', headers: { authorization: token, 'content-type': 'application/json' }, body: JSON.stringify({ query: '{ projects(first: 100) { nodes { id name } } }' }) }), 'Linear');
+      return ((await response.json()) as { data?: { projects?: { nodes?: { id: string; name: string }[] } } }).data?.projects?.nodes?.map(project => ({ value: project.id, label: project.name })) ?? [];
+    } }],
+    credential: { variable: 'LINEAR_API_KEY', label: 'Linear API key', runsOn: 'coordinator', getAt: 'https://linear.app/settings/account/security', placeholder: 'lin_api_…' },
     async test(values, token, request) {
       const response = await ok(await request('https://api.linear.app/graphql', { method: 'POST', headers: { authorization: token, 'content-type': 'application/json' }, body: JSON.stringify({ query: 'query Project($id: String!) { project(id: $id) { name } }', variables: { id: values.projectId } }) }), 'Linear');
       const name = (await response.json() as { data?: { project?: { name?: string } } }).data?.project?.name;
@@ -76,14 +79,16 @@ export const CATALOG: SetupEntry[] = [
   },
   {
     kind: 'slack', title: 'Slack', category: 'comms', target: 'connection', mode: 'two-way mirror',
-    summary: 'Mirror the team\'s discussion into a Slack channel, and bring replies written there back in.',
-    does: ['Every message and decision in the project\'s discussion is posted to the channel', 'What people write in the channel appears in the discussion (needs the optional app-level token)'],
-    steps: ['At api.slack.com/apps create an app for your workspace. Under OAuth & Permissions → "Bot Token Scopes" add chat:write and channels:history.', 'On the same page choose Install to Workspace and copy the bot token shown under "OAuth Tokens" (it starts with xoxb-).', 'Invite the app to the channel: type /invite @your-app in that channel.', 'On the coordinator machine set SLACK_BOT_TOKEN to the token and restart the coordinator.', 'Optional, for replies coming back: under Socket Mode turn on "Enable Socket Mode"; under Basic Information → "App-Level Tokens" generate a token with the scope connections:write (it starts with xapp-); under Event Subscriptions subscribe to the bot event message.channels and reinstall the app if Slack asks. Then set AGENT_TEAM_SLACK_APP_TOKEN to the xapp- token and restart the coordinator.'],
+    summary: 'Mirror the team\'s discussion into a channel.',
+    steps: ['At api.slack.com/apps create an app with the bot scopes chat:write and channels:history, and install it.', 'Copy the bot token (xoxb-…) and invite the app to the channel.'],
     fields: [
-      { key: 'channel', label: 'Channel', placeholder: '#checkout-team', help: 'The channel the app was invited to.', required: true, pattern: '#?[a-z0-9_\\-]{1,80}' },
-      { key: 'channelId', label: 'Channel ID', placeholder: 'C0123456789', help: 'Only needed for replies coming back. Right-click the channel → View channel details; the ID is at the bottom.', pattern: '[A-Z0-9]{8,14}' },
+      { key: 'channel', label: 'Channel', placeholder: '#checkout-team', required: true, pattern: '#?[a-z0-9_\\-]{1,80}', async choices(token, request) {
+        const response = await ok(await request('https://slack.com/api/conversations.list?types=public_channel&exclude_archived=true&limit=200', { headers: { authorization: `Bearer ${token}` } }), 'Slack');
+        return ((await response.json()) as { channels?: { id: string; name: string }[] }).channels?.map(channel => ({ value: `#${channel.name}`, label: `#${channel.name}`, also: { channelId: channel.id } })) ?? [];
+      } },
+      { key: 'channelId', filledBy: 'channel', label: 'Channel ID', placeholder: 'C0123456789', help: 'Only for replies coming back.', pattern: '[A-Z0-9]{8,14}' },
     ],
-    credential: { variable: 'SLACK_BOT_TOKEN', label: 'Slack bot token', runsOn: 'coordinator' },
+    credential: { variable: 'SLACK_BOT_TOKEN', label: 'Slack bot token', runsOn: 'coordinator', getAt: 'https://api.slack.com/apps', placeholder: 'xoxb-…' },
     async test(_values, token, request) {
       const response = await ok(await request('https://slack.com/api/auth.test', { method: 'POST', headers: { authorization: `Bearer ${token}` } }), 'Slack');
       const body = await response.json() as { ok?: boolean; team?: string; user?: string; error?: string };
@@ -93,10 +98,9 @@ export const CATALOG: SetupEntry[] = [
   },
   {
     kind: 'google-drive', title: 'Google Drive', category: 'storage', target: 'connection', mode: 'two-way sync',
-    summary: 'Keep the project\'s knowledge pages as documents in a Drive folder, in both directions.',
-    does: ['Each knowledge page becomes a file in the folder and is updated when the page changes', 'An edit made in Drive becomes a new revision of the page; if both sides changed, both versions are kept'],
-    steps: ['In the Google Cloud console enable the Google Drive API for a project and create a service account in it.', 'Share the Drive folder with the service account\'s email address as Editor.', 'Obtain an OAuth access token for the service account with the scope https://www.googleapis.com/auth/drive. The narrower drive.file scope only reaches files the app itself created or was handed through Google\'s file picker, so it cannot read a folder shared this way.', 'On the coordinator machine set GOOGLE_DRIVE_TOKEN to the token and restart the coordinator. Google\'s access tokens expire (typically after one hour), so whatever issues the token must keep the variable fresh.', 'Open the folder in Drive; the folder ID is the last part of the address.'],
-    fields: [{ key: 'folder', label: 'Folder ID', placeholder: '1AbCdEfGhIjKlMnOpQrStUvWxYz', help: 'The last part of the folder\'s address in Drive.', required: true, pattern: '[\\w\\-]{10,80}' }],
+    summary: 'Keep knowledge pages as documents in a Drive folder.',
+    steps: ['Share the folder with a service account as Editor.', 'Paste an access token for it with the Drive scope. Google\'s tokens expire after an hour.'],
+    fields: [{ key: 'folder', label: 'Folder ID', placeholder: '1AbCdEfGhIjKlMnOpQrStUvWxYz', help: 'The last part of the folder\'s address.', required: true, pattern: '[\\w\\-]{10,80}' }],
     credential: { variable: 'GOOGLE_DRIVE_TOKEN', label: 'Drive access token', runsOn: 'coordinator' },
     async test(values, token, request) {
       const response = await ok(await request(`https://www.googleapis.com/drive/v3/files/${values.folder}?fields=name,mimeType`, { headers: { authorization: `Bearer ${token}` } }), 'Google Drive');
@@ -107,19 +111,17 @@ export const CATALOG: SetupEntry[] = [
   },
   {
     kind: 'hubspot', title: 'HubSpot', category: 'business', target: 'connection', mode: 'agent tool',
-    summary: 'Let agents look up and update contacts, companies and deals while they work.',
-    does: ['Agents get HubSpot as a tool during their turns', 'Only the record types you list are in reach'],
-    steps: ['HubSpot\'s hosted MCP server (mcp.hubspot.com) signs in with OAuth. In HubSpot open Development → MCP Connectors (HubSpot has also called this "MCP Auth Apps"), choose Create MCP connector and note the client ID and client secret on its details page.', 'Complete HubSpot\'s OAuth sign-in for that connector to obtain an access token; what the token may reach is decided by the permissions granted during that sign-in. HubSpot\'s documentation describes only OAuth for this server, not private app tokens.', 'On every worker machine set HUBSPOT_MCP_TOKEN to that access token and restart the worker. The access token expires, so it has to be renewed with the refresh token HubSpot returned.'],
-    fields: [{ key: 'objects', label: 'Record types', placeholder: 'contacts, companies, deals', help: 'Comma-separated. Leave empty for everything the token allows.' }],
+    summary: 'Agents look up and update contacts, companies and deals.',
+    steps: ['In HubSpot: Development → MCP Connectors → Create, and complete its sign-in to get an access token.', 'Set HUBSPOT_MCP_TOKEN on each worker.'],
+    fields: [{ key: 'objects', label: 'Record types', placeholder: 'contacts, companies, deals', }],
     credential: { variable: 'HUBSPOT_MCP_TOKEN', label: 'HubSpot access token', runsOn: 'workers' },
   },
   {
     kind: 'mcp', title: 'Any other tool (MCP server)', category: 'other', target: 'connection', mode: 'agent tool',
-    summary: 'Connect any product that offers an MCP server, so agents can use it as a tool.',
-    does: ['Agents get the server\'s tools during their turns', 'The token, if the server needs one, is sent only to that server'],
-    steps: ['Find the product\'s MCP server address (it starts with https://).', 'If it needs a token: on every worker machine set the variable shown below to that token and restart the worker.'],
+    summary: 'Any product with an MCP server, as a tool for agents.',
+    steps: ['Paste the server\'s address. If it needs a token, set the variable named after it on each worker.'],
     fields: [
-      { key: 'name', label: 'Short name', placeholder: 'figma', help: 'Lowercase, no spaces. Agents see the tools under this name.', required: true, pattern: '[a-z][a-z0-9\\-]{0,31}' },
+      { key: 'name', label: 'Short name', placeholder: 'figma', required: true, pattern: '[a-z][a-z0-9\\-]{0,31}' },
       { key: 'url', label: 'Server address', placeholder: 'https://mcp.example.com/mcp', required: true, pattern: 'https://.+' },
       { key: 'purpose', label: 'What the team should use it for', placeholder: 'Read design files linked from a task' },
     ],

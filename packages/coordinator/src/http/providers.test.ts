@@ -6,11 +6,12 @@ test('a model provider is added through the guided flow, in plain words, and rea
   const { coordinator, db, call, owner, person, machine } = await boot();
   try {
     const cookie = await owner(), member = await person('mia', 'member');
-    const catalog = (await call('/api/providers/catalog', { cookie })).json.entries as { kind: string; title: string; billing: string; engine: string; steps: string[]; fields: { key: string; label: string; suggested?: string }[]; credential: { variable?: string; login?: string; runsOn: string } | null; readiness: { state: string; message: string } }[];
-    assert.ok(catalog.length >= 6 && catalog.every(entry => entry.title && entry.steps.length >= 2 && entry.fields.some(field => field.key === 'models')));
-    assert.ok(catalog.every(entry => !entry.credential || entry.credential.runsOn === 'workers'), 'credentials live on the workers');
-    // A subscription login is never offered with a key variable: that is how it would quietly become metered.
-    assert.ok(catalog.filter(entry => entry.billing === 'subscription').every(entry => entry.credential?.login && !entry.credential.variable));
+    const catalog = (await call('/api/providers/catalog', { cookie })).json.entries as { kind: string; title: string; summary: string; billing: string; engine: string; install: string; signIn?: string; key?: { variable: string }; keySaved: boolean; listModels?: unknown; readiness: { state: string; message: string } }[];
+    assert.ok(catalog.length >= 6 && catalog.every(entry => entry.title && entry.install && entry.listModels === undefined));
+    // Few words: nothing a person has to read runs past one line.
+    assert.ok(catalog.every(entry => entry.summary.length <= 80), 'summaries stay short');
+    // A subscription login is never offered with a key: that is how it would quietly become metered.
+    assert.ok(catalog.filter(entry => entry.billing === 'subscription').every(entry => entry.signIn && !entry.key));
     assert.match(catalog[0]!.readiness.message, /No worker is running yet/);
 
     // Only the organization's admins set providers up; what was typed is checked field by field.
@@ -18,8 +19,8 @@ test('a model provider is added through the guided flow, in plain words, and rea
     assert.equal((await call('/api/providers/setup', { cookie, body: { kind: 'nothing', values: {} } })).status, 404);
     const bad = await call('/api/providers/setup', { cookie, body: { kind: 'openrouter', values: { models: 'two words', concurrency: 'many', windowHours: '5' } } });
     assert.equal(bad.status, 400);
-    assert.match(bad.json.error.fields.models, /each model goes on its own line, without spaces/);
-    assert.match(bad.json.error.fields.concurrency, /Agents working at the same time should be a whole number between 1 and 64/);
+    assert.match(bad.json.error.fields.models, /a model name has no spaces/);
+    assert.match(bad.json.error.fields.concurrency, /Turns at once should be a whole number between 1 and 64/);
     assert.match(bad.json.error.fields.windowTokens, /Set the allowance too/);
     assert.match((await call('/api/providers/setup', { cookie, body: { kind: 'openrouter', values: { models: ' \n ' } } })).json.error.fields.models, /at least one model/);
     assert.match((await call('/api/providers/setup', { cookie, body: { kind: 'openai-compatible', values: { models: 'gateway/m' } } })).json.error.fields.name, /Give it a name/);
@@ -43,15 +44,15 @@ test('a model provider is added through the guided flow, in plain words, and rea
     const claim = (workerId: string, ready?: unknown) => call('/worker/claim', { headers: machine, body: { workerId, free: {}, projects: [], ...(ready ? { ready } : {}) } });
     const state = async () => ((await call('/api/providers', { cookie })).json.providers as { id: string; readiness: { state: string; message: string } }[]).find(item => item.id === made.json.id)!.readiness;
     await claim('old-worker');
-    assert.match((await state()).message, /old-worker has not said what it can run/);
+    assert.match((await state()).message, /Update and restart old-worker/);
     await claim('atlas', { engines: ['opencode'], variables: [] });
-    assert.deepEqual([(await state()).state, /atlas has the command-line tool, but OPENROUTER_API_KEY is not set there yet/.test((await state()).message)], ['waiting', true]);
+    assert.deepEqual([(await state()).state, /Add the OpenRouter key/.test((await state()).message)], ['waiting', true]);
     await claim('atlas', { engines: ['opencode'], variables: ['OPENROUTER_API_KEY'] });
-    assert.deepEqual(await state(), { state: 'ready', workers: ['atlas'], message: 'Ready on worker atlas.' });
+    assert.deepEqual(await state(), { state: 'ready', need: null, workers: ['atlas'], message: 'Ready on atlas' });
     assert.equal((await claim('atlas', { engines: [], variables: ['not a name'] })).status, 400);
     const entries = (await call('/api/providers/catalog', { cookie })).json.entries as typeof catalog;
-    assert.match(entries.find(entry => entry.kind === 'claude-subscription')!.readiness.message, /No worker has this command-line tool yet/);
-    assert.match(entries.find(entry => entry.kind === 'anthropic-api')!.readiness.message, /Ready on worker atlas\. The sign-in itself is checked when the first turn runs/);
+    assert.match(entries.find(entry => entry.kind === 'claude-subscription')!.readiness.message, /atlas and old-worker still need the tool installed/);
+    assert.match(entries.find(entry => entry.kind === 'openai-compatible')!.readiness.message, /Ready on atlas/);
 
     // A provider in use is not removed from under its agents.
     await call('/api/projects', { cookie, body: { name: 'Shop' } });

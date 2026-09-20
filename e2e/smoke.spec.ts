@@ -154,26 +154,27 @@ test('a new project can be created from the sidebar, given a connection, and lef
   await expect(page).toHaveURL(/\/p\/pilot-\d+\/integrations/);
   await expect(page.getByRole('navigation').first().getByText(name, { exact: true })).toBeVisible();
 
-  // Guided setup: pick a product, read its steps, fill in its own fields, connect.
+  // Guided setup: pick a product, paste its token or leave it for later, fill in its own fields, connect.
   await page.getByRole('button', { name: /connect something/i }).click();
   const flow = page.getByRole('dialog');
   for (const title of ['GitHub', 'GitLab', 'GitHub Issues', 'Linear', 'Slack', 'Google Drive']) await expect(flow.getByText(title, { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath('connect-pick.png') });
   await flow.getByText('Slack', { exact: true }).click();
-  await expect(flow.getByText('Before you connect')).toBeVisible();
+  await expect(flow.getByLabel('Slack bot token')).toHaveAttribute('type', 'password');
+  await expect(flow.getByText('Where do I get this?')).toBeVisible();
   await page.screenshot({ path: info.outputPath('connect-slack.png') });
   await flow.getByPlaceholder('#checkout-team').fill('not a channel');
-  await flow.getByRole('button', { name: 'Connect Slack' }).click();
+  await flow.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(flow.getByText(/does not look right/)).toBeVisible();
   await flow.getByPlaceholder('#checkout-team').fill('#checkout-team');
-  await flow.getByRole('button', { name: 'Test connection' }).click();
-  await expect(flow.getByText(/is not set on the coordinator yet\. Set it/)).toBeVisible();
-  await flow.getByRole('button', { name: 'Connect Slack' }).click();
+  await flow.getByRole('button', { name: 'Test', exact: true }).click();
+  await expect(flow.getByText('Paste the Slack bot token first.')).toBeVisible();
+  await flow.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(flow).toBeHidden();
-  await expect(page.getByText(/Waiting for SLACK_BOT_TOKEN/)).toBeVisible();
+  await expect(page.getByText('Needs a Slack bot token')).toBeVisible();
   page.once('dialog', dialog => { void dialog.accept(); });
   await page.getByRole('button', { name: 'Remove' }).click();
-  await expect(page.getByText(/Waiting for SLACK_BOT_TOKEN/)).toHaveCount(0);
+  await expect(page.getByText('Needs a Slack bot token')).toHaveCount(0);
 
   // The breadcrumb leads back to the project, and from there to the organization.
   await page.locator('header').getByRole('link', { name }).click();
@@ -187,27 +188,29 @@ test('a model provider is added through its guided setup, and an agent is create
   await page.goto(`${PROJECT}/team`);
   await page.getByRole('button', { name: /add a model provider/i }).click();
   const flow = page.getByRole('dialog');
-  for (const title of ['Claude subscription (Pro or Max)', 'Anthropic API (pay per use)', 'OpenRouter', 'Local models (Ollama)', 'Cursor agent']) await expect(flow.getByText(title, { exact: true })).toBeVisible();
+  for (const title of ['Claude subscription', 'Anthropic API', 'OpenRouter', 'Local models (Ollama)', 'Cursor agent']) await expect(flow.getByText(title, { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath('provider-pick.png') });
   await flow.getByText('OpenRouter', { exact: true }).click();
-  await expect(flow.getByText('On each worker machine', { exact: true })).toBeVisible();
   await expect(flow.getByText(/No worker is running yet/)).toBeVisible();
-  await expect(flow.getByText(/lives on the worker machines as OPENROUTER_API_KEY; it is never entered here/)).toBeVisible();
+  // The key is typed here, and never shown again; nothing in the dialog runs longer than a line.
+  await expect(flow.getByLabel('OpenRouter key')).toHaveAttribute('type', 'password');
+  await expect(flow.locator('textarea')).toHaveCount(0);
   await page.screenshot({ path: info.outputPath('provider-openrouter.png') });
 
   // What was typed is answered in plain words, next to the field.
-  const models = flow.getByLabel('Models the team may use');
-  await expect(models).toHaveValue(/openrouter\//);
-  await models.fill('two words');
-  await flow.getByLabel(/Agents working at the same time/).fill('lots');
-  await flow.getByRole('button', { name: 'Add this provider' }).click();
-  await expect(flow.getByText(/each model goes on its own line, without spaces/)).toBeVisible();
+  // Models are ticked from a list or found by typing; the usual ones are chosen already.
+  await expect(flow.getByRole('button', { name: /^Remove / })).toHaveCount(3);
+  while (await flow.getByRole('button', { name: /^Remove / }).count()) await flow.getByRole('button', { name: /^Remove / }).first().click();
+  await flow.getByText('Limits', { exact: true }).click();
+  await flow.getByLabel('Turns at once').fill('lots');
+  await flow.getByRole('button', { name: 'Add', exact: true }).click();
+  await expect(flow.getByText('Choose at least one model')).toBeVisible();
   await expect(flow.getByText(/should be a whole number between 1 and 64/)).toBeVisible();
   await flow.locator('form').evaluate(form => { form.scrollTop = form.scrollHeight; });
   await page.screenshot({ path: info.outputPath('provider-errors.png') });
-  await models.fill('openrouter/vendor/model-a\nopenrouter/vendor/model-b');
-  await flow.getByLabel(/Agents working at the same time/).fill('3');
-  await flow.getByRole('button', { name: 'Add this provider' }).click();
+  for (const model of ['openrouter/vendor/model-a', 'openrouter/vendor/model-b']) { await flow.getByLabel('Search Models').fill(model); await flow.getByLabel('Search Models').press('Enter'); }
+  await flow.getByLabel('Turns at once').fill('3');
+  await flow.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(flow).toBeHidden();
   const card = page.locator('article, div').filter({ hasText: /^OpenRouterPay per use/ }).first();
   await expect(card).toBeVisible();
@@ -302,7 +305,7 @@ test('the Costs page says which currency it shows and an admin changes it and it
   await page.getByRole('button', { name: 'Change the currency' }).click();
   await page.getByLabel('Show costs in').fill('nok');
   await page.getByLabel(/One US dollar is worth this many NOK/).fill('10.5');
-  await expect(page.getByText(/Changing the currency restates earlier days/)).toBeVisible();
+  await expect(page.getByText(/Earlier days are restated at this rate/)).toBeVisible();
   await page.getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText(/Costs are shown in NOK\. One US dollar counts as 10\.5 NOK\./)).toBeVisible();
   // Put back what the other tests expect.
@@ -443,19 +446,20 @@ test('what needs a person is one click away, and a decision is recorded in their
 test('single sign-on is set up through a guided flow, checked, shown in sentences and turned off; a token is shown once to copy', async ({ page, baseURL }) => {
   const errors = await enter(page);
   await page.goto('/settings/auth');
-  await expect(page.getByText(/After 8 failed sign-ins an account is locked for 15 minutes/)).toBeVisible();
+  await expect(page.getByText(/8 failed sign-ins lock an account for 15 minutes/)).toBeVisible();
   await page.getByRole('button', { name: 'Set up single sign-on' }).click();
   const flow = page.getByRole('dialog');
   for (const title of ['Google Workspace', 'Microsoft Entra ID', 'Okta', 'Auth0', 'Keycloak', 'Another OpenID Connect provider']) await expect(flow.getByText(title, { exact: true })).toBeVisible();
   await page.screenshot({ path: 'walk-shots/sso-pick.png' });
 
-  // The product's own words, the address to paste with a copy button, and the secret that is never typed here.
+  // The address to paste with a copy button, the product's own words one click away, and the secret typed here once.
   await flow.getByText('Microsoft Entra ID', { exact: true }).click();
   await expect(flow.getByText(`${baseURL}/api/auth/oidc/callback`)).toBeVisible();
   await expect(flow.getByRole('button', { name: 'Copy' })).toBeVisible();
+  await flow.getByText('How to register this app').click();
   await expect(flow.getByText(/App registrations and choose New registration/)).toBeVisible();
-  await expect(flow.getByText(/AGENT_TEAM_OIDC_SECRET is (not )?set on the coordinator/).first()).toBeVisible();
-  await expect(flow.getByLabel(/secret/i)).toHaveCount(0);
+  await expect(flow.getByLabel('Client secret')).toHaveAttribute('type', 'password');
+  await flow.getByLabel('Client secret').fill('a-client-secret-value');
   await page.screenshot({ path: 'walk-shots/sso-steps.png' });
   await flow.getByLabel('Directory (tenant) ID').fill('contoso');
   await flow.getByLabel('Application (client) ID').fill('3fa85f64-5717-4562-b3fc-2c963f66afa6');
@@ -467,16 +471,17 @@ test('single sign-on is set up through a guided flow, checked, shown in sentence
   await flow.getByText('Another OpenID Connect provider', { exact: true }).click();
   await flow.getByLabel('Issuer address').fill(baseURL!);
   await flow.getByLabel('Client ID').fill('agent-team');
+  await flow.getByLabel('Client secret').fill('a-client-secret-value');
   await flow.getByRole('button', { name: 'Test', exact: true }).click();
   await expect(flow.getByText('That address does not answer as a sign-in service.')).toBeVisible();
+  await flow.getByText('Who may sign in').click();
   await flow.getByLabel(/Email domains/).fill('example.com, example.org');
   await flow.locator('form').evaluate(form => { form.parentElement!.scrollTop = form.parentElement!.scrollHeight; });
   await page.screenshot({ path: 'walk-shots/sso-check.png' });
   await flow.getByRole('button', { name: 'Turn on' }).click();
   await expect(flow).toBeHidden();
 
-  await expect(page.getByText('Anyone with a verified email address at example.com or example.org may sign in.')).toBeVisible();
-  await expect(page.getByText(/joins as a viewer, who can read everything they are given/)).toBeVisible();
+  await expect(page.getByText('Open to example.com or example.org · new people join as viewer')).toBeVisible();
   await page.getByRole('button', { name: 'Test', exact: true }).click();
   await expect(page.getByText('That address does not answer as a sign-in service.')).toBeVisible();
   await page.screenshot({ path: 'walk-shots/sso-on.png' });

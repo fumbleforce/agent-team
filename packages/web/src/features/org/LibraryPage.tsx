@@ -30,7 +30,7 @@ export function LibraryPage({ me, projects }: { me: Me; projects: ProjectNode[] 
       setEditing({ open: false, item: null }); library.reload();
     } catch (problem) {
       if (problem instanceof ApiError && Object.keys(problem.fields).length) setErrors(Object.fromEntries(Object.entries(problem.fields).map(([key, value]) => [key.replace(/^doc\./, ''), value])));
-      else setFailure(problem instanceof ApiError && problem.status === 412 ? 'Someone else changed this agent while you were editing. Close, reload and make your change again.' : problem instanceof ApiError ? problem.message : 'That did not work; try again.');
+      else setFailure(problem instanceof ApiError && problem.status === 412 ? 'Someone else changed this. Reload and try again.' : problem instanceof ApiError ? problem.message : 'That did not work; try again.');
     } finally { setBusy(false); }
   }
 
@@ -57,7 +57,7 @@ export function LibraryPage({ me, projects }: { me: Me; projects: ProjectNode[] 
             <Field label="What they do (optional)" error={errors.title}><Input name="title" maxLength={80} defaultValue={item?.doc.title} placeholder="Security reviewer" /></Field>
           </div>
           <Field label="One line for whoever is hiring (optional)" error={errors.summary}><Input name="summary" maxLength={400} defaultValue={item?.doc.summary} placeholder="Reads every change for ways it could be misused" /></Field>
-          <Field label="Personality and way of working (optional)" help="The agent reads this at the start of every turn." error={errors.persona}><Textarea name="persona" rows={4} maxLength={2000} defaultValue={item?.doc.persona} placeholder="Sceptical and thorough. Assumes input is hostile, explains every finding with a way to reproduce it, and never waves a change through to be polite." /></Field>
+          <Field label="Personality and way of working (optional)" error={errors.persona}><Textarea name="persona" rows={4} maxLength={2000} defaultValue={item?.doc.persona} placeholder="Sceptical and thorough. Explains every finding." /></Field>
           <section className="flex flex-col gap-2">
             <SectionLabel>Roles</SectionLabel>
             {roles.data?.roles.map(role => <Checkbox key={role.slug} name="roles" value={role.slug} defaultChecked={item?.doc.roles.includes(role.slug) ?? false} label={roleName(role.slug)} note={role.doc.summary} />)}

@@ -83,7 +83,7 @@ function NewRole({ onCreated }: { onCreated(slug: string): void }) {
     catch (failure) { setError(failure instanceof ApiError ? failure.message : 'The role could not be created'); }
   };
   return (
-    <Dialog open={open} onOpenChange={setOpen} title="New role" description="A role is a perspective plus what its wearer may do. It starts read-only; open it afterwards to grant more." trigger={<Button block variant="dashed">+ New role</Button>}>
+    <Dialog open={open} onOpenChange={setOpen} title="New role" description="Starts read-only. Open it afterwards to grant more." trigger={<Button block variant="dashed">+ New role</Button>}>
       <form className="flex flex-col gap-3" onSubmit={event => { event.preventDefault(); void create(new FormData(event.currentTarget)); }}>
         <Field label="Name"><Input name="name" required maxLength={40} autoFocus placeholder="Release manager" /></Field>
         <Field label="What it is for, in one line"><Input name="summary" required maxLength={160} placeholder="Owns the release checklist and the go / no-go call" /></Field>

@@ -37,7 +37,7 @@ function HandoffCard({ slug, handoff, tasks, onChanged }: { slug: string; handof
       )}
       {mode === 'attach' && (
         <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); if (taskId) send('attach', { taskId }); }}>
-          <Field label="Which task is this for?" help="Whoever works on the task gets this handoff with its brief.">
+          <Field label="Which task is this for?">
             <Select value={taskId} onChange={event => setTaskId(event.target.value)} required><option value="">Choose a task</option>{tasks.map(task => <option key={task.id} value={task.id}>{task.key} · {task.title}</option>)}</Select>
           </Field>
           <div className="flex gap-2"><Button type="submit" variant="primary" disabled={!taskId}>Attach</Button><Button onClick={() => setMode(null)}>Cancel</Button></div>
@@ -46,7 +46,7 @@ function HandoffCard({ slug, handoff, tasks, onChanged }: { slug: string; handof
       {waiting && mode === null && <div className="flex items-center gap-2"><Chip tone="attention">Waiting for a result</Chip><span className="ml-auto"><Button size="sm" onClick={() => setMode('result')}>Record the result</Button></span></div>}
       {mode === 'result' && (
         <form className="flex flex-col gap-2" onSubmit={event => { event.preventDefault(); if (result.trim()) send('result', { result: result.trim() }); }}>
-          <Field label="What came back?" help="A sentence or two, or a link to where the result is."><Textarea rows={3} maxLength={4000} value={result} onChange={event => setResult(event.target.value)} required /></Field>
+          <Field label="What came back?"><Textarea rows={3} maxLength={4000} value={result} onChange={event => setResult(event.target.value)} required /></Field>
           <div className="flex gap-2"><Button type="submit" variant="primary" disabled={!result.trim()}>Save the result</Button><Button onClick={() => setMode(null)}>Cancel</Button></div>
         </form>
       )}
@@ -85,7 +85,7 @@ export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me;
             </section>
           ))}
           {view.data?.sync?.map(row => <Text key={row.resource} size="caption" tone="muted">{row.resource}: {row.failingSince ? `failing since ${new Date(row.failingSince).toLocaleString()} (${row.error ?? "unknown"})` : row.lastOkAt ? `last synced ${new Date(row.lastOkAt).toLocaleString()}` : "not synced yet"}</Text>)}
-          {groups.length === 0 && <Text tone="muted">Nothing is connected yet. Start with where the code lives and where the tasks come from; chat and documents can follow.</Text>}
+          {groups.length === 0 && <Text tone="muted">Nothing is connected yet. Start with the code and the task board.</Text>}
         </div>
         <SidePanel label="Handoffs" side="right" wide>
           <div className="flex flex-col gap-2.5 px-1.5">

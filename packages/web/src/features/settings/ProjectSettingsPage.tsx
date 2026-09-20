@@ -90,8 +90,8 @@ function ExtraTabs({ tabs, canEdit, onSave }: { tabs: ExtraTab[]; canEdit: boole
           const target = event.currentTarget, form = new FormData(target), label = String(form.get('label') ?? '').trim(), url = String(form.get('url') ?? '').trim();
           void save([...tabs, { label, url }], `Added the ${label} tab`).then(ok => { if (ok) target.reset(); });
         }}>
-          <Field label="Name on the tab" help="One or two words, such as Calendar."><Input name="label" required maxLength={40} placeholder="Calendar" /></Field>
-          <Field label="Web address of the page" help="Starts with https://. It must be reachable from your browser."><Input name="url" type="url" required maxLength={500} pattern="https?://.+" placeholder="https://calendar.example.com" /></Field>
+          <Field label="Name on the tab"><Input name="label" required maxLength={40} placeholder="Calendar" /></Field>
+          <Field label="Web address of the page"><Input name="url" type="url" required maxLength={500} pattern="https?://.+" placeholder="https://calendar.example.com" /></Field>
           <Button type="submit" disabled={action.busy}>Add tab</Button>
         </form>
       )}
@@ -123,7 +123,7 @@ export function ProjectSettingsPage({ id, me, projects }: { id: string; me: Me; 
                   {data.can.archive && data.project.status === 'archived' && <Button disabled={status.busy} onClick={() => setStatus('active')}>Restore</Button>}
                 </span>
               </div>
-              <Text size="caption" tone="muted">A paused project keeps its board and threads and stops syncing with its tracker. An archived project leaves the sidebar and every list.</Text>
+              <Text size="caption" tone="muted">Paused: kept, but no longer synced. Archived: gone from the sidebar.</Text>
               <ActionError error={status.error} />
             </SettingsSection>
 

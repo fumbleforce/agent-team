@@ -42,7 +42,7 @@ function RoutingEditor({ routes, providers, canEdit, onSave }: { routes: Route[]
           <Field label="When a turn is" help="Leave on any kind to match every turn.">
             <Select value={kind} onChange={event => setKind(event.target.value)}><option value="">any kind of turn</option>{Object.entries(KIND_WORDS).map(([value, words]) => <option key={value} value={value}>{words}</option>)}</Select>
           </Field>
-          <Field label="And the task is tagged" help="Optional. The tag shown on the task’s card, such as billing."><Input value={tag} maxLength={40} placeholder="any tag" onChange={event => setTag(event.target.value)} /></Field>
+          <Field label="And the task is tagged"><Input value={tag} maxLength={40} placeholder="any tag" onChange={event => setTag(event.target.value)} /></Field>
           <Field label="Use this provider">
             <Select value={providerId} required onChange={event => { setProviderId(event.target.value); setModel(''); }}><option value="">Choose a provider</option>{providers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</Select>
           </Field>
@@ -70,7 +70,7 @@ function ProjectBudgets({ projects, budgets, spent, money, currency, canEdit, on
             <Text size="small" weight="medium" truncate className="w-44 shrink-0">{project.name}</Text>
             {editing === project.id ? (
               <form className="flex grow flex-wrap items-end gap-2" onSubmit={event => { event.preventDefault(); onSave(project.id, amount.trim() === '' ? null : Math.round(Number(amount) * 100)); setEditing(null); }}>
-                <Field label={`Budget per month in ${currency}`} help="Leave empty for no budget."><Input type="number" min={0} step="0.01" value={amount} autoFocus onChange={event => setAmount(event.target.value)} /></Field>
+                <Field label={`Budget per month in ${currency}`}><Input type="number" min={0} step="0.01" value={amount} autoFocus onChange={event => setAmount(event.target.value)} /></Field>
                 <Button type="submit" variant="primary">Save</Button>
                 <Button onClick={() => setEditing(null)}>Cancel</Button>
               </form>
@@ -99,10 +99,10 @@ function CurrencyCard({ shown, canEdit, onSave }: { shown: CostCurrency; canEdit
       <SectionLabel>Currency</SectionLabel>
       {editing ? (
         <form className="flex flex-wrap items-start gap-2.5" onSubmit={event => { event.preventDefault(); void save(); }}>
-          <Field label="Show costs in" help="The three-letter code of the currency, such as EUR, USD or NOK."><Input value={currency} maxLength={3} required autoFocus onChange={event => setCurrency(event.target.value)} /></Field>
-          <Field label={`One US dollar is worth this many ${code || 'of it'}`} help="For example 0.92 for euros. Use 1 if your currency is the US dollar."><Input type="number" min={0} step="any" required value={rate} onChange={event => setRate(event.target.value)} /></Field>
+          <Field label="Show costs in"><Input value={currency} maxLength={3} required autoFocus onChange={event => setCurrency(event.target.value)} /></Field>
+          <Field label={`One US dollar is worth this many ${code || 'of it'}`} help="0.92 for euros, say."><Input type="number" min={0} step="any" required value={rate} onChange={event => setRate(event.target.value)} /></Field>
           <div className="flex gap-2 pt-6"><Button type="submit" variant="primary" disabled={code.length !== 3 || !(worth > 0)}>Save</Button><Button onClick={() => { setEditing(false); setProblem(null); }}>Cancel</Button></div>
-          {code !== shown.currency && code.length === 3 && <Text size="caption" tone="muted" className="basis-full">Changing the currency restates earlier days at this rate so the page never adds two currencies together. Budgets keep the numbers you typed, so check them afterwards.</Text>}
+          {code !== shown.currency && code.length === 3 && <Text size="caption" tone="muted" className="basis-full">Earlier days are restated at this rate. Budgets keep their numbers.</Text>}
           {problem && <Text size="caption" tone="stop" className="basis-full">{problem}</Text>}
         </form>
       ) : (

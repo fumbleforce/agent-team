@@ -1,101 +1,93 @@
 // What a person sees when adding a model provider: one entry per way the engine adapters in this folder can really be run,
-// in that product's own words. The platform renders these generically and never names a provider itself.
-// Every entry is honest about the adapter behind it: an adapter that drops API keys from the environment is offered by login only.
+// in that product's own words and as few of them as possible. The platform renders these generically and never names a provider itself.
+// Every entry is honest about the adapter behind it: an adapter that drops API keys from the environment is offered by sign-in only.
 export type Billing = 'subscription' | 'metered' | 'local';
-export interface ProviderField { key: 'name' | 'models' | 'concurrency' | 'windowTokens' | 'windowHours'; label: string; help?: string; placeholder?: string; input: 'text' | 'lines' | 'number'; suggested?: string; required?: boolean }
+type Fetch = typeof fetch;
+export interface ModelChoice { id: string; name: string; note?: string }
 export interface ProviderEntry {
   kind: string; title: string; summary: string;
   billing: Billing;
-  // Which adapter of this folder runs the turns.
-  engine: string;
-  // What choosing it means for the team and the bill, in sentences a non-developer understands.
-  does: string[];
-  // What to do on each worker machine, in order. Shown as a numbered list.
-  steps: string[];
-  fields: ProviderField[];
-  // The secret never enters the app. `variable` is set on the workers, which report only whether it is there;
-  // `login` means the engine's own sign-in on the worker holds it and nothing is set at all.
-  credential: { label: string; runsOn: 'workers'; variable?: string; login?: string } | null;
+  // Which adapter of this folder runs the turns, and the one command that installs its tool on a worker.
+  engine: string; install: string;
+  // A key typed into the app: kept sealed by the coordinator and handed to a worker only for a turn on this provider.
+  // The same variable set on a worker by hand still counts, unless the adapter drops it from a worker's own environment (`inAppOnly`).
+  key?: { variable: string; label: string; getAt: string; placeholder?: string; inAppOnly?: boolean };
+  // Or the tool's own sign-in, run once on the worker.
+  signIn?: string;
+  // Asked only when there can be several of the kind.
+  named?: boolean;
+  // Offered ticked when nothing was chosen yet; `custom` allows a name the list does not have.
+  models: { suggested: string[]; custom?: boolean };
+  // The product's own list of models, when it publishes one. The key is passed when one is saved and the list needs it.
+  listModels?(key: string | null, request: Fetch): Promise<ModelChoice[]>;
+  // Whether a usage allowance over some hours makes sense here.
+  window: boolean;
 }
 
-const models = (suggested: string[], help: string): ProviderField => ({ key: 'models', label: 'Models the team may use', input: 'lines', suggested: suggested.join('\n'), required: true, placeholder: 'one model per line', help: `One per line, exactly as the command-line tool names them. ${help}` });
-const CONCURRENCY: ProviderField = { key: 'concurrency', label: 'Agents working at the same time', input: 'number', placeholder: '2', help: 'How many turns may run on this provider at once. Leave empty for 2.' };
-const WINDOW: ProviderField[] = [
-  { key: 'windowTokens', label: 'Usage allowance, in tokens', input: 'number', placeholder: '2000000', help: 'Optional. The team stops starting new turns on this provider once this many tokens were used within the hours below.' },
-  { key: 'windowHours', label: 'Counted over how many hours', input: 'number', placeholder: '5', help: 'Optional. Leave empty for 5 hours.' },
-];
-const RESTART = 'Restart the worker. It reports what it found, and this page shows it as ready.';
+const OPENCODE = 'npm install -g opencode-ai', perMillion = (price: string | undefined) => (price && Number(price) > 0 ? `$${(Number(price) * 1_000_000).toFixed(2)}` : null);
+const pick = (names: string[]): ModelChoice[] => names.map(id => ({ id, name: id }));
 
 export const PROVIDERS: ProviderEntry[] = [
   {
-    kind: 'claude-subscription', title: 'Claude subscription (Pro or Max)', billing: 'subscription', engine: 'claude',
-    summary: 'Run agents on your Claude plan through Claude Code, signed in on the worker. Nothing is billed per use.',
-    does: ['Agents work within your plan\'s usage limits; when a limit is reached they wait until it resets', 'API keys are never handed to it, so it cannot quietly turn into pay-per-use billing'],
-    steps: ['On each worker machine install Claude Code as code.claude.com/docs describes (the native installer is recommended), or with npm: npm install -g @anthropic-ai/claude-code', 'Run "claude" there once and follow the browser prompts to sign in with the account that holds the subscription. If it is already signed in to another account, type /login to switch.', RESTART],
-    fields: [models(['sonnet', 'opus', 'haiku'], 'The short names always point at the newest model of that family; a full model name works too.'), CONCURRENCY, ...WINDOW],
-    credential: { label: 'Claude sign-in', runsOn: 'workers', login: 'claude, then /login' },
+    kind: 'claude-subscription', title: 'Claude subscription', billing: 'subscription', engine: 'claude', install: 'npm install -g @anthropic-ai/claude-code',
+    summary: 'Your Pro or Max plan, through Claude Code.', signIn: 'claude', models: { suggested: ['sonnet', 'opus', 'haiku'], custom: true }, window: true,
   },
   {
-    kind: 'anthropic-api', title: 'Anthropic API (pay per use)', billing: 'metered', engine: 'opencode',
-    summary: 'Run agents on Claude models billed per token to an Anthropic API key, through the opencode command-line tool.',
-    does: ['Every turn is billed to the API key\'s account; the Costs page shows what was used', 'Kept apart from a Claude subscription on purpose: the two never share a sign-in'],
-    steps: ['On each worker machine install opencode: npm install -g opencode-ai', 'Create an API key in the Claude Console at platform.claude.com/settings/keys.', 'On the worker run "opencode auth login", choose Anthropic, choose to enter an API key manually and paste the key. It is stored by opencode on that machine only.', 'Run "opencode models" to see the exact model names you may list below.', RESTART],
-    fields: [models(['anthropic/claude-sonnet-4-5', 'anthropic/claude-haiku-4-5'], 'These are suggestions; "opencode models" on a worker prints the names your key can use.'), CONCURRENCY, ...WINDOW],
-    credential: { label: 'Anthropic API key', runsOn: 'workers', login: 'opencode auth login' },
+    kind: 'anthropic-api', title: 'Anthropic API', billing: 'metered', engine: 'opencode', install: OPENCODE,
+    summary: 'Claude models, billed per token to an API key.', window: true,
+    key: { variable: 'ANTHROPIC_API_KEY', label: 'Anthropic API key', getAt: 'https://platform.claude.com/settings/keys', placeholder: 'sk-ant-…', inAppOnly: true },
+    models: { suggested: ['anthropic/claude-sonnet-4-5', 'anthropic/claude-haiku-4-5'], custom: true },
+    async listModels(key, request) {
+      if (!key) return [];
+      const response = await request('https://api.anthropic.com/v1/models?limit=100', { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } });
+      if (!response.ok) throw new Error(response.status === 401 ? 'That key was not accepted.' : `The model list answered ${response.status}.`);
+      return ((await response.json()) as { data?: { id: string; display_name?: string }[] }).data?.map(model => ({ id: `anthropic/${model.id}`, name: model.display_name ?? model.id })) ?? [];
+    },
   },
   {
-    kind: 'openrouter', title: 'OpenRouter', billing: 'metered', engine: 'opencode',
-    summary: 'One key for models from many vendors, billed per token by OpenRouter, through the opencode command-line tool.',
-    does: ['Any agent can be given any model OpenRouter offers', 'Every turn is billed to your OpenRouter credit; the Costs page shows what was used'],
-    steps: ['On each worker machine install opencode: npm install -g opencode-ai', 'Create a key at openrouter.ai/keys.', 'On every worker machine set OPENROUTER_API_KEY to that key.', RESTART],
-    fields: [models(['openrouter/anthropic/claude-sonnet-4.5', 'openrouter/openai/gpt-5', 'openrouter/google/gemini-2.5-pro'], 'These are suggestions: write "openrouter/" followed by the model\'s name as openrouter.ai/models shows it.'), CONCURRENCY, ...WINDOW],
-    credential: { label: 'OpenRouter key', runsOn: 'workers', variable: 'OPENROUTER_API_KEY' },
+    kind: 'openrouter', title: 'OpenRouter', billing: 'metered', engine: 'opencode', install: OPENCODE,
+    summary: 'One key for models from many vendors, billed per token.', window: true,
+    key: { variable: 'OPENROUTER_API_KEY', label: 'OpenRouter key', getAt: 'https://openrouter.ai/keys', placeholder: 'sk-or-…' },
+    models: { suggested: ['openrouter/anthropic/claude-sonnet-4.5', 'openrouter/openai/gpt-5', 'openrouter/google/gemini-2.5-pro'], custom: true },
+    // The list is public; it needs no key.
+    async listModels(_key, request) {
+      const response = await request('https://openrouter.ai/api/v1/models');
+      if (!response.ok) throw new Error(`The model list answered ${response.status}.`);
+      const models = ((await response.json()) as { data?: { id: string; name?: string; context_length?: number; pricing?: { prompt?: string; completion?: string } }[] }).data ?? [];
+      return models.map(model => {
+        const price = [perMillion(model.pricing?.prompt), perMillion(model.pricing?.completion)];
+        const note = [price[0] && price[1] ? `${price[0]} in · ${price[1]} out per million` : model.pricing ? 'free' : null, model.context_length ? `${model.context_length >= 1_000_000 ? `${Math.round(model.context_length / 100_000) / 10}M` : `${Math.round(model.context_length / 1000)}k`} context` : null].filter(Boolean).join(' · ');
+        return { id: `openrouter/${model.id}`, name: model.name ?? model.id, ...(note ? { note } : {}) };
+      });
+    },
   },
   {
-    kind: 'openai-compatible', title: 'Another OpenAI-compatible gateway', billing: 'metered', engine: 'opencode',
-    summary: 'A company gateway or any other service that speaks the OpenAI API, through the opencode command-line tool.',
-    does: ['Agents use the models your gateway serves', 'Billing is whatever the gateway charges; token use still shows on the Costs page'],
-    steps: ['On each worker machine install opencode: npm install -g opencode-ai', 'In the worker\'s opencode settings file (~/.config/opencode/opencode.json) add the gateway as a custom provider, as opencode.ai/docs/providers describes: a short id such as "gateway", the package "@ai-sdk/openai-compatible", the gateway\'s address as "baseURL" and the models it serves.', 'Run "opencode auth login", choose Other, enter the same id and paste the gateway\'s key.', RESTART],
-    fields: [
-      { key: 'name', label: 'What to call it', input: 'text', placeholder: 'Company gateway', help: 'Shown on agent cards and in cost reports.', required: true },
-      { ...models([], 'Write the id you chose, a slash, then the model\'s name at the gateway.'), placeholder: 'gateway/model-name' }, CONCURRENCY, ...WINDOW,
-    ],
-    credential: { label: 'Gateway key', runsOn: 'workers', login: 'opencode auth login' },
+    kind: 'openai-compatible', title: 'Another gateway', billing: 'metered', engine: 'opencode', install: OPENCODE, named: true,
+    summary: 'Any service that speaks the OpenAI API, set up in opencode on the worker.', signIn: 'opencode auth login', models: { suggested: [], custom: true }, window: true,
   },
   {
-    kind: 'ollama', title: 'Local models (Ollama)', billing: 'local', engine: 'opencode',
-    summary: 'Run agents on models served by Ollama on your own hardware, through the opencode command-line tool. Nothing is billed.',
-    does: ['Nothing leaves your network and nothing is billed', 'Speed and quality depend on the machine and the model; small models struggle with long coding tasks'],
-    steps: ['Install Ollama (ollama.com) where the models should run and pull a model, for example: ollama pull qwen2.5-coder', 'On each worker machine install opencode: npm install -g opencode-ai', 'In the worker\'s opencode settings file (~/.config/opencode/opencode.json) add Ollama as a provider with the id "ollama", as opencode.ai/docs/providers describes: the package "@ai-sdk/openai-compatible", the "baseURL" http://localhost:11434/v1 and each model you pulled listed under "models".', 'If Ollama runs on another machine, put that machine\'s address in "baseURL" instead of localhost, and on the Ollama machine set OLLAMA_HOST (for example to 0.0.0.0:11434) so it listens beyond localhost.', 'Ollama\'s own guide says opencode needs a context length of 64k or more; raise the model\'s context length in Ollama if turns stop early.', RESTART],
-    fields: [models(['ollama/qwen2.5-coder'], 'Write "ollama/" followed by the name "ollama list" shows.'), { ...CONCURRENCY, placeholder: '1', help: 'How many turns may run at once. One is kind to a single graphics card; leave empty for 2.' }],
-    credential: null,
+    kind: 'ollama', title: 'Local models (Ollama)', billing: 'local', engine: 'opencode', install: OPENCODE,
+    summary: 'Models on your own hardware. Nothing is billed.', models: { suggested: ['ollama/qwen2.5-coder'], custom: true }, window: false,
+    // Reached only when Ollama runs next to the coordinator; anywhere else the names are typed.
+    async listModels(_key, request) {
+      const response = await request('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(1500) });
+      return response.ok ? pick((((await response.json()) as { models?: { name: string }[] }).models ?? []).map(model => `ollama/${model.name}`)) : [];
+    },
   },
   {
-    kind: 'codex-subscription', title: 'Codex with a ChatGPT plan', billing: 'subscription', engine: 'codex',
-    summary: 'Run agents on your ChatGPT plan through the Codex command-line tool, signed in on the worker.',
-    does: ['Agents work within your plan\'s usage limits; when a limit is reached they wait', 'Restrictions are Codex\'s own sandbox: read-only turns cannot write files'],
-    steps: ['On each worker machine install Codex: npm install -g @openai/codex', 'Run "codex login" there and complete the ChatGPT sign-in in the browser. On a machine without a browser, "codex login --device-auth" gives a code to enter elsewhere.', RESTART],
-    fields: [models(['gpt-5.5', 'gpt-5.4'], 'These are suggestions and change often; use the names Codex shows under /model.'), CONCURRENCY, ...WINDOW],
-    credential: { label: 'ChatGPT sign-in', runsOn: 'workers', login: 'codex login' },
+    kind: 'codex-subscription', title: 'Codex with a ChatGPT plan', billing: 'subscription', engine: 'codex', install: 'npm install -g @openai/codex',
+    summary: 'Your ChatGPT plan, through the Codex tool.', signIn: 'codex login', models: { suggested: ['gpt-5.5', 'gpt-5.4'], custom: true }, window: true,
   },
   {
-    kind: 'codex-api', title: 'Codex with an OpenAI API key (pay per use)', billing: 'metered', engine: 'codex',
-    summary: 'Run agents through the Codex command-line tool, billed per token to an OpenAI API key.',
-    does: ['Every turn is billed to the API key\'s account', 'Use a separate worker from one signed in with a ChatGPT plan: Codex holds one sign-in per machine account'],
-    steps: ['On each worker machine install Codex: npm install -g @openai/codex', 'Create a key at platform.openai.com/api-keys.', 'On the worker put the key in OPENAI_API_KEY for that one command and run: printenv OPENAI_API_KEY | codex login --with-api-key. Codex stores it on that machine only.', RESTART],
-    fields: [models(['gpt-5.5', 'gpt-5.4'], 'These are suggestions and change often; use the names your key has access to.'), CONCURRENCY, ...WINDOW],
-    credential: { label: 'OpenAI API key', runsOn: 'workers', login: 'codex login --with-api-key' },
+    kind: 'codex-api', title: 'Codex with an OpenAI key', billing: 'metered', engine: 'codex', install: 'npm install -g @openai/codex',
+    summary: 'The Codex tool, billed per token to an OpenAI key.', signIn: 'codex login --with-api-key', models: { suggested: ['gpt-5.5', 'gpt-5.4'], custom: true }, window: true,
   },
   {
-    kind: 'cursor', title: 'Cursor agent', billing: 'subscription', engine: 'cursor',
-    summary: 'Run agents on your Cursor plan through Cursor\'s command-line agent, signed in on the worker.',
-    does: ['Agents work within your Cursor plan', 'Cursor cannot hold a turn to read-only by itself, so a worker set to strict isolation refuses reviews and planning on it; use it for agents that write code'],
-    steps: ['On each worker machine install the Cursor command-line agent as cursor.com/docs/cli/installation describes; "agent --version" confirms it.', 'Run "agent login" there and sign in through the browser; "agent status" shows whether it worked.', RESTART],
-    fields: [models(['auto'], '"auto" lets Cursor choose; "agent models" on the worker lists other names.'), CONCURRENCY],
-    credential: { label: 'Cursor sign-in', runsOn: 'workers', login: 'agent login' },
+    kind: 'cursor', title: 'Cursor agent', billing: 'subscription', engine: 'cursor', install: 'curl https://cursor.com/install -fsS | bash',
+    summary: 'Your Cursor plan, through its command-line agent.', signIn: 'agent login', models: { suggested: ['auto'], custom: true }, window: false,
   },
 ];
 
 export const providerEntry = (kind: string): ProviderEntry | null => PROVIDERS.find(entry => entry.kind === kind) ?? null;
-// The variables a worker looks for so it can report which are present. Names only; a value never leaves the worker.
-export const PROVIDER_VARIABLES = [...new Set(PROVIDERS.flatMap(entry => (entry.credential?.variable ? [entry.credential.variable] : [])))];
+// The variables a worker looks for so it can report which are present. Names only; a worker never reports a value.
+export const PROVIDER_VARIABLES = [...new Set(PROVIDERS.flatMap(entry => (entry.key && !entry.key.inAppOnly ? [entry.key.variable] : [])))];

@@ -62,12 +62,12 @@ export function PageEditor({ slug, scope, pages, editing, onSaved, onCancel }: {
         <Text size="small" tone="muted">{editing ? 'Saving keeps the earlier version in the history, so nothing is lost.' : `The page is kept with ${scope.label} and the agents working there can read it.`}</Text>
       </div>
 
-      <Field label="Title" help="What the page is about, the way you would say it to a colleague.">
+      <Field label="Title">
         <Input value={title} onChange={event => setTitle(event.target.value)} placeholder="How refunds work" maxLength={160} required />
       </Field>
 
       {!editing && (
-        <Field label="Where it goes" help="Folders keep related pages together in the list on the left.">
+        <Field label="Where it goes">
           <Select value={folder} onChange={event => setFolder(event.target.value)}>
             <option value="">At the top, in no folder</option>
             {foldersOf(pages).map(dir => <option key={dir} value={dir}>In “{folderName(dir)}”</option>)}
@@ -76,7 +76,7 @@ export function PageEditor({ slug, scope, pages, editing, onSaved, onCancel }: {
         </Field>
       )}
       {!editing && folder === NEW_FOLDER && (
-        <Field label="Name of the new folder" help="A word or two, for example “Payments” or “How we work”.">
+        <Field label="Name of the new folder">
           <Input value={newFolder} onChange={event => setNewFolder(event.target.value)} placeholder="Payments" maxLength={60} />
         </Field>
       )}
@@ -87,14 +87,14 @@ export function PageEditor({ slug, scope, pages, editing, onSaved, onCancel }: {
           <span className="ml-auto"><Segmented<'write' | 'preview'> options={[{ value: 'write', label: 'Write' }, { value: 'preview', label: 'Preview' }]} value={view} onChange={setView} /></span>
         </div>
         {view === 'write'
-          ? <Textarea aria-label="What the page says" rows={16} value={body} onChange={event => setBody(event.target.value)} placeholder={'Write in plain text. A line starting with # becomes a heading, a line starting with - becomes a list item, and **two stars** make text bold.'} />
+          ? <Textarea aria-label="What the page says" rows={16} value={body} onChange={event => setBody(event.target.value)} placeholder="# Heading, - list item, **bold**" />
           : body.trim() ? <Prose decision={id => <DecisionCard slug={slug} id={id} />}>{body}</Prose> : <Text size="small" tone="muted">Nothing to preview yet.</Text>}
-        {view === 'write' && hasDecisionToken(body) && <Text size="caption" tone="muted">A line that starts with [[decision: is where a decision is shown; Preview shows which one. Move the whole line to move it, or delete the line to take it out.</Text>}
-        <Text size="caption" tone="faint">Formatting is Markdown: # heading, - list item, **bold**, [link text](address). Preview shows how it will look.</Text>
+        {view === 'write' && hasDecisionToken(body) && <Text size="caption" tone="muted">A [[decision: line is where a decision shows. Move or delete the whole line.</Text>}
+        <Text size="caption" tone="faint">Markdown: # heading, - list, **bold**, [text](address).</Text>
       </div>
 
       {(decisions.data?.decisions.length ?? 0) > 0 && (
-        <Field label="Point at a decision (optional)" help="The page will show the decision as it stands when someone reads it, instead of a copy that goes out of date.">
+        <Field label="Point at a decision (optional)">
           <Select value="" onChange={event => { if (event.target.value) setBody(current => `${current.replace(/\s+$/, '')}${current.trim() ? NEWLINE + NEWLINE : ''}${decisionToken(event.target.value)}${NEWLINE}`); }}>
             <option value="">Choose a decision to add at the end of the page…</option>
             {decisions.data?.decisions.map(item => <option key={item.id} value={item.id}>{item.summary.length > 90 ? `${item.summary.slice(0, 90)}…` : item.summary}</option>)}
@@ -103,7 +103,7 @@ export function PageEditor({ slug, scope, pages, editing, onSaved, onCancel }: {
       )}
 
       {editing && (
-        <Field label="What changed (optional)" help="One line for the history, so others can tell this version from the one before.">
+        <Field label="What changed (optional)">
           <Input value={note} onChange={event => setNote(event.target.value)} placeholder="Added the refund limits" maxLength={200} />
         </Field>
       )}

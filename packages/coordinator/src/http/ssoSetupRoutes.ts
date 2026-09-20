@@ -8,7 +8,7 @@ import { parseBody } from './conventions.ts';
 
 type Env = { Variables: { viewer: Viewer } };
 type Values = Record<string, string>;
-const Entered = { kind: z.string().max(40), values: z.record(z.string().max(40), z.string().max(400)).default({}) };
+const Entered = { kind: z.string().max(40), clientSecret: z.string().trim().min(4).max(2000).regex(/^\S+$/, 'That does not look like a client secret').optional(), values: z.record(z.string().max(40), z.string().max(400)).default({}) };
 // Without a kind the check is of what is already set up.
 const TestBody = z.object({ ...Entered, kind: Entered.kind.optional() });
 const SetupBody = z.object({ ...Entered, allowedDomains: z.string().max(400).default(''), defaultRole: z.enum(['viewer', 'member']).default('viewer') });
@@ -20,7 +20,7 @@ interface Deps { context: Context; callbackUri(c: Hc): string; env?: NodeJS.Proc
 // this file validates what was entered, asks the address whether it is a sign-in service, and saves through the same
 // code as the sign-in settings. Admins read; only the owner checks, sets up and turns off.
 export function mountSsoSetupRoutes(app: Hono<any>, deps: Deps) {
-  const env = deps.env ?? process.env, request = deps.fetch ?? fetch, settings = createAuthSettings(deps.context);
+  const env = deps.env ?? deps.context.env, request = deps.fetch ?? deps.context.fetch, has = (variable: string) => Boolean(env[variable]) || deps.context.secrets.has(variable), settings = createAuthSettings(deps.context);
   const viewer = (c: Hc<Env>) => c.get('viewer');
   const owner = (c: Hc<Env>) => { if (!can(viewer(c), 'org.settings')) throw forbidden(); };
 
@@ -72,8 +72,8 @@ export function mountSsoSetupRoutes(app: Hono<any>, deps: Deps) {
     const entry = saved ? identityEntry(saved.provider ?? '') ?? generic() : null;
     return c.json({
       entries: IDENTITY_CATALOG.map(({ issuer, found, notFound, addressField, ...rest }) => rest),
-      redirectUri: deps.callbackUri(c), secret: { variable: SECRET_VARIABLE, present: Boolean(env[SECRET_VARIABLE]) }, canEdit: can(viewer(c), 'org.settings'),
-      current: saved && entry ? { kind: entry.kind, title: titleOf(entry, saved.issuer), allowedDomains: saved.allowedDomains, defaultRole: saved.defaultRole, secret: { variable: saved.clientSecretEnv, present: Boolean(env[saved.clientSecretEnv]) } } : null,
+      redirectUri: deps.callbackUri(c), secret: { variable: SECRET_VARIABLE, present: has(SECRET_VARIABLE) }, canEdit: can(viewer(c), 'org.settings'),
+      current: saved && entry ? { kind: entry.kind, title: titleOf(entry, saved.issuer), allowedDomains: saved.allowedDomains, defaultRole: saved.defaultRole, secret: { variable: saved.clientSecretEnv, present: has(saved.clientSecretEnv) } } : null,
     });
   });
 
@@ -85,7 +85,7 @@ export function mountSsoSetupRoutes(app: Hono<any>, deps: Deps) {
     const variable = saved?.clientSecretEnv ?? SECRET_VARIABLE, outcome = await discover(issuer);
     const checks = [
       outcome === 'found' ? { ok: true, message: entry.found } : { ok: false, message: outcome === 'silent' ? entry.notFound : 'A sign-in service answers there, but it goes by another address. Copy the address exactly as the product shows it.' },
-      env[variable] ? { ok: true, message: `${variable} is set on the coordinator.` } : { ok: false, message: `${variable} is not set on the coordinator yet. Set it to the client secret and restart the coordinator.` },
+      has(variable) || input.clientSecret ? { ok: true, message: 'The client secret is here.' } : { ok: false, message: 'Paste the client secret.' },
     ];
     return c.json({ ok: checks.every(check => check.ok), checks });
   });
@@ -94,8 +94,9 @@ export function mountSsoSetupRoutes(app: Hono<any>, deps: Deps) {
     owner(c);
     const input = await parseBody(c, SetupBody);
     const { entry, values, issuer, insecure } = checked(input);
+    if (input.clientSecret) await deps.context.secrets.set(SECRET_VARIABLE, input.clientSecret, viewer(c).userId);
     await settings.save(viewer(c).userId, { oidc: { issuer, clientId: values.clientId!, clientSecretEnv: SECRET_VARIABLE, allowedDomains: domainsOf(input.allowedDomains), defaultRole: input.defaultRole, allowInsecure: insecure, provider: entry.kind } });
-    return c.json({ ok: true, secretPresent: Boolean(env[SECRET_VARIABLE]) });
+    return c.json({ ok: true, secretPresent: has(SECRET_VARIABLE) });
   });
 
   app.post('/api/settings/sso/off', async c => { owner(c); await settings.save(viewer(c).userId, { oidc: null }); return c.json({ ok: true }); });

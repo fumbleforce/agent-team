@@ -26,7 +26,7 @@ test('a new organization is guided from nothing to a connected project, one step
   await expect(flow.getByText('Task boards')).toHaveCount(0);
   await flow.getByText('GitHub', { exact: true }).click();
   await flow.getByPlaceholder('owner/name').fill('acme/web-shop');
-  await flow.getByRole('button', { name: 'Connect GitHub' }).click();
+  await flow.getByRole('button', { name: 'Connect', exact: true }).click();
   await expect(flow).toBeHidden();
   await expect(code.getByText('acme/web-shop is connected.')).toBeVisible();
 

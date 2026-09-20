@@ -24,7 +24,7 @@ export function SearchResults({ slug, query, onOpen }: { slug: string; query: st
   if (found.error) return <Text tone="muted">{found.error.message}</Text>;
   if (!found.data) return <Text tone="muted">Searching…</Text>;
   const hits = found.data.hits;
-  if (hits.length === 0) return <EmptyState title={`Nothing found for “${query}”`} note="Search looks for words that start with what you typed, and every word has to be there. Try fewer words, or just the start of one." />;
+  if (hits.length === 0) return <EmptyState title={`Nothing found for “${query}”`} note="Try fewer words, or just the start of one." />;
   return (
     <div className="flex max-w-180 flex-col gap-3.5">
       <Text size="small" tone="muted">{hits.length === 1 ? 'One result' : `${hits.length} results`} for “{query}”</Text>

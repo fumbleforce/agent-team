@@ -98,6 +98,7 @@ export function createApp(context: Context) {
   app.get('/machine/projects/:slug', async c => { await machine(c); const row = await context.storage.db.selectFrom('projects').select(['id', 'name']).where('slug', '=', c.req.param('slug')).executeTakeFirst(); if (!row) throw new HttpError(404, 'not_found', 'No such project'); return c.json(row); });
   // Assigned further down, where the guided setup is mounted; routes only run after that.
   let setup: ReturnType<typeof mountSetupRoutes>;
+  let providerSetup: ReturnType<typeof mountProviderRoutes>;
   app.post('/machine/projects', async c => {
     await machine(c);
     const id = await workspace.registerProject(await body(c, RegisterProjectBody));
@@ -121,7 +122,9 @@ export function createApp(context: Context) {
     servedBy.set(claim.workerId, reported);
     const seen = { name: claim.workerId, lanes: JSON.stringify(claim.free), projects: JSON.stringify([...reported.keys()]), last_seen_at: context.now(), ...(claim.ready ? { providers: JSON.stringify(claim.ready) } : {}), ...(claim.isolation ? { isolation: claim.isolation } : {}) };
     await context.storage.db.insertInto('workers').values({ id: claim.workerId, isolation: 'isolated', providers: '[]', ...seen }).onConflict(oc => oc.column('id').doUpdateSet(seen)).execute();
-    return c.json({ turn: await turns.claim(claim) });
+    const turn = await turns.claim(claim);
+    // A key entered in the app travels with the one turn that needs it, over the worker's own authenticated channel.
+    return c.json({ turn: turn ? { ...turn, secrets: await providerSetup.turnSecrets(turn.turnId) } : turn });
   });
   app.post('/worker/turns/:id/heartbeat', async c => { const lease = await body(c, LeaseBody); await turns.heartbeat(c.req.param('id'), lease.workerId, lease.leaseToken); return c.json({ ok: true }); });
   app.post('/worker/turns/:id/git-admin', async c => { const input = await body(c, GitAdminBody); await turns.gitAdmin(c.req.param('id'), input.workerId, input.leaseToken, input.state); return c.json({ ok: true }); });
@@ -500,7 +503,7 @@ export function createApp(context: Context) {
   });
 
   // Providers are organization-wide: which engine serves them, how they bill, and which models an agent may be given.
-  mountProviderRoutes(app, context);
+  providerSetup = mountProviderRoutes(app, context);
   app.post('/api/agents/:id/provider', async c => {
     const agent = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'projects.id as project_id']).where('agents.id', '=', c.req.param('id')).executeTakeFirst();
     if (!agent) throw new HttpError(404, 'not_found', 'Agent not found');

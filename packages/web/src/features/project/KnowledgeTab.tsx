@@ -70,13 +70,13 @@ export function KnowledgeTab({ slug, pageId }: { slug: string; pageId: string | 
               </div>
             );
           })}
-          {tree.data?.pages.length === 0 && <div className="p-2"><Text size="small" tone="muted">No pages here yet. Agents write them as they learn, and you can write one yourself or make one from a memory.</Text></div>}
+          {tree.data?.pages.length === 0 && <div className="p-2"><Text size="small" tone="muted">No pages yet. Agents write them as they learn; you can too.</Text></div>}
         </SidePanel>
 
         <article className="flex min-w-0 grow flex-col gap-3.5 overflow-y-auto px-8 py-5">
           {asked.length > 1 && query.trim() ? <SearchResults slug={slug} query={asked} onOpen={openHit} />
             : mode === 'new' && level ? <PageEditor key="new" slug={slug} scope={level} pages={tree.data?.pages ?? []} editing={null} onSaved={id => { tree.reload(); open(id); }} onCancel={() => setMode('read')} />
-            : !current ? (tree.data && !selected ? <EmptyState title="Nothing written here yet" note={`Pages kept with ${level?.label ?? 'this project'} will show up here. Agents write them as they learn; you can start one too.`}>{tree.data.canWrite && <Button variant="primary" onClick={() => setMode('new')}>Write the first page</Button>}</EmptyState> : <Text tone="muted">{page.error ? page.error.message : 'Loading…'}</Text>)
+            : !current ? (tree.data && !selected ? <EmptyState title="Nothing written here yet" note="Agents write pages as they learn. You can start one too.">{tree.data.canWrite && <Button variant="primary" onClick={() => setMode('new')}>Write the first page</Button>}</EmptyState> : <Text tone="muted">{page.error ? page.error.message : 'Loading…'}</Text>)
             : mode === 'edit' && level ? <PageEditor key={current.id} slug={slug} scope={level} pages={tree.data?.pages ?? []} editing={current} onSaved={() => { setMode('read'); tree.reload(); page.reload(); }} onCancel={() => setMode('read')} />
             : mode === 'history' ? <PageHistory slug={slug} page={current} canWrite={page.data?.canWrite ?? false} onChanged={() => { tree.reload(); page.reload(); }} onClose={() => setMode('read')} />
             : (
@@ -88,7 +88,7 @@ export function KnowledgeTab({ slug, pageId }: { slug: string; pageId: string | 
                     <Button onClick={() => setMode('history')}>History</Button>
                   </span>
                 </div>
-                {waiting && <Notice title="A different version came in from the document folder" actions={<Button onClick={() => setMode('history')}>Compare and choose</Button>}>The page below is your version. The other one is waiting in the history until someone chooses between them.</Notice>}
+                {waiting && <Notice title="A different version came in from the document folder" actions={<Button onClick={() => setMode('history')}>Compare and choose</Button>}>Below is your version. The other waits in the history.</Notice>}
                 <Text as="h1" size="display">{current.title}</Text>
                 <Prose decision={id => <DecisionCard slug={slug} id={id} />}>{current.body}</Prose>
               </>

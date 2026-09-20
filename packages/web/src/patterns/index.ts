@@ -11,3 +11,4 @@ export { DataTable, SettingsBody, SettingsSection, type DataColumn } from './Dat
 export { DiffView, OutputView, Disclosure, parseDiff, type DiffFile, type DiffLine } from './DiffView';
 export { ChoiceCard, Steps, StatusLine, StepCard } from './Setup';
 export { NewProject } from './NewProject';
+export { MultiPicker, SecretField, More, type PickOption } from './Pickers';

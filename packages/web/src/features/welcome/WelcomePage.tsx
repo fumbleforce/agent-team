@@ -43,7 +43,7 @@ export function WelcomePage({ me, projects }: { me: Me; projects: ProjectNode[] 
       <SettingsBody>
         <div className="flex max-w-3xl flex-col gap-3">
           {card('project', 1, 'Create your first project', 'One product or body of work, with its own team of agents, board and discussion.', <NewProject projects={projects} primary to="welcome" />, 'Project')}
-          {card('code', 2, 'Connect the code', 'Say where the repository lives; the team works on its own copy and opens draft pull requests for you to see.', slug && data && <CodeStep slug={slug} repository={data.repository} onChanged={guide.reload} />, 'Connected')}
+          {card('code', 2, 'Connect the code', 'The team works on its own copy and opens draft pull requests.', slug && data && <CodeStep slug={slug} repository={data.repository} onChanged={guide.reload} />, 'Connected')}
           {card('provider', 3, 'Choose how the models are paid for', 'A plan you already have, pay per use, or models on your own machine.', <Button variant="primary" onClick={() => setProviderFlow({ open: true, kind: null })}>Add a model provider</Button>, 'Added')}
           {card('task', 4, 'Give the team something to do', 'Write the first task in the discussion, or let the board fill from your tracker.', slug && <Link href={`/p/${slug}/tasks`}><Button variant="primary">Open the board</Button></Link>, 'The board has work')}
           {slug && (
@@ -74,7 +74,7 @@ function StartingUp({ progress, machine }: { progress: Progress; machine: string
     <div className="flex flex-col gap-1.5">
       {order.slice(0, at).map(phase => <StatusLine key={phase} tone="working">{done[phase]}</StatusLine>)}
       <StatusLine tone="attention" busy>{words[order[at]!]} on {machine}{progress.detail ? `: ${progress.detail}` : '…'}{seconds >= 5 ? ` (${seconds} s)` : ''}</StatusLine>
-      {progress.phase === 'waiting' && seconds >= 20 && <Text size="caption" tone="muted">This usually takes a few seconds. If it stays here, the worker may not be able to reach this address from where it runs.</Text>}
+      {progress.phase === 'waiting' && seconds >= 20 && <Text size="caption" tone="muted">If this stays, the worker may not reach this address.</Text>}
     </div>
   );
 }
@@ -111,7 +111,7 @@ function CodeStep({ slug, repository, onChanged }: { slug: string; repository: s
           )}
           {(!local || mode === 'elsewhere') && (!link ? <div className="flex flex-wrap items-center gap-3"><Button variant="primary" onClick={() => { void pair(); }}>Get the command for the machine that has the code</Button>{local && <Button variant="ghost" onClick={() => setMode('here')}>Back</Button>}</div> : (
             <>
-              <Text size="small" tone="muted">Run this once in the project's folder on that machine. The link works one time, for 15 minutes.</Text>
+              <Text size="small" tone="muted">Run once in the project's folder there. Good for 15 minutes.</Text>
               <CodeBlock text={`agent-team connect ${link}`} />
               <StatusLine tone="off">Waiting for it to report in…</StatusLine>
             </>
