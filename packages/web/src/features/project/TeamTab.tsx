@@ -7,7 +7,7 @@ import { Button, Chip, IconButton, LinkButton, Menu, SectionLabel, Select, Text 
 import { AgentDialog, type Seat } from './AgentDialog';
 import type { Provider } from './ProviderFlow';
 
-export function TeamTab({ roster, teamName, onChanged, children }: { roster: Agent[]; teamName: string | null; onChanged(): void; children?: ReactNode }) {
+export function TeamTab({ roster, onChanged, children }: { roster: Agent[]; onChanged(): void; children?: ReactNode }) {
   const { slug = '' } = useParams<{ slug: string }>();
   const providers = useResource<{ providers: Provider[] }>('/api/providers');
   const team = useResource<TeamView>(`/api/projects/${slug}/team`);
@@ -24,7 +24,7 @@ export function TeamTab({ roster, teamName, onChanged, children }: { roster: Age
   return (
     <div className="flex min-h-0 grow flex-col gap-5 overflow-y-auto p-5">
       <section className="flex flex-col gap-2">
-        <SectionLabel aside={<span className="flex items-center gap-3">{canEdit && <Button size="sm" variant="primary" onClick={() => setEditor({ open: true, seat: null })}>+ Add an agent</Button>}</span>}>{teamName ?? 'Team'} · {roster.length}</SectionLabel>
+        <SectionLabel aside={<span className="flex items-center gap-3">{canEdit && <Button size="sm" variant="primary" onClick={() => setEditor({ open: true, seat: null })}>+ Add an agent</Button>}</span>}>Team · {roster.length}</SectionLabel>
         {roster.map((agent, index) => {
           const seat = team.data?.seats.find(item => item.id === agent.id) ?? null, paused = agent.status === 'paused';
           return (

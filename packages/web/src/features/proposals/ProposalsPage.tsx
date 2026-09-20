@@ -18,7 +18,7 @@ export function ProposalsPage({ id, me, projects, agents }: { id: string | null;
   const decide = async (decision: 'approve' | 'decline') => { if (!selected) return; setBusy(true); await api(`/api/proposals/${selected.id}/decide`, { decision }).finally(() => setBusy(false)); list.reload(); };
 
   return (
-    <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} teamName={null} links={[]} />}>
+    <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} links={[]} />}>
       <PageHeader title="Team proposals" crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }]} />
       <div className="flex min-h-0 grow">
         <SidePanel label="Proposals" wide>

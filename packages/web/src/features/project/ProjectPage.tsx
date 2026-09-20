@@ -48,9 +48,8 @@ export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: 
   const [openTask, setOpenTask] = useState<string | null>(null);
   useStream(event => event.type.startsWith('task.') && event.projectId === view.data?.project.id, view.reload);
   const data = view.data;
-  const root = projects.find(project => project.slug === slug || project.subprojects.some(sub => sub.slug === slug));
 
-  const sidebar = <Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={slug} roster={data?.roster ?? []} teamName={root?.team?.name ?? null} links={links(slug)} />;
+  const sidebar = <Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={slug} roster={data?.roster ?? []} links={links(slug)} />;
   if (!data) return <AppShell sidebar={sidebar}><div className="p-5"><Text tone="muted">{view.error ? view.error.message : 'Loading…'}</Text></div></AppShell>;
 
   // Either address of the checks page lights the tab this project shows.
@@ -69,7 +68,7 @@ export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: 
         : tab === 'product' ? <ProductTab slug={slug} navigate={navigate} />
         : tab === 'tests' || tab === 'checks' ? <ChecksTab slug={slug} code={data.project.kind === 'repo'} />
         : tab === 'workload' ? <WorkloadTab slug={slug} />
-        : tab === 'team' ? <TeamTab roster={data.roster} teamName={root?.team?.name ?? null} onChanged={view.reload}><TeamExtras slug={slug} roster={data.roster} onChanged={view.reload} /></TeamTab>
+        : tab === 'team' ? <TeamTab roster={data.roster} onChanged={view.reload}><TeamExtras slug={slug} roster={data.roster} onChanged={view.reload} /></TeamTab>
         : <div className="p-5"><Text tone="muted">This view arrives in a later phase of docs/SPEC.md.</Text></div>}
     </AppShell>
   );
