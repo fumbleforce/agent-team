@@ -50,6 +50,7 @@ export function TaskPage({ slug, taskId, roster, board, navigate }: { slug: stri
             {inbox && <Button onClick={() => setMerging(value => !value)}>Merge into…</Button>}
             {inbox && <Button onClick={() => { const reason = window.prompt('Why is this declined? (optional)'); if (reason !== null) act(`/api/tasks/${task.id}/decline`, { reason }, () => navigate(`/p/${slug}/tasks`)); }}>Decline</Button>}
             {!inbox && !['done', 'canceled'].includes(task.state) && <span className="w-36"><Select aria-label="Reassign" value="" onChange={event => { if (event.target.value) act(`/api/tasks/${task.id}/assign`, { agentId: event.target.value }); }}><option value="">{owner ? 'Reassign…' : 'Assign…'}</option>{roster.filter(item => item.id !== task.assignee_agent_id).map(item => <option key={item.id} value={item.id}>{item.name} · {item.title}</option>)}</Select></span>}
+            {task.state === 'blocked' && task.pr_url && <Button onClick={() => act(`/api/tasks/${task.id}/merge-again`, {})}>Merge again</Button>}
             {!inbox && ['assigned', 'in_progress', 'blocked'].includes(task.state) && <Button variant="danger" onClick={() => { if (window.confirm(`Stop ${task.key}? The branch and any draft change are kept.`)) act(`/api/tasks/${task.id}/stop`, {}); }}>Stop</Button>}
           </div>}
         </div>

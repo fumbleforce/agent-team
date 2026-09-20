@@ -118,3 +118,13 @@ test('run again after a merge that was cut off, the gate finds it already merged
   const refused = await deliver({ config, scm: other.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
   assert.deepEqual([refused.state, other.state.merges], ['blocked', 0]);
 });
+
+test('a required check that has not finished is a reason to come back, not a refusal; one that failed is a refusal whatever else still runs', async () => {
+  const { root, head } = worktree();
+  const running = scm(head, { checks: [{ name: 'verify', passed: false, pending: true } as { name: string; passed: boolean }] });
+  const waiting = await deliver({ config, scm: running.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([waiting.state, waiting.waiting, waiting.reason, running.state.merges], ['blocked', true, 'Waiting for verify to finish', 0]);
+  const failed = scm(head, { checks: [{ name: 'verify', passed: false }, { name: 'lint', passed: false, pending: true } as { name: string; passed: boolean }] });
+  const refused = await deliver({ config, scm: failed.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([refused.state, refused.waiting, failed.state.merges], ['blocked', undefined, 0]);
+});

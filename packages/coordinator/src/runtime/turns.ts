@@ -301,6 +301,11 @@ export function createTurns(context: Context) {
         }
         await costs.record(tx, { turnId, agentId: turn.agent_id, projectId: turn.project_id, providerId: agent?.provider_id ?? null, billingKind: (agent?.kind as 'metered' | 'subscription' | 'local' | undefined) ?? 'metered', tokensIn: outcome.tokensIn ?? 0, tokensOut: outcome.tokensOut ?? 0, amountMinor: outcome.costMinor ?? 0 });
         if (turn.task_id && outcome.prUrl) await tx.updateTable('tasks').set({ pr_url: outcome.prUrl }).where('id', '=', turn.task_id).execute();
+        // A delivery that comes back later leaves the queue as it found it.
+        if (turn.kind === 'deliver' && turn.task_id && outcome.state === 'deferred') {
+          await tx.updateTable('merge_queue').set({ state: 'queued', reason: outcome.summary?.slice(0, 300) ?? null }).where('task_id', '=', turn.task_id).where('state', '=', 'running').execute();
+          await tx.updateTable('tasks').set({ state: 'approved', updated_at: now() }).where('id', '=', turn.task_id).where('state', '=', 'merging').execute();
+        }
         if (turn.kind === 'deliver' && turn.task_id && outcome.delivery) {
           const merged = outcome.delivery.state === 'merged';
           await tx.updateTable('merge_queue').set({ state: merged ? 'merged' : 'blocked', reason: outcome.delivery.reason, finished_at: now() }).where('task_id', '=', turn.task_id).where('state', 'in', ['queued', 'running']).execute();

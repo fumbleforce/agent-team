@@ -63,6 +63,22 @@ export function createReviews(context: Context, turns: Turns) {
       return result.reviewers;
     },
 
+    // The gate refused and whatever it refused for was put right (a setting, the base branch, a check): the same approved revision is delivered again.
+    async deliverAgain(taskId: string) {
+      const result = await storage.transaction(async tx => {
+        const task = await tx.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state']).where('id', '=', taskId).executeTakeFirst();
+        if (!task?.head_sha || !['blocked', 'approved'].includes(task.state)) throw refuse('Only a task whose merge was refused can be merged again');
+        const valid = await tx.selectFrom('approvals').select('kind').where('task_id', '=', taskId).where('state', '=', 'valid').where('head_sha', '=', task.head_sha).where('verdict', '=', 'pass').execute();
+        const reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id), pm = reviewers.find(reviewer => reviewer.kind === 'pm')?.agentId;
+        if (!pm || !reviewers.every(reviewer => valid.some(row => row.kind === reviewer.kind))) throw refuse('This revision does not have every approval any more; it has to be reviewed again first');
+        await tx.updateTable('tasks').set({ state: 'approved', blocked_reason: null, updated_at: now() }).where('id', '=', taskId).execute();
+        if (!await tx.selectFrom('merge_queue').select('id').where('task_id', '=', taskId).where('state', 'in', ['queued', 'running']).executeTakeFirst())
+          await tx.insertInto('merge_queue').values({ id: newId(now()), project_id: task.project_id, task_id: taskId, head_sha: task.head_sha, state: 'queued', reason: null, created_at: now(), finished_at: null }).execute();
+        return { pm, projectId: task.project_id, headSha: task.head_sha };
+      });
+      await turns.enqueue({ agentId: result.pm, projectId: result.projectId, kind: 'deliver', taskId, dedupeKey: `deliver:${taskId}:${result.headSha}` });
+    },
+
     // A task must not sit in review because a review was lost. A review reads a throwaway checkout and changes nothing, so asking again
     // is safe: whoever still owes a verdict at the task's head and has no review waiting or running is asked again, a few times at most.
     // The same goes for an approved task whose merge is queued with nobody about to run it.

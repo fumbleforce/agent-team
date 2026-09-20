@@ -367,6 +367,13 @@ export function createApp(context: Context) {
     return c.json({ desk: agent ?? null });
   });
   app.post('/api/agents/:id/dm', async c => { const projectId = await agentHome(c, 'project.contribute'); const input = await body(c, z.object({ body: z.string().trim().min(1).max(8000) })); return c.json(await controls.say(c.get('viewer').userId, c.req.param('id')!, projectId, input.body)); });
+  app.post('/api/tasks/:id/merge-again', async c => {
+    const task = await context.storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['projects.id', 'projects.parent_id']).where('tasks.id', '=', c.req.param('id')).executeTakeFirst();
+    if (!task) throw new HttpError(404, 'not_found', 'Task not found');
+    allow(c, 'project.operate', task.parent_id ?? task.id);
+    await reviews.deliverAgain(c.req.param('id')!);
+    return c.json({ ok: true });
+  });
   app.post('/api/tasks/:id/stop', async c => {
     const task = await context.storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['projects.id', 'projects.parent_id']).where('tasks.id', '=', c.req.param('id')).executeTakeFirst();
     if (!task) throw new HttpError(404, 'not_found', 'Task not found');

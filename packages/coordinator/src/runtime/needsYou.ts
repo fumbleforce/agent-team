@@ -4,7 +4,18 @@ import { indexMessage } from '../knowledge/indexing.ts';
 import type { Turns } from './turns.ts';
 
 export type NeedsYouKind = 'decision' | 'quarantine' | 'delivery' | 'proposal' | 'blocked';
-export interface NeedsYouItem { kind: NeedsYouKind; id: string; projectId: string; title: string; detail: string; since: number; taskKey: string | null; href: string | null;
+// Why the merge gate refused, for someone who does not read command lines. The gate's own words stay available beside it.
+const REFUSALS: [RegExp, string][] = [
+  [/no required checks reported/i, 'The code host lists no required checks for the base branch, so the gate cannot confirm that this project\'s checks are enforced there. Either require them on the base branch at the code host, or have the gate itself require them (checkEnforcement: "runner" in the project\'s delivery settings). Then merge again.'],
+  [/Required checks missing or not passing/i, 'A check this project requires is missing or did not pass on this change.'],
+  [/identity, head or mergeability/i, 'The change cannot be merged as it stands: it conflicts with the base branch, is still a draft, or is not the revision that was approved.'],
+  [/autoMergeAuthorized/i, 'This project\'s settings do not authorize the team to merge.'],
+  [/No change was published/i, 'Nothing was published for this task, and the worker has nowhere to publish to.'],
+  [/did not confirm MERGED/i, 'The merge was attempted, and the code host did not confirm it. Open the change to see where it stands.'],
+];
+const inWords = (reason: string | null): string | null => (reason ? REFUSALS.find(([pattern]) => pattern.test(reason))?.[1] ?? null : null);
+
+export interface NeedsYouItem { raw?: string | null; mergeRefused?: boolean; kind: NeedsYouKind; id: string; projectId: string; title: string; detail: string; since: number; taskKey: string | null; href: string | null;
   // What it is about, so a person can tell without looking anything up: the task by its title, who was on it and what they last said, and where the change is.
   about?: { taskHref: string | null; taskTitle: string | null; who: string | null; doing: string | null; lastReport: string | null; branch: string | null; changeUrl: string | null } }
 
@@ -45,7 +56,7 @@ export function createNeedsYou(context: Context, turns: Turns) {
       for (const row of await db.selectFrom('proposals').select(['id', 'project_id', 'title', 'why', 'created_at']).where('state', '=', 'needs_you').execute())
         items.push({ kind: 'proposal', id: row.id, projectId: row.project_id, title: row.title, detail: row.why, since: Number(row.created_at), taskKey: null, href: `/proposals/${row.id}` });
       for (const row of await db.selectFrom('tasks').select(['id', 'project_id', 'key', 'title', 'blocked_reason', 'updated_at']).where('state', '=', 'blocked').execute())
-        items.push({ kind: 'blocked', id: row.id, projectId: row.project_id, title: `${row.key} · ${row.title}`, detail: row.blocked_reason ?? 'The team could not move this on.', since: Number(row.updated_at), taskKey: row.key, href: null, about: await about(row.id, null) });
+        items.push({ kind: 'blocked', id: row.id, projectId: row.project_id, title: `${row.key} · ${row.title}`, detail: inWords(row.blocked_reason) ?? row.blocked_reason ?? 'The team could not move this on.', ...(inWords(row.blocked_reason) ? { raw: row.blocked_reason, mergeRefused: true } : {}), since: Number(row.updated_at), taskKey: row.key, href: null, about: await about(row.id, null) });
       return items.sort((a, b) => a.since - b.since);
     },
 

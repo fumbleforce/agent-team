@@ -96,3 +96,21 @@ test('a task that an earlier version queued for merging more than once is merged
     assert.deepEqual((await db.selectFrom('merge_queue').select(['id', 'state']).where('task_id', '=', other.id).orderBy('created_at').execute()).map(row => [row.id, row.state]), [['a', 'blocked'], ['b', 'queued']]);
   } finally { await coordinator.close(); }
 });
+
+test('a merge the gate refused is tried again on a person\'s word once what it refused for is put right, and only with every approval still standing', async () => {
+  const coordinator = await startCoordinator({ port: 0, storage: { kind: 'sqlite', path: ':memory:' }, machineToken: 'x'.repeat(24), webRoot: null });
+  try {
+    await seedDemo(coordinator.context);
+    const db = coordinator.context.storage.db, turns = createTurns(coordinator.context), reviews = createReviews(coordinator.context, turns);
+    const names = Object.fromEntries((await db.selectFrom('agents').select(['id', 'name']).execute()).map(row => [row.name, row.id])) as Record<string, string>;
+    const kinds = [['Maren', 'pm'], ['Cleo', 'tester'], ['Ada', 'reviewer']] as const;
+    for (const [name, role] of kinds) await db.insertInto('agent_roles').values({ agent_id: names[name]!, role_slug: role }).onConflict(oc => oc.doNothing()).execute();
+    const task = await db.selectFrom('tasks').select(['id', 'project_id']).where('key', '=', 'CK-31').executeTakeFirstOrThrow();
+    await db.updateTable('tasks').set({ state: 'blocked', blocked_reason: 'no required checks reported on the branch', head_sha: SHA }).where('id', '=', task.id).execute();
+    await assert.rejects(reviews.deliverAgain(task.id), /does not have every approval/);
+    for (const [name, role] of kinds) await db.insertInto('approvals').values({ id: `ok-${role}`, task_id: task.id, kind: role, agent_id: names[name]!, turn_id: 'none', head_sha: SHA, verdict: 'pass', findings: '[]', summary: 'Fine.', state: 'valid', created_at: 1 }).execute();
+    await reviews.deliverAgain(task.id);
+    const after = await db.selectFrom('tasks').select(['state', 'blocked_reason']).where('id', '=', task.id).executeTakeFirstOrThrow();
+    assert.deepEqual([after.state, after.blocked_reason, (await db.selectFrom('merge_queue').select('state').where('task_id', '=', task.id).execute()).map(row => row.state), (await db.selectFrom('work_items').select('kind').where('task_id', '=', task.id).where('state', '=', 'queued').execute()).map(item => item.kind)], ['approved', null, ['queued'], ['deliver']]);
+  } finally { await coordinator.close(); }
+});
