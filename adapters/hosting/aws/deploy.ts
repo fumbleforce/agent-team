@@ -7,6 +7,9 @@ import path from 'node:path';
 // what it finds in the deployment object, and calls `save` so a rerun after any failure continues
 // where it stopped. The `aws` runner is injectable so the whole plan is testable without an account.
 const HERE = import.meta.dirname;
+// The shell templates run on a Linux host, so they are read with LF endings whatever the checkout
+// did to them: a CRLF `#!/bin/bash` would fail on the instance long after the deploy looked fine.
+const shellTemplate = (name: string) => readFileSync(path.join(HERE, name), 'utf8').replace(/\r\n/g, '\n');
 const PORT = 4310;
 // The network comes before the roles because the control role is limited to the deployment's subnet.
 export const STEPS = ['secrets', 'network', 'iam', 'controlPlane', 'image', 'verify'] as const;
@@ -237,7 +240,7 @@ export async function network(deployment: Deployment, { aws = defaultAws, myIp, 
 }
 
 // User data for the control-plane host: the shared script with this deployment's values exported ahead of it.
-export function controlPlaneUserData(deployment: Deployment, { template = readFileSync(path.join(HERE, 'control-plane-user-data.sh'), 'utf8') }: { template?: string } = {}) {
+export function controlPlaneUserData(deployment: Deployment, { template = shellTemplate('control-plane-user-data.sh') }: { template?: string } = {}) {
   const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
   const head = ['#!/bin/bash', `export TOOLKIT_REPO=${quote(deployment.toolkit?.repo ?? TOOLKIT_REPO)} TOOLKIT_REF=${quote(deployment.toolkit?.ref ?? 'main')} SSM_PREFIX=${quote(deployment.ssmPrefix)}`];
   return `${head.join('\n')}\n${template.replace(/^#!.*\n/, '')}`;
@@ -282,7 +285,7 @@ export async function controlPlane(deployment: Deployment, { aws = defaultAws, l
   return deployment;
 }
 
-export function bakeScript(deployment: Deployment, { template = readFileSync(path.join(HERE, 'worker-bake.sh'), 'utf8'), toolkitRepo = deployment.toolkit?.repo ?? TOOLKIT_REPO, toolkitRef = deployment.toolkit?.ref ?? 'main' }: { template?: string; toolkitRepo?: string; toolkitRef?: string } = {}) {
+export function bakeScript(deployment: Deployment, { template = shellTemplate('worker-bake.sh'), toolkitRepo = deployment.toolkit?.repo ?? TOOLKIT_REPO, toolkitRef = deployment.toolkit?.ref ?? 'main' }: { template?: string; toolkitRepo?: string; toolkitRef?: string } = {}) {
   const tokenVariable = deployment.secrets.find(secret => secret.adapter === deployment.scm.kind)?.name;
   if (!tokenVariable) throw new DeployError(`No secret holds the ${deployment.scm.kind} token`, `Add a secret with adapter "${deployment.scm.kind}" to the deployment file (agent-team status aws prints its path).`);
   const provisioning = deployment.worker.provisioning ?? { packages: [], setup: [] };
