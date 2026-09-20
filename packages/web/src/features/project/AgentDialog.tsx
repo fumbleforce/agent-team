@@ -9,7 +9,7 @@ export type RoleChoice = RoleChoiceView;
 export const roleName = (slug: string) => slug.length <= 2 ? slug.toUpperCase() : slug.charAt(0).toUpperCase() + slug.slice(1).replaceAll('-', ' ');
 
 // One seat on the team, made or changed by hand: who the agent is, what it may do (its roles), and what it runs on.
-export function AgentDialog({ slug, seat, open, roles, providers, onOpenChange, onSaved }: { slug: string; seat: Seat | null; open: boolean; roles: RoleChoice[]; providers: Provider[]; onOpenChange(open: boolean): void; onSaved(): void }) {
+export function AgentDialog({ slug, seat, open, roles, providers, defaultWords, onOpenChange, onSaved }: { slug: string; seat: Seat | null; open: boolean; roles: RoleChoice[]; providers: Provider[]; /* What the team default is right now, in words. */ defaultWords: string; onOpenChange(open: boolean): void; onSaved(): void }) {
   const [errors, setErrors] = useState<Record<string, string>>({}), [failure, setFailure] = useState<string | null>(null), [busy, setBusy] = useState(false);
 
   async function save(form: HTMLFormElement) {
@@ -41,9 +41,9 @@ export function AgentDialog({ slug, seat, open, roles, providers, onOpenChange, 
           {roles.length === 0 && <Text size="small" tone="muted">The role library is empty.</Text>}
           {errors.roles && <Text size="caption" tone="stop">{errors.roles}</Text>}
         </section>
-        <Field label="Runs on" help={providers.length ? 'Which provider and model this agent uses. "The worker\'s default" is whatever the worker machine was set up with.' : 'No provider yet: it uses what the worker has.'} error={errors.provider}>
+        <Field label="Runs on" error={errors.provider}>
           <Select name="route" defaultValue={seat?.providerId ? `${seat.providerId}\n${seat.model ?? ''}` : ''}>
-            <option value="">The worker's default</option>
+            <option value="">Team default ({defaultWords})</option>
             {providers.flatMap(provider => provider.models.map(model => <option key={`${provider.id}${model}`} value={`${provider.id}\n${model}`}>{provider.name} · {model}</option>))}
           </Select>
         </Field>

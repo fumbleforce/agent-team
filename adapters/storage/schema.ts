@@ -17,8 +17,8 @@ export interface MachineTokensTable { id: string; name: string; token_hash: stri
 export interface ProjectsTable { id: string; slug: string; name: string; kind: string; parent_id: string | null; status: string; manifest: Json; manifest_sha: string | null; team_id: string | null; sort: number; created_at: Ms }
 export interface MilestonesTable { id: string; project_id: string; label: string; due_at: Ms | null; state: string }
 
-export interface TeamsTable { id: string; scope: string; project_id: string | null; name: string; template_slug: string | null; template_version: number | null }
-export interface AgentsTable { id: string; team_id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; provider_id: string | null; model: string | null; daily_cap_minor: number | null; is_pm: boolean; doing: string | null; sort: number; created_at: Ms; idle_at: Ms | null; fallback_noticed_day: string | null }
+export interface TeamsTable { id: string; scope: string; project_id: string | null; name: string; template_slug: string | null; template_version: number | null; default_provider_id: Generated<string | null>; default_model: Generated<string | null>; default_effort: Generated<string | null> }
+export interface AgentsTable { id: string; team_id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; provider_id: string | null; model: string | null; daily_cap_minor: number | null; is_pm: boolean; doing: string | null; sort: number; created_at: Ms; idle_at: Ms | null; fallback_noticed_day: string | null; effort: Generated<string | null> }
 export interface AgentRolesTable { agent_id: string; role_slug: string }
 export interface ProvidersTable { id: string; name: string; kind: string; engine: string; billing: string; engine_config: Json; models: Json; limits: Json; status: string; status_detail: string | null; limited_until: Ms | null }
 

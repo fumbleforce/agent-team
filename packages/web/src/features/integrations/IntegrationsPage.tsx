@@ -94,7 +94,7 @@ export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me;
             <SectionLabel>Handoffs</SectionLabel>
             {incoming.map(handoff => <HandoffCard key={handoff.id} slug={slug} handoff={handoff} tasks={tasks} onChanged={view.reload} />)}
             {view.data && incoming.length === 0 && <Text size="small" tone="muted">Nothing handed over yet.</Text>}
-            {outgoing.length > 0 && <><SectionLabel>Sent out by the team</SectionLabel></>}
+            {outgoing.length > 0 && <SectionLabel>Sent out by the team</SectionLabel>}
             {outgoing.map(handoff => <HandoffCard key={handoff.id} slug={slug} handoff={handoff} tasks={tasks} onChanged={view.reload} />)}
           </div>
         </SidePanel>

@@ -117,7 +117,7 @@ export function createMentions(context: Context, turns: Turns) {
     async answer(mentionId: string, messageId: string) {
       const published = await storage.transaction(async tx => {
         const row = await tx.selectFrom('mentions').selectAll().where('id', '=', mentionId).executeTakeFirst();
-        if (!row || row.state !== 'woken') throw refuse('This mention is already answered; a mention gets one reply');
+        if (row?.state !== 'woken') throw refuse('This mention is already answered; a mention gets one reply');
         await tx.updateTable('mentions').set({ state: 'answered', reply_message_id: messageId }).where('id', '=', mentionId).execute();
         return events.append(tx, [{ type: 'mention.answered', actorKind: 'agent', agentId: row.agent_id, projectId: row.project_id, threadId: row.thread_id, payload: { mentionId, messageId } }]);
       });

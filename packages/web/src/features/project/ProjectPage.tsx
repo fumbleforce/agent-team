@@ -3,26 +3,28 @@ import { api, postToThread, uploadImage, type Me, type ProjectNode, type Project
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
 import { AppShell, BoardColumn, Composer, mentionOptions, Message, PageHeader, RailHeader, resolveAuthor, Sidebar } from '../../patterns';
-import { Tabs, Text } from '../../ui';
+import { Button, Dialog, Tabs, Text } from '../../ui';
 import { useLocation } from 'wouter';
 import { ChecksTab } from './ChecksTab';
-import { IssuesTab } from './IssuesTab';
+import { IssueRedirect, RaiseIssue } from './IssuesTab';
 import { ProductTab } from './ProductTab';
 import { KnowledgeTab } from './KnowledgeTab';
-import { TaskDialog } from './TaskDialog';
+import { FrontDesk } from '../desk/FrontDesk';
+import { TaskPage } from './TaskPage';
 import { TeamTab } from './TeamTab';
 import { TeamExtras } from '../org/TeamExtras';
 import { MilestoneStrip } from '../settings/ProjectSettingsPage';
 import { WorkloadTab } from './WorkloadTab';
 
 const COLUMNS = [
+  { key: 'inbox', name: 'Inbox', tone: 'attention' },
   { key: 'backlog', name: 'Backlog', tone: 'off' },
   { key: 'in_progress', name: 'In progress', tone: 'working' },
   { key: 'review', name: 'Review', tone: 'review' },
   { key: 'done', name: 'Done', tone: 'idle' },
 ] as const;
 // A project that is not code has checks rather than tests: the same page under the word its team uses.
-const tabsFor = (kind: string) => ['Tasks', 'Issues', 'Product', kind === 'repo' ? 'Tests' : 'Checks', 'Workload', 'Knowledge', 'Team'];
+const tabsFor = (kind: string) => ['Tasks', 'Product', kind === 'repo' ? 'Tests' : 'Checks', 'Workload', 'Knowledge', 'Team'];
 const links = (slug: string) => [{ href: '/proposals', label: 'Team proposals' }, { href: '/costs', label: 'Costs' }, { href: `/p/${slug}/integrations`, label: 'Integrations' }, { href: '/roles', label: 'Roles' }, { href: `/settings/project/${slug}`, label: 'Project settings' }];
 
 function Discussion({ threadId, view, me }: { threadId: string; view: ProjectView; me: Me }) {
@@ -45,8 +47,8 @@ function Discussion({ threadId, view, me }: { threadId: string; view: ProjectVie
 export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: string; tab: string; pageId?: string | null; me: Me; projects: ProjectNode[] }) {
   const [, navigate] = useLocation();
   const view = useResource<ProjectView>(`/api/projects/${slug}`);
-  const [openTask, setOpenTask] = useState<string | null>(null);
-  useStream(event => event.type.startsWith('task.') && event.projectId === view.data?.project.id, view.reload);
+  const [raising, setRaising] = useState(false);
+  useStream(event => (event.type.startsWith('task.') || event.type.startsWith('issue.')) && event.projectId === view.data?.project.id, view.reload);
   const data = view.data;
 
   const sidebar = <Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={slug} roster={data?.roster ?? []} links={links(slug)} />;
@@ -56,15 +58,17 @@ export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: 
   const shown = tab === 'tests' || tab === 'checks' ? (data.project.kind === 'repo' ? 'tests' : 'checks') : tab;
 
   return (
-    <AppShell sidebar={sidebar} rail={tab === 'tasks' && data.discussionThreadId ? <Discussion threadId={data.discussionThreadId} view={data} me={me} /> : undefined}>
-      <PageHeader title={data.project.name} crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }, ...(data.project.parent ? [{ label: data.project.parent.name, href: `/p/${data.project.parent.slug}` }] : [])]}>
+    <AppShell sidebar={sidebar} rail={tab === 'tasks' && !pageId && data.discussionThreadId ? <Discussion threadId={data.discussionThreadId} view={data} me={me} /> : undefined}>
+      <PageHeader title={data.project.name} aside={<FrontDesk slug={slug} />} crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }, ...(data.project.parent ? [{ label: data.project.parent.name, href: `/p/${data.project.parent.slug}` }] : [])]}>
         <MilestoneStrip slug={slug} />
         <Tabs items={[...tabsFor(data.project.kind).map(label => ({ label, href: `/p/${slug}/${label.toLowerCase()}`, active: label.toLowerCase() === shown })), ...(data.customTabs ?? []).map(item => ({ label: item.label, href: item.url, external: true }))]} />
       </PageHeader>
-      {tab === 'tasks'
-        ? <div className="grid min-h-0 grow grid-cols-1 gap-3 overflow-y-auto px-5 pt-4 pb-5 sm:grid-cols-2 xl:grid-cols-4">{COLUMNS.map(column => <BoardColumn key={column.key} name={column.name} tone={column.tone} tasks={data.board[column.key]} roster={data.roster} onAssign={(taskId, agentId) => { void api(`/api/tasks/${taskId}/assign`, { agentId }).then(view.reload); }} onOpen={setOpenTask} />)}<TaskDialog taskId={openTask} roster={data.roster} onClose={() => setOpenTask(null)} /></div>
+      {tab === 'tasks' && pageId
+        ? <TaskPage key={pageId} slug={slug} taskId={pageId} roster={data.roster} board={COLUMNS.flatMap(column => data.board[column.key])} navigate={navigate} />
+        : tab === 'tasks'
+        ? <div className="grid min-h-0 grow grid-cols-1 gap-3 overflow-y-auto px-5 pt-4 pb-5 sm:grid-cols-2 xl:grid-cols-5">{COLUMNS.map(column => <BoardColumn key={column.key} name={column.name} tone={column.tone} tasks={data.board[column.key]} roster={data.roster} hrefOf={taskId => `/p/${slug}/tasks/${taskId}`} aside={column.key === 'inbox' ? <Button size="sm" variant="ghost" onClick={() => setRaising(true)}>+ Raise</Button> : undefined} onAssign={(taskId, agentId) => { void api(`/api/tasks/${taskId}/assign`, { agentId }).then(view.reload); }} />)}<Dialog open={raising} onOpenChange={setRaising} title="Raise something"><RaiseIssue slug={slug} onRaised={raised => { setRaising(false); view.reload(); navigate(`/p/${slug}/tasks/${raised}`); }} /></Dialog></div>
         : tab === 'knowledge' ? <KnowledgeTab slug={slug} pageId={pageId} />
-        : tab === 'issues' ? <IssuesTab slug={slug} number={pageId ? Number(pageId) : null} roster={data.roster} me={me} navigate={navigate} />
+        : tab === 'issues' ? <IssueRedirect slug={slug} number={pageId ? Number(pageId) : null} navigate={navigate} />
         : tab === 'product' ? <ProductTab slug={slug} navigate={navigate} />
         : tab === 'tests' || tab === 'checks' ? <ChecksTab slug={slug} code={data.project.kind === 'repo'} />
         : tab === 'workload' ? <WorkloadTab slug={slug} />

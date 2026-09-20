@@ -1,5 +1,6 @@
 import type { TurnKind } from '@agent-team/protocol';
 import { teamIdOf } from '../repos/issueTasks.ts';
+import { DESK_RULE, goingOn, wearsDesk } from './desk.ts';
 import type { Tx } from '@agent-team/storage';
 import { failingChecks } from '../checks/wake.ts';
 
@@ -7,7 +8,7 @@ export interface Packet { system: string; prompt: string }
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
 
 const TASK_RULES: Record<TurnKind, string> = {
-  work: 'Work on the task in this worktree. Commit coherent checkpoints. Finish by calling task.update with a summary of what you did and what is left: ready_for_review when it is done and tested, checkpoint when you stop midway, blocked with a reason when you cannot continue. If a decision is not yours alone to make, think it through and call deliberation.propose once instead of guessing; do not push or open merge requests yourself.',
+  work: 'Work on the task in this worktree. Commit coherent checkpoints. Finish by calling task.update with a summary of what you did and what is left: ready_for_review when it is done and tested, checkpoint when you stop midway, blocked with a reason when you cannot continue, not_needed when the base branch already does what the task asks (say where). If your branch is behind the base branch, merge the base into it; never rebase or rewrite a published branch. If a decision is not yours alone to make, think it through and call deliberation.propose once instead of guessing; do not push or open merge requests yourself.',
   feedback: 'Give exactly one block of feedback on the proposal below by calling deliberation.feedback: your stance, up to four concrete points from your own role and knowledge, risks, and conditions under which you would accept. You do not see the other reviewers and there is no second round, so say what matters. Do not restate the proposal.',
   revise: 'Reviewers answered your proposal below. Call deliberation.revise once with the revised proposal and what changed; answer every condition and blocking point, or say why not.',
   conclude: 'Decide the proposal below by calling deliberation.conclude. Name the outcome, state the decision in plain words with owners, and address every against or blocking block in dissent. Escalate when it changes scope, milestones, budget or the team beyond what you may decide.',
@@ -33,7 +34,7 @@ async function handedOver(tx: Tx, taskId: string): Promise<string | null> {
 
 interface Finding { severity?: string; path?: string; note?: string }
 const findingLines = (findings: string) => (JSON.parse(findings) as Finding[]).slice(0, 8).map(item => `  - ${item.severity ?? 'note'}${item.path ? ` ${item.path}` : ''}: ${clip(item.note ?? '', 300)}`);
-const REPORT = 'Finish by calling task.update with a summary of what you did and what is left: ready_for_review, checkpoint, or blocked with a reason.';
+const REPORT = 'Finish by calling task.update with a summary of what you did and what is left: ready_for_review, checkpoint, blocked with a reason, or not_needed when the base branch already contains what the task was for.';
 
 // What a resumed session has not seen: only what changed on the platform since the agent's last turn on this task.
 // The worker adds the one thing only it can know, whether the base moved.
@@ -43,9 +44,11 @@ export async function buildResumeDelta(tx: Tx, turn: { agentId: string; projectI
   // What the task asks for may have changed, and people write in the task's own thread (or its tracker issue, which is mirrored there).
   const task = await tx.selectFrom('tasks').select(['key', 'title', 'brief', 'updated_at']).where('id', '=', turn.taskId).executeTakeFirst();
   if (task && Number(task.updated_at) > turn.since && task.brief) parts.push(`# The task as it reads now (it changed since your last turn)\n${task.key}: ${task.title}\n${clip(task.brief, 2000)}`);
-  const said = await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select(['messages.author_kind', 'messages.body']).where('threads.subject_type', '=', 'task').where('threads.subject_id', '=', turn.taskId)
-    .where('messages.created_at', '>', turn.since).where('messages.author_kind', '=', 'user').orderBy('messages.created_at').limit(8).execute();
-  if (said.length) parts.push(`# Written on this task since your last turn\n${said.map(row => `- ${clip(row.body, 600)}`).join('\n')}`);
+  const said = await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select(['messages.author_kind', 'messages.body']).where(eb => eb.or([eb.and([eb('threads.subject_type', '=', 'task'), eb('threads.subject_id', '=', turn.taskId)]),
+      // A task that was raised as a report keeps the report's thread as its own.
+      eb('threads.id', 'in', eb.selectFrom('links').innerJoin('issues', 'issues.id', 'links.from_id').select('issues.thread_id').where('links.from_type', '=', 'issue').where('links.to_type', '=', 'task').where('links.to_id', '=', turn.taskId))]))
+    .where('messages.created_at', '>', turn.since).where('messages.author_kind', 'in', ['user', 'system']).orderBy('messages.created_at').limit(8).execute();
+  if (said.length) parts.push(`# Written on this task since your last turn\n${said.map(row => `- ${clip(row.body, 1200)}`).join('\n')}`);
   // What a person told this agent privately since then is direction for the work in hand.
   const direct = await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select('messages.body').where('threads.kind', '=', 'dm').where('threads.subject_id', '=', turn.agentId)
     .where('messages.author_kind', '=', 'user').where('messages.created_at', '>', turn.since).orderBy('messages.created_at').limit(8).execute();
@@ -118,6 +121,8 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
   } else if (turn.threadId && (turn.kind === 'triage' || turn.kind === 'reply' || turn.kind === 'retro')) {
     const tail = await tx.selectFrom('messages').select(['author_kind', 'body']).where('thread_id', '=', turn.threadId).orderBy('seq', 'desc').limit(turn.kind === 'retro' ? 12 : 6).execute();
     parts.push(`# Thread ${turn.threadId}, latest last\n${tail.reverse().map(message => `- ${message.author_kind}: ${clip(message.body, 600)}`).join('\n')}`);
+    // The front desk answers from what is going on, in its own short way.
+    if (turn.kind === 'reply' && await wearsDesk(tx, turn.agentId)) { parts[0] = DESK_RULE; parts.push(await goingOn(tx, turn.projectId, Date.now())); }
     // A reply is often about the work in hand, so it says what that is.
     if (turn.kind === 'reply') {
       const mine = await tx.selectFrom('tasks').select(['key', 'title', 'state']).where('project_id', '=', turn.projectId).where('assignee_agent_id', '=', turn.agentId).where('state', 'not in', ['done', 'canceled']).orderBy('updated_at', 'desc').limit(8).execute();

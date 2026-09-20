@@ -105,3 +105,26 @@ test('an approved draft is marked ready and merged; a draft that is not the appr
     assert.deepEqual([result.state, other.state.readied, other.state.merges], ['blocked', 0, 0]);
   }
 });
+
+test('run again after a merge that was cut off, the gate finds it already merged and merges nothing a second time; a different change that is merged is not taken for it', async () => {
+  const { root, head } = worktree();
+  const { gate, state } = scm(head);
+  state.merged = true;
+  const again = await deliver({ config, scm: gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([again.state, again.mergeAttempted, state.merges, again.mergeCommit], ['merged', false, 0, 'c'.repeat(40)]);
+  // Merged at another head than the one that was approved: that is not this delivery.
+  const other = scm(head, { change: { headSha: 'd'.repeat(40) } });
+  other.state.merged = true;
+  const refused = await deliver({ config, scm: other.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([refused.state, other.state.merges], ['blocked', 0]);
+});
+
+test('a required check that has not finished is a reason to come back, not a refusal; one that failed is a refusal whatever else still runs', async () => {
+  const { root, head } = worktree();
+  const running = scm(head, { checks: [{ name: 'verify', passed: false, pending: true } as { name: string; passed: boolean }] });
+  const waiting = await deliver({ config, scm: running.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([waiting.state, waiting.waiting, waiting.reason, running.state.merges], ['blocked', true, 'Waiting for verify to finish', 0]);
+  const failed = scm(head, { checks: [{ name: 'verify', passed: false }, { name: 'lint', passed: false, pending: true } as { name: string; passed: boolean }] });
+  const refused = await deliver({ config, scm: failed.gate, prUrl: PR, approvals: async () => approved(head), worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([refused.state, refused.waiting, failed.state.merges], ['blocked', undefined, 0]);
+});

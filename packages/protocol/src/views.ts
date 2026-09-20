@@ -4,14 +4,16 @@ import { z } from 'zod';
 // types and the web app reads them, so neither side writes the shape by hand.
 
 // An agent on a project's roster, as the sidebar, the board and the team page show it.
-export const AgentView = z.object({ id: z.string(), name: z.string(), initials: z.string(), tint: z.string(), title: z.string(), persona: z.string(), status: z.string(), provider_id: z.string().nullable(), model: z.string().nullable(), is_pm: z.boolean(), doing: z.string().nullable() });
+export const AgentView = z.object({ id: z.string(), name: z.string(), initials: z.string(), tint: z.string(), title: z.string(), persona: z.string(), status: z.string(), provider_id: z.string().nullable(), model: z.string().nullable(), effort: z.string().nullable().optional(), is_pm: z.boolean(), doing: z.string().nullable() });
 export type AgentView = z.infer<typeof AgentView>;
 
 export const TaskCardView = z.object({ id: z.string(), key: z.string(), title: z.string(), tag: z.string().nullable(), state: z.string(), assignee_agent_id: z.string().nullable(),
   // Why a task in the backlog is not to be worked on yet (an idea waiting for its owner, say), or why a blocked one is blocked.
-  blocked_reason: z.string().nullable().optional() });
+  blocked_reason: z.string().nullable().optional(),
+  // For what sits in the inbox: where it came from, in words.
+  raised: z.string().nullable().optional() });
 export type TaskCardView = z.infer<typeof TaskCardView>;
-export const BoardView = z.object({ backlog: z.array(TaskCardView), in_progress: z.array(TaskCardView), review: z.array(TaskCardView), done: z.array(TaskCardView) });
+export const BoardView = z.object({ inbox: z.array(TaskCardView), backlog: z.array(TaskCardView), in_progress: z.array(TaskCardView), review: z.array(TaskCardView), done: z.array(TaskCardView) });
 export type BoardView = z.infer<typeof BoardView>;
 
 export const ProjectView = z.object({
@@ -38,7 +40,7 @@ export const SeatView = z.object({ id: z.string(), name: z.string(), initials: z
 export type SeatView = z.infer<typeof SeatView>;
 export const RoleChoiceView = z.object({ slug: z.string(), summary: z.string() });
 export type RoleChoiceView = z.infer<typeof RoleChoiceView>;
-export const TeamView = z.object({ seats: z.array(SeatView), roles: z.array(RoleChoiceView), canEdit: z.boolean() });
+export const TeamView = z.object({ fallback: z.object({ providerId: z.string().nullable(), model: z.string().nullable(), effort: z.string().nullable() }), workerRuns: z.array(z.object({ worker: z.string(), engine: z.string(), model: z.string().nullable(), efforts: z.array(z.string()) })), seats: z.array(SeatView), roles: z.array(RoleChoiceView), canEdit: z.boolean() });
 export type TeamView = z.infer<typeof TeamView>;
 
 // Harness health, derived on read from the check runs of the base branch.

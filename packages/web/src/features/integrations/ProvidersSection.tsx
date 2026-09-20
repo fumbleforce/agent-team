@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { api, ApiError } from '../../data/client';
 import { useResource } from '../../data/useResource';
 import { MultiPicker, StatusLine, type PickOption } from '../../patterns';
-import { Button, Card, Chip, IconButton, Input, Menu, SectionLabel, StatusDot, Text } from '../../ui';
+import { Button, Card, Chip, IconButton, Input, Menu, SectionLabel, Select, StatusDot, Text } from '../../ui';
 import { BILLING, ProviderFlow, READY_TONE, type Provider } from '../project/ProviderFlow';
 
 // One provider, flat: what it is, whether it is ready, and its models, which are changed right here and saved as they change.
@@ -11,22 +11,23 @@ function ProviderRow({ provider, canEdit, onChanged }: { provider: Provider; can
   const [models, setModels] = useState(provider.models), [problem, setProblem] = useState<string | null>(null);
   const change = (body: Record<string, unknown>, undo?: () => void) => { setProblem(null); void api(`/api/providers/${provider.id}/change`, body).then(onChanged, failure => { undo?.(); setProblem(failure instanceof ApiError ? failure.message : 'That did not work; try again.'); }); };
   const pick = (next: string[]) => { const before = models; setModels(next); if (next.length) change({ models: next }, () => setModels(before)); else { setModels(before); setProblem('Keep at least one model'); } };
-  const [keying, setKeying] = useState(false);
+  const [keying, setKeying] = useState(false), off = provider.status === 'paused';
   return (
     <Card tone="raised" pad="sm" className="flex flex-col gap-2">
       <div className="flex items-center gap-2">
-        <StatusDot tone={READY_TONE[provider.readiness.state]} /><Text weight="semibold">{provider.name}</Text>
-        <Text size="caption" tone="muted" truncate className="grow">{provider.readiness.message}{provider.agents ? ` · ${provider.agents} agent${provider.agents === 1 ? '' : 's'}` : ''}</Text>
-        {canEdit && <span className="flex shrink-0 items-center gap-1.5"><span className="w-14"><Input aria-label={`Turns at once on ${provider.name}`} inputMode="numeric" defaultValue={provider.limits.concurrency ?? 2} onBlur={event => { const typed = Number(event.target.value); if (typed !== (provider.limits.concurrency ?? 2)) change({ concurrency: typed }); }} /></span><Text size="caption" tone="muted" className="whitespace-nowrap">at once</Text></span>}
+        <StatusDot tone={off ? 'off' : READY_TONE[provider.readiness.state]} /><Text weight="semibold" tone={off ? 'muted' : 'ink'}>{provider.name}</Text>{off && <Chip>Off</Chip>}
+        <Text size="caption" tone="muted" truncate className="grow">{off ? 'Nothing starts on it' : provider.readiness.message}{provider.agents ? ` · ${provider.agents} agent${provider.agents === 1 ? '' : 's'}` : ''}</Text>
+        {canEdit && <Select compact aria-label={`Turns at once on ${provider.name}`} value={String(provider.limits.concurrency ?? 2)} onChange={event => change({ concurrency: Number(event.target.value) })}>{[...new Set([1, 2, 3, 4, 6, 8, 12, 16, provider.limits.concurrency ?? 2])].sort((a, b) => a - b).map(count => <option key={count} value={count}>{count} at once</option>)}</Select>}
         <Chip tone={provider.kind === 'metered' ? 'attention' : 'neutral'}>{BILLING[provider.kind] ?? provider.kind}</Chip>
         {canEdit && <Menu align="end" label={provider.name} trigger={<IconButton icon="more" label={`More for ${provider.name}`} hint={false} />} items={[
+          { label: off ? 'Turn on' : 'Turn off', onSelect: () => change({ on: off }) },
           ...(provider.keyLabel ? [{ label: provider.keySaved ? `Replace the ${provider.keyLabel}…` : `Add the ${provider.keyLabel}…`, onSelect: () => setKeying(true) }] : []),
           'separator' as const,
           { label: 'Remove…', tone: 'danger' as const, onSelect: () => { if (window.confirm(`Remove ${provider.name}?`)) { setProblem(null); void api(`/api/providers/${provider.id}/remove`, {}).then(onChanged, failure => setProblem(failure instanceof ApiError ? failure.message : 'That did not work; try again.')); } } },
         ]} />}
       </div>
       <MultiPicker inline name={`models-${provider.id}`} label={`models of ${provider.name}`} options={list.data?.models ?? []} value={models} onChange={pick} loading={Boolean(provider.catalog) && canEdit && !list.data} disabled={!canEdit} />
-      {keying && <form className="flex items-center gap-2" onSubmit={event => { event.preventDefault(); const typed = String(new FormData(event.currentTarget).get('key') ?? '').trim(); if (typed) change({ key: typed }); setKeying(false); }}><Input name="key" type="password" autoComplete="off" autoFocus aria-label={provider.keyLabel ?? 'Key'} placeholder={provider.keyLabel ?? ''} /><Button type="submit" size="sm" variant="primary">Save</Button><Button size="sm" variant="ghost" onClick={() => setKeying(false)}>Cancel</Button></form>}
+      {keying && <form className="flex items-center gap-2" onSubmit={event => { event.preventDefault(); const typed = String(new FormData(event.currentTarget).get('key') ?? '').trim(); if (typed) change({ key: typed }); setKeying(false); }}><Input compact name="key" type="password" autoComplete="off" autoFocus aria-label={provider.keyLabel ?? 'Key'} placeholder={provider.keyLabel ?? ''} /><Button type="submit" size="sm" variant="primary">Save</Button><Button size="sm" variant="ghost" onClick={() => setKeying(false)}>Cancel</Button></form>}
       {problem && <StatusLine tone="stop">{problem}</StatusLine>}
     </Card>
   );

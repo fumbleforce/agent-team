@@ -1,4 +1,6 @@
 import type { Context as Hc, Hono } from 'hono';
+import { z } from 'zod';
+import { WORKER_FRESH_MS } from '../runtime/scheduler.ts';
 import { AgentBody, AgentPatch, AuthSettingsBody, FromTemplateBody, HireBody, MachineTokenBody, MilestoneBody, MilestonePatch, ProjectLinkBody, ProjectMemberBody, ProjectStatusBody, SaveTemplateBody, SeatLoanBody, TeamOrderBody, UserPatch, VersionedDocBody, type StoredEvent, type TeamView } from '@agent-team/protocol';
 import type { MachineTokens } from '../auth/machineTokens.ts';
 import { createMembers } from '../auth/members.ts';
@@ -177,7 +179,15 @@ export function registerOrgRoutes(app: Hono<Env>, context: Context, deps: { work
   const roleLibrary = async () => (await docs.list('role', LIBRARY)).map(role => ({ slug: role.slug, summary: String((role.doc as { summary?: unknown }).summary ?? '') }));
   app.get('/api/projects/:slug/team', async c => {
     const project = await projectFor(c, 'project.read'), team = await org.team(project.id);
-    return c.json({ seats: team.seats, roles: await roleLibrary(), canEdit: can(c.get('viewer'), 'project.configure', team.rootId) } satisfies TeamView);
+    // What "the worker decides" means right now: the tool each worker of this project runs by default, and that tool's own default model.
+    const workers = await context.storage.db.selectFrom('workers').select(['name', 'projects', 'providers']).where('last_seen_at', '>', context.now() - WORKER_FRESH_MS).execute();
+    const workerRuns = workers.filter(worker => (JSON.parse(worker.projects) as string[]).includes(project.id)).flatMap(worker => { const said = JSON.parse(worker.providers) as { runs?: { engine: string; model: string | null }; efforts?: Record<string, string[]> } | unknown[]; return Array.isArray(said) || !said.runs ? [] : [{ worker: worker.name, engine: said.runs.engine, model: said.runs.model, efforts: said.efforts?.[said.runs.engine] ?? [] }]; });
+    return c.json({ seats: team.seats, fallback: team.fallback, workerRuns, roles: await roleLibrary(), canEdit: can(c.get('viewer'), 'project.configure', team.rootId) } satisfies TeamView);
+  });
+  app.post('/api/projects/:slug/team/default', async c => {
+    const project = await projectFor(c, 'project.configure');
+    await org.setTeamDefault(me(c), project.id, await parseBody(c, z.object({ providerId: z.string().max(60).nullable(), model: z.string().max(120).nullable(), effort: z.string().regex(/^[a-z]{2,12}$/).nullable().optional() })));
+    return c.json({ ok: true });
   });
   app.post('/api/projects/:slug/team/agents', async c => {
     const project = await projectFor(c, 'project.configure');

@@ -57,8 +57,8 @@ export const TOOLS = {
     permission: null, turnKinds: ALL, mutating: false, rateClass: 'read',
   }),
   'task.update': tool({
-    description: 'Report on the task of this turn. A summary is required; it is what a later turn resumes from.',
-    input: z.object({ state: z.enum(['checkpoint', 'ready_for_review', 'blocked']), summary: Words(120), blockedReason: z.string().max(200).optional() }),
+    description: 'Report on the task of this turn. A summary is required; it is what a later turn resumes from. not_needed closes the task: use it only when the base branch already contains what the task was for, and say where in the summary.',
+    input: z.object({ state: z.enum(['checkpoint', 'ready_for_review', 'blocked', 'not_needed']), summary: Words(120), blockedReason: z.string().max(200).optional() }),
     output: z.object({ state: z.string() }),
     permission: null, turnKinds: ['work'], mutating: true, rateClass: 'write',
   }),
@@ -157,6 +157,12 @@ export const TOOLS = {
     input: z.object({ proposals: z.array(IdeaProposal).min(1).max(10) }),
     output: z.object({ recorded: z.number().int() }),
     permission: null, turnKinds: ['ideate'], mutating: true, rateClass: 'rare',
+  }),
+  'desk.handover': tool({
+    description: 'Front desk only. Pass what the owner asked for in this thread to the PM, with one line saying what they want. The PM triages it: it may become a task, a decision or an answer.',
+    input: z.object({ threadId: z.string(), wants: Words(60) }),
+    output: z.object({ messageId: z.string(), passedTo: z.string() }),
+    permission: null, turnKinds: ['reply'], mutating: true, rateClass: 'once',
   }),
   'task.create': tool({
     description: 'PM only. Put a new task on the board: a title, a brief that says what done looks like, and optionally the teammate who takes it (they are started on it at once; without one it waits in the backlog). One call per task. Check task.list first so nothing is added twice.',

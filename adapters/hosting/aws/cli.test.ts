@@ -29,7 +29,7 @@ test('deploy without --apply plans: it only reads the account and leaves the fil
     assert.deepEqual(JSON.parse(readFileSync(cli.file, 'utf8')), FACTS);
     assert.match(cli.text(), /Nothing was created or changed\. Apply with: agent-team deploy aws --apply/);
     assert.match(cli.text(), /network: create a dedicated VPC/);
-    assert.equal(/secrets:/.test(cli.text()), flags.includes('--only') ? false : true);
+    assert.equal(/secrets:/.test(cli.text()), !flags.includes('--only'));
     assert.ok(!cli.text().includes('glpat-value'));
   }
 });

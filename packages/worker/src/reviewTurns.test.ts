@@ -27,7 +27,7 @@ function repository(manifest?: unknown): string {
 }
 
 // Stands between the worker and the coordinator: every call is logged, and a test may act before one is passed on or answer it itself.
-type Intercept = (route: string, body: Record<string, unknown>) => Promise<number | void>;
+type Intercept = (route: string, body: Record<string, unknown>) => Promise<number | undefined>;
 async function proxy(target: string, intercept: Intercept): Promise<{ url: string; log: { route: string; body: Record<string, unknown> }[]; server: Server }> {
   const log: { route: string; body: Record<string, unknown> }[] = [];
   const server = createServer((request, response) => {

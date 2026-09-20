@@ -7,6 +7,7 @@ import type { Hono } from 'hono';
 import { z } from 'zod';
 import { ENTRYPOINTS, packageRoot, workerIdFor } from '@agent-team/protocol';
 import { HttpError, type Context } from '../context.ts';
+import { publishTarget } from '../../../../adapters/hosting/local/up.ts';
 import type { Viewer } from '../auth/rbac.ts';
 
 interface Deps {
@@ -110,7 +111,7 @@ export function mountWorkerSetupRoutes(app: Hono<any>, deps: Deps) {
       const dir = path.join(context.dataDir, 'workers', project.slug);
       mkdirSync(dir, { recursive: true, mode: 0o700 });
       const config = path.join(dir, 'worker.json');
-      writeFileSync(config, `${JSON.stringify({ coordinatorUrl: origin, workerId: workerIdFor(os.hostname(), project.slug), stateDir: path.join(dir, 'state'), engine, projects: { [project.id]: given ?? managed } }, null, 2)}\n`, { mode: 0o600 });
+      writeFileSync(config, `${JSON.stringify({ coordinatorUrl: origin, workerId: workerIdFor(os.hostname(), project.slug), stateDir: path.join(dir, 'state'), engine, projects: { [project.id]: given ?? managed }, ...(publishTarget(given ?? managed) ? { publish: publishTarget(given ?? managed) } : {}) }, null, 2)}\n`, { mode: 0o600 });
       const { token } = await deps.tokens.create(viewer, { name: `Worker on ${os.hostname()} for ${project.name}`, kind: 'worker' });
       // The token goes to the child through its environment only; it is never written to disk or shown.
       const child = spawn(process.execPath, [path.join(packageRoot(), ENTRYPOINTS.worker), '--config', config], { env: { ...process.env, AGENT_TEAM_TOKEN: token }, stdio: ['ignore', 'ignore', 'pipe'], windowsHide: true });

@@ -11,4 +11,5 @@ export { DataTable, SettingsBody, SettingsSection, type DataColumn } from './Dat
 export { DiffView, OutputView, Disclosure, parseDiff, type DiffFile, type DiffLine } from './DiffView';
 export { ChoiceCard, Steps, StatusLine, StepCard } from './Setup';
 export { NewProject } from './NewProject';
+export { Pipeline, LogCard, RailFacts, RailSection, DetailHeader, DetailRail, type PipelineStep } from './TaskParts';
 export { MultiPicker, SecretField, More, type PickOption } from './Pickers';
