@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { configDir, DEFAULT_PORT, ENTRYPOINTS, packageRoot, workerIdFor } from '@agent-team/protocol';
@@ -15,6 +15,16 @@ export function publishTarget(checkout: string): { scm: string; repository: stri
     const authorized = manifest.ceiling?.publishAuthorized === true || manifest.delivery?.publishAuthorized === true;
     return authorized && manifest.scm?.kind && manifest.delivery?.repository ? { scm: manifest.scm.kind, repository: manifest.delivery.repository, base: manifest.delivery.baseBranch ?? 'main' } : null;
   } catch { return null; }
+}
+
+// In a checkout the app's pages are built files. When the sources are newer than the build (after a pull, say), the pages would lag behind
+// the server, so the build is refreshed before starting. An installed package ships its pages built and has no sources to compare.
+export function webBuildIsStale(root: string): boolean {
+  const source = path.join(root, 'packages', 'web', 'src'), built = path.join(root, 'packages', 'web', 'dist', 'index.html');
+  if (!existsSync(source)) return false;
+  if (!existsSync(built)) return true;
+  const newest = (dir: string): number => readdirSync(dir, { withFileTypes: true }).reduce((latest, entry) => Math.max(latest, entry.isDirectory() ? newest(path.join(dir, entry.name)) : statSync(path.join(dir, entry.name)).mtimeMs), 0);
+  return newest(source) > statSync(built).mtimeMs;
 }
 
 export const localDir = (projectId: string, env: NodeJS.ProcessEnv = process.env) => path.join(configDir(env), 'local', projectId);

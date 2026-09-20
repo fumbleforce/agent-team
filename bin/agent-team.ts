@@ -1,9 +1,9 @@
 #!/usr/bin/env node
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { publishTarget, setupLink, startLocal, writeLocalConfigs } from '../adapters/hosting/local/up.ts';
+import { publishTarget, setupLink, startLocal, webBuildIsStale, writeLocalConfigs } from '../adapters/hosting/local/up.ts';
 import { ENGINES } from '../adapters/engine/index.ts';
 import { configDir, DEFAULT_PORT, ENTRYPOINTS, packageRoot, workerIdFor } from '@agent-team/protocol';
 import { createStorage, type StorageConfig } from '@agent-team/storage';
@@ -34,6 +34,11 @@ else if (command === 'up') {
   const slug = (manifest.queueProjectId ?? path.basename(checkout)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const engine = flag('--engine') ?? manifest.engine?.default ?? 'claude';
   if (!ENGINES.includes(engine)) { console.error(`Engine "${engine}" is not available here; choose one of: ${ENGINES.join(', ')}`); process.exit(1); }
+  if (webBuildIsStale(packageRoot())) {
+    console.log('The app\'s pages are older than their sources; building them first…');
+    const built = spawnSync(process.platform === 'win32' ? 'npm.cmd' : 'npm', ['run', 'build', '-w', 'packages/web'], { cwd: packageRoot(), stdio: 'inherit', shell: process.platform === 'win32', windowsHide: true });
+    if (built.status !== 0) console.error('Building the pages failed; starting with the pages as they are.');
+  }
   const configs = writeLocalConfigs({ projectId: slug, checkout, engine, ...(flag('--port') ? { port: Number(flag('--port')) } : {}) });
   const services = startLocal(configs);
   process.on('SIGINT', () => services.stop());
