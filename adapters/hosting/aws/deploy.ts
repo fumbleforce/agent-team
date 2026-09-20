@@ -10,7 +10,7 @@ const HERE = import.meta.dirname;
 // The shell templates run on a Linux host, so they are read with LF endings whatever the checkout
 // did to them: a CRLF `#!/bin/bash` would fail on the instance long after the deploy looked fine.
 // Templates handed in by a caller are made LF too, so nothing this file ships carries a carriage return.
-const lf = (text: string) => text.replace(/\r\n/g, '\n');
+const lf = (text: string) => text.replace(/\r\n?/g, '\n');
 const shellTemplate = (name: string) => lf(readFileSync(path.join(HERE, name), 'utf8'));
 const PORT = 4310;
 // The network comes before the roles because the control role is limited to the deployment's subnet.

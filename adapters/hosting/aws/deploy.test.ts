@@ -80,6 +80,8 @@ test('templates are filled from the deployment and refuse unknown placeholders',
   // to cloud-init is a Linux script.
   assert.equal(controlPlaneUserData(deployment, { template: '#!/bin/bash\r\necho hi\r\n' }).split('\n').at(-2), 'echo hi');
   assert.equal(bakeScript(deployment, { template: 'set +x\r\nTOKEN=__TOKEN_VARIABLE__\r\n' }), 'set +x\nTOKEN=GITLAB_TOKEN\n');
+  // A lone carriage return is made a newline too, so nothing handed to Linux carries a stray CR.
+  assert.equal(bakeScript(deployment, { template: 'set +x\rTOKEN=__TOKEN_VARIABLE__\r' }), 'set +x\nTOKEN=GITLAB_TOKEN\n');
   deployment.secrets = deployment.secrets.filter(secret => secret.adapter !== 'gitlab');
   assert.throws(() => bakeScript(deployment), hinted(/agent-team status aws/));
 });
