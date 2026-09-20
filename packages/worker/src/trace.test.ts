@@ -190,7 +190,7 @@ test('fail-stop: a heartbeat that cannot be confirmed kills the engine process t
   } finally { server.close(); }
 });
 
-test('orphan sweep: a turn left by a crashed worker has its process killed and is reported uncertain, never resumed', async () => {
+test('orphan sweep: a turn left by a restarted worker has its process ended by that worker, which makes its state known: it goes back to the queue instead of to a person', async () => {
   const { coordinator, db, turns, worker, work, projectId, taskId, stateDir } = await boot('ok');
   const child = spawnCommand(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });
   try {
@@ -204,10 +204,12 @@ test('orphan sweep: a turn left by a crashed worker has its process killed and i
     const swept = await worker.sweep();
     assert.deepEqual(swept.map(record => record.turnId), [claimed.turnId]);
     assert.ok(await until(() => !alive(child.pid!)), 'the orphaned process is gone');
-    assert.deepEqual({ ...await db.selectFrom('turns').select(['state']).where('id', '=', claimed.turnId).executeTakeFirstOrThrow() }, { state: 'uncertain' });
-    assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'quarantined');
+    assert.deepEqual({ ...await db.selectFrom('turns').select(['state', 'stop_reason']).where('id', '=', claimed.turnId).executeTakeFirstOrThrow() }, { state: 'deferred', stop_reason: 'worker-restarted' });
+    assert.notEqual((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'quarantined');
+    assert.equal((await db.selectFrom('quarantines').select('id').execute()).length, 0, 'nobody is asked to investigate');
+    assert.deepEqual((await db.selectFrom('work_items').select(['state', 'task_id']).execute()).map(item => [item.state, item.task_id]), [['queued', taskId]], 'the same work waits to continue');
     assert.ok(existsSync(path.join(turnDir, 'orphaned.json')) && !existsSync(path.join(turnDir, 'run.json')) && !existsSync(path.join(turnDir, 'platform-token')));
-    // Nothing is picked up again: not by a second sweep, not by a claim.
+    // The record is dealt with once; the work itself continues after the usual pause, not at once.
     assert.deepEqual(await worker.sweep(), []);
     assert.equal(await worker.tick(), false);
     assert.equal((await db.selectFrom('turns').select('id').execute()).length, 1);

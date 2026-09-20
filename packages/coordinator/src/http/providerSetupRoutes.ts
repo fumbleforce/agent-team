@@ -132,7 +132,9 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
   });
 
   // One thing changed in place, from the provider's own row: the models, how many turns at once, or its key. Everything else stays as it was.
-  const ChangeBody = z.object({ models: z.array(z.string().regex(/^\S{1,120}$/, 'A model name has no spaces')).max(40).optional(), concurrency: z.number().int().min(1).max(64).optional(), key: z.string().trim().min(8).max(400).regex(/^\S+$/).optional() });
+  const ChangeBody = z.object({ models: z.array(z.string().regex(/^\S{1,120}$/, 'A model name has no spaces')).max(40).optional(), concurrency: z.number().int().min(1).max(64).optional(), key: z.string().trim().min(8).max(400).regex(/^\S+$/).optional(),
+    // Off keeps the provider, its key and its models, and starts no turn on it; agents on it wait until it is on again.
+    on: z.boolean().optional() });
   app.post('/api/providers/:id/change', async c => {
     const userId = admin(c), input = await parseBody(c, ChangeBody);
     const row = await db.selectFrom('providers').selectAll().where('id', '=', c.req.param('id')).executeTakeFirst();
@@ -147,6 +149,10 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
     const variable = kind ? providerEntry(kind)?.key?.variable : undefined;
     if (input.key && !variable) throw new HttpError(400, 'invalid', 'This provider signs in on the worker; it takes no key', { key: 'This provider signs in on the worker; it takes no key' });
     if (input.key && variable) { await context.secrets.set(variable, input.key, userId); lists.clear(); }
+    if (input.on !== undefined) {
+      const published = await storage.transaction(async tx => { await tx.updateTable('providers').set({ status: input.on ? 'connected' : 'paused', status_detail: input.on ? null : 'Turned off' }).where('id', '=', row.id).execute(); return events.append(tx, [{ type: input.on ? 'provider.turned_on' : 'provider.turned_off', category: 'audit', actorKind: 'user', userId, payload: { providerId: row.id, name: row.name } }]); });
+      events.published(published);
+    }
     if (input.models || input.concurrency) await save(userId, ProviderBody.parse({ name: row.name, kind: row.kind, engine: row.engine, models, limits: { concurrency: input.concurrency ?? limits.maxConcurrentTurns, ...(limits.windowTokens ? { windowTokens: limits.windowTokens, windowMs: limits.windowMs } : {}) } }), { id: row.id });
     return c.json({ ok: true });
   });

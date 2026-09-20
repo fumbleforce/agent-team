@@ -162,7 +162,14 @@ export function createTurns(context: Context) {
     return turn;
   }
 
+  // Whose turn this was, by the lease it was claimed with, whether or not that lease has run out since.
+  async function claimedBy(tx: Tx, turnId: string, workerId: string, leaseToken: string) {
+    const turn = await tx.selectFrom('turns').selectAll().where('id', '=', turnId).executeTakeFirst();
+    return turn && turn.worker_id === workerId && sameSecret(turn.lease_token_hash, hashToken(leaseToken)) ? turn : null;
+  }
+
   return {
+    claimedBy: (turnId: string, workerId: string, leaseToken: string) => storage.transaction(tx => claimedBy(tx, turnId, workerId, leaseToken)),
     async enqueue(input: { agentId: string; projectId: string; kind: TurnKind; taskId?: string | null; threadId?: string | null; dedupeKey?: string; causeEventId?: string; notBefore?: number; priorityClass?: number; prepare?: (tx: Tx, workItemId: string) => Promise<void> }): Promise<string | null> {
       const id = newId(now());
       const published = await storage.transaction(async tx => {
