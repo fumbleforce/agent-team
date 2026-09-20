@@ -56,6 +56,7 @@ export function createApp(context: Context) {
   const turns = createTurns(context);
   const deliberation = createDeliberation(context, turns);
   const reviews = createReviews(context, turns);
+  let chased = 0;
   const retro = createRetro(context, turns);
   // Semantic search is on when an embeddings endpoint is named; otherwise search is lexical.
   const knowledge = createKnowledge(context, process.env.AGENT_TEAM_EMBEDDINGS_URL ? httpEmbedder(process.env.AGENT_TEAM_EMBEDDINGS_URL, process.env.AGENT_TEAM_EMBEDDINGS_MODEL ?? 'nomic-embed-text') : null);
@@ -124,6 +125,8 @@ export function createApp(context: Context) {
     servedBy.set(claim.workerId, reported);
     const seen = { name: claim.workerId, lanes: JSON.stringify(claim.free), projects: JSON.stringify([...reported.keys()]), last_seen_at: context.now(), ...(claim.ready ? { providers: JSON.stringify(claim.ready) } : {}), ...(claim.isolation ? { isolation: claim.isolation } : {}) };
     await context.storage.db.insertInto('workers').values({ id: claim.workerId, isolation: 'isolated', providers: '[]', ...seen }).onConflict(oc => oc.column('id').doUpdateSet(seen)).execute();
+    // Before handing out work: whatever review or merge was lost along the way is asked for again. At most twice a minute.
+    if (context.now() - chased > 30_000) { chased = context.now(); await reviews.chase().catch(error => console.error(`Chasing reviews failed: ${(error as Error).message}`)); }
     const turn = await turns.claim(claim);
     // A key entered in the app travels with the one turn that needs it, over the worker's own authenticated channel.
     return c.json({ turn: turn ? { ...turn, secrets: await providerSetup.turnSecrets(turn.turnId) } : turn });

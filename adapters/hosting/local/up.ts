@@ -7,6 +7,16 @@ import { configDir, DEFAULT_PORT, ENTRYPOINTS, packageRoot, workerIdFor } from '
 
 export interface LocalOptions { projectId: string; checkout: string; engine: string; port?: number; env?: NodeJS.ProcessEnv }
 
+// Where finished work is pushed and its change opened: only when the project's own manifest authorizes publishing and names the repository.
+// Without that a worker keeps its work on local branches and nothing leaves the machine.
+export function publishTarget(checkout: string): { scm: string; repository: string; base: string } | null {
+  try {
+    const manifest = JSON.parse(readFileSync(path.join(checkout, '.agent-team.json'), 'utf8')) as { scm?: { kind?: string }; ceiling?: { publishAuthorized?: unknown }; delivery?: { repository?: string; baseBranch?: string; publishAuthorized?: unknown } };
+    const authorized = manifest.ceiling?.publishAuthorized === true || manifest.delivery?.publishAuthorized === true;
+    return authorized && manifest.scm?.kind && manifest.delivery?.repository ? { scm: manifest.scm.kind, repository: manifest.delivery.repository, base: manifest.delivery.baseBranch ?? 'main' } : null;
+  } catch { return null; }
+}
+
 export const localDir = (projectId: string, env: NodeJS.ProcessEnv = process.env) => path.join(configDir(env), 'local', projectId);
 
 // Private configuration for the two processes; the machine token is generated once and reused.
@@ -23,7 +33,7 @@ export function writeLocalConfigs(options: LocalOptions) {
   return {
     dir, url, machineToken,
     coordinator: write('coordinator.json', { host: '127.0.0.1', port, storage: { kind: 'sqlite', path: path.join(data, 'coordinator.sqlite') } }),
-    worker: write('worker.json', { coordinatorUrl: url, workerId: workerIdFor(os.hostname(), options.projectId), stateDir: path.join(data, 'worker'), engine: options.engine, projects: { [options.projectId]: options.checkout } }),
+    worker: write('worker.json', { coordinatorUrl: url, workerId: workerIdFor(os.hostname(), options.projectId), stateDir: path.join(data, 'worker'), engine: options.engine, projects: { [options.projectId]: options.checkout }, ...(publishTarget(options.checkout) ? { publish: publishTarget(options.checkout) } : {}) }),
     envFile: write('service.env', `AGENT_TEAM_TOKEN=${machineToken}\nAGENT_TEAM_URL=${url}\n`),
   };
 }

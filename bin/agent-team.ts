@@ -3,7 +3,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { setupLink, startLocal, writeLocalConfigs } from '../adapters/hosting/local/up.ts';
+import { publishTarget, setupLink, startLocal, writeLocalConfigs } from '../adapters/hosting/local/up.ts';
 import { ENGINES } from '../adapters/engine/index.ts';
 import { configDir, DEFAULT_PORT, ENTRYPOINTS, packageRoot, workerIdFor } from '@agent-team/protocol';
 import { createStorage, type StorageConfig } from '@agent-team/storage';
@@ -61,7 +61,7 @@ else if (command === 'up') {
     if (!response.ok || !paired?.token || !paired.projectId || !paired.slug) { console.error(paired?.error?.message ?? 'The link was not accepted. Make a new one in the app.'); process.exit(1); }
     const dir = path.join(home, paired.slug);
     mkdirSync(dir, { recursive: true, mode: 0o700 });
-    writeFileSync(path.join(dir, 'worker.json'), `${JSON.stringify({ coordinatorUrl: parsed[1], workerId: workerIdFor(os.hostname(), paired.slug), stateDir: path.join(dir, 'state'), engine, projects: { [paired.projectId]: checkout } }, null, 2)}\n`, { mode: 0o600 });
+    writeFileSync(path.join(dir, 'worker.json'), `${JSON.stringify({ coordinatorUrl: parsed[1], workerId: workerIdFor(os.hostname(), paired.slug), stateDir: path.join(dir, 'state'), engine, projects: { [paired.projectId]: checkout }, ...(publishTarget(checkout) ? { publish: publishTarget(checkout) } : {}) }, null, 2)}\n`, { mode: 0o600 });
     writeFileSync(path.join(dir, 'worker.env'), `AGENT_TEAM_TOKEN=${paired.token}\n`, { mode: 0o600 });
     console.log(`Connected to "${paired.slug}". Next time, run "agent-team work" in this folder.`);
   }

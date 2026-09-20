@@ -62,6 +62,33 @@ export function createReviews(context: Context, turns: Turns) {
       return result.reviewers;
     },
 
+    // A task must not sit in review because a review was lost. A review reads a throwaway checkout and changes nothing, so asking again
+    // is safe: whoever still owes a verdict at the task's head and has no review waiting or running is asked again, a few times at most.
+    // The same goes for an approved task whose merge is queued with nobody about to run it.
+    async chase() {
+      const asked: { agentId: string; projectId: string; taskId: string; kind: string; headSha: string }[] = [], merges: { agentId: string; projectId: string; taskId: string; headSha: string }[] = [];
+      await storage.transaction(async tx => {
+        for (const task of await tx.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state']).where('state', 'in', ['in_review', 'approved']).where('head_sha', 'is not', null).execute()) {
+          const headSha = task.head_sha!, reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id);
+          const live = await tx.selectFrom('work_items').select(['agent_id', 'kind']).where('task_id', '=', task.id).where('state', 'in', ['queued', 'leased']).execute();
+          if (task.state === 'approved') {
+            const pm = reviewers.find(reviewer => reviewer.kind === 'pm')?.agentId, queued = await tx.selectFrom('merge_queue').select('id').where('task_id', '=', task.id).where('state', '=', 'queued').executeTakeFirst();
+            if (pm && queued && !live.some(item => item.kind === 'deliver')) merges.push({ agentId: pm, projectId: task.project_id, taskId: task.id, headSha });
+            continue;
+          }
+          const counted = await tx.selectFrom('approvals').select('kind').where('task_id', '=', task.id).where('head_sha', '=', headSha).where('state', 'in', LIVE).execute();
+          for (const reviewer of reviewers) {
+            if (counted.some(row => row.kind === reviewer.kind) || live.some(item => item.kind === 'review' && item.agent_id === reviewer.agentId)) continue;
+            const lost = await tx.selectFrom('turns').select(eb => eb.fn.countAll<number>().as('n')).where('task_id', '=', task.id).where('agent_id', '=', reviewer.agentId).where('kind', '=', 'review').where('state', 'in', ['uncertain', 'failed', 'timed_out', 'interrupted']).where('started_at', '>', now() - 24 * 3600_000).executeTakeFirstOrThrow();
+            if (Number(lost.n) <= 3) asked.push({ agentId: reviewer.agentId, projectId: task.project_id, taskId: task.id, kind: reviewer.kind, headSha });
+          }
+        }
+      });
+      for (const item of asked) await turns.enqueue({ agentId: item.agentId, projectId: item.projectId, kind: 'review', taskId: item.taskId, dedupeKey: `review:${item.taskId}:${item.kind}:${item.headSha}` });
+      for (const item of merges) await turns.enqueue({ agentId: item.agentId, projectId: item.projectId, kind: 'deliver', taskId: item.taskId, dedupeKey: `deliver:${item.taskId}:${item.headSha}` });
+      return { reviews: asked.length, merges: merges.length };
+    },
+
     // `verification: 'worker'` is how a verdict arrives from an agent's turn: it is kept as pending and counts only once the
     // worker has reported the head it verified (see `verify`).
     async record(turn: { id: string; agent_id: string; task_id: string | null; kind: string }, input: ReviewInput, options: { verification?: 'worker' } = {}) {
