@@ -42,7 +42,7 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
   // What the workers seen lately said they can run. A worker that never said anything is an older one.
   async function workersNow() {
     const rows = await db.selectFrom('workers').select(['name', 'providers']).where('last_seen_at', '>', now() - WORKER_FRESH_MS).orderBy('name').execute();
-    return rows.map(row => { const said = JSON.parse(row.providers) as { engines?: string[]; variables?: string[] } | unknown[]; return { name: row.name, reported: !Array.isArray(said), engines: Array.isArray(said) ? [] : said.engines ?? [], variables: Array.isArray(said) ? [] : said.variables ?? [] }; });
+    return rows.map(row => { const said = JSON.parse(row.providers) as { engines?: string[]; variables?: string[]; models?: Record<string, ModelChoice[]> } | unknown[]; return { name: row.name, reported: !Array.isArray(said), engines: Array.isArray(said) ? [] : said.engines ?? [], variables: Array.isArray(said) ? [] : said.variables ?? [], models: Array.isArray(said) ? {} : said.models ?? {} }; });
   }
   function readiness(workers: Awaited<ReturnType<typeof workersNow>>, engine: string, entry: ProviderEntry | null): Readiness {
     const variable = entry?.key?.variable, saved = Boolean(variable && context.secrets.has(variable)), withTool = workers.filter(worker => worker.engines.includes(engine));
@@ -76,20 +76,24 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
 
   // The product's own list of models, fetched here so the page has something to pick from. Remembered for ten minutes.
   const lists = new Map<string, { at: number; models: ModelChoice[] }>();
-  app.get('/api/providers/catalog/:kind/models', async c => {
-    const entry = providerEntry(c.req.param('kind'));
+  async function modelsOf(kind: string, typedKey: string | null) {
+    const entry = providerEntry(kind);
     if (!entry) throw notFound('Provider');
-    const suggested = entry.models.suggested.map(id => ({ id, name: id }));
-    if (!entry.listModels) return c.json({ models: suggested, live: false, error: null });
-    const key = entry.key ? context.secrets.get(entry.key.variable) ?? context.env[entry.key.variable] ?? null : null, cacheKey = `${entry.kind}:${key ? 'key' : ''}`, cached = lists.get(cacheKey);
-    if (cached && cached.at > now() - 10 * 60_000) return c.json({ models: cached.models, live: true, error: null });
+    const aliases = (entry.aliases ?? []).map(id => ({ id, name: id }));
+    // A tool that keeps its own list on the worker: what the workers reported is the list.
+    const reported = [...new Map((await workersNow()).flatMap(worker => worker.models[entry.engine] ?? []).map(model => [model.id, model])).values()];
+    if (!entry.listModels) return { models: [...aliases, ...reported.filter(model => !entry.aliases?.includes(model.id))], live: reported.length > 0, error: null };
+    const key = typedKey ?? (entry.key ? context.secrets.get(entry.key.variable) ?? context.env[entry.key.variable] ?? null : null), cacheKey = `${entry.kind}:${key ? 'key' : ''}`, cached = typedKey ? undefined : lists.get(cacheKey);
+    if (cached && cached.at > now() - 10 * 60_000) return { models: cached.models, live: true, error: null };
     try {
       const models = (await entry.listModels(key, context.fetch)).slice(0, 2000);
-      if (models.length === 0) return c.json({ models: suggested, live: false, error: null });
-      lists.set(cacheKey, { at: now(), models });
-      return c.json({ models, live: true, error: null });
-    } catch (error) { return c.json({ models: suggested, live: false, error: (error as Error).message.slice(0, 200) }); }
-  });
+      if (models.length && !typedKey) lists.set(cacheKey, { at: now(), models });
+      return { models: models.length ? models : aliases, live: models.length > 0, error: null };
+    } catch (error) { return { models: aliases, live: false, error: (error as Error).message.slice(0, 200) }; }
+  }
+  app.get('/api/providers/catalog/:kind/models', async c => c.json(await modelsOf(c.req.param('kind'), null)));
+  // The same, with a key that was typed but not saved yet, for a list that only opens with one.
+  app.post('/api/providers/catalog/:kind/models', async c => { admin(c); return c.json(await modelsOf(c.req.param('kind'), (await parseBody(c, z.object({ key: z.string().trim().min(8).max(400).regex(/^\S+$/) }))).key)); });
 
   // What was typed, checked field by field in the person's words, then written through `save`.
   app.post('/api/providers/setup', async c => {

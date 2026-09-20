@@ -77,3 +77,11 @@ test('claude: the context size is what the latest model call carried, not the su
   assert.equal(state.contextTokens, 41_312);
   assert.equal(state.tokensIn, 81_022);
 });
+
+test('codex: the models offered are the ones the tool itself lists on the worker, without the ones it hides', async () => {
+  const { mkdtempSync, writeFileSync } = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
+  const home = mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
+  writeFileSync(path.join(home, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'model-next', display_name: 'Model Next', description: 'The newest one', visibility: 'list' }, { slug: 'internal-review', visibility: 'hide' }] }));
+  assert.deepEqual(engineAdapter('codex').models?.({ CODEX_HOME: home }), [{ id: 'model-next', name: 'Model Next', note: 'The newest one' }]);
+  assert.deepEqual(engineAdapter('codex').models?.({ CODEX_HOME: path.join(home, 'missing') }), []);
+});

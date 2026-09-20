@@ -22,7 +22,11 @@ test('a key typed into the app is kept sealed, makes the provider ready at once,
     assert.deepEqual([models.live, models.models[0]], [true, { id: 'openrouter/vendor/model-a', name: 'Vendor: Model A', note: '$3.00 in · $15.00 out per million · 200k context' }]);
     await call('/api/providers/catalog/openrouter/models', { cookie });
     assert.equal(listed.length, 1);
-    // A provider without a list of its own offers its usual names.
+    // A tool that keeps its list on the worker: what the worker reported is what is offered. Until one reports, nothing is made up.
+    assert.deepEqual((await call('/api/providers/catalog/codex-subscription/models', { cookie })).json, { models: [], live: false, error: null });
+    await call('/worker/claim', { headers: machine, body: { workerId: 'bolt', free: {}, projects: [], ready: { engines: ['codex'], variables: [], models: { codex: [{ id: 'model-next', name: 'Model Next', note: 'The newest one' }] } } } });
+    assert.deepEqual((await call('/api/providers/catalog/codex-subscription/models', { cookie })).json, { models: [{ id: 'model-next', name: 'Model Next', note: 'The newest one' }], live: true, error: null });
+    // The only names kept in the catalog are a tool's own standing aliases.
     assert.deepEqual((await call('/api/providers/catalog/claude-subscription/models', { cookie })).json.models.map((model: { id: string }) => model.id), ['sonnet', 'opus', 'haiku']);
 
     // A worker has the tool but no key anywhere: the page asks for the key.

@@ -7,7 +7,7 @@ import { Button, Chip, CodeBlock, Dialog, Field, Input, SectionLabel, type DotTo
 export interface Readiness { state: 'ready' | 'waiting' | 'none'; message: string; workers: string[]; need?: 'worker' | 'tool' | 'key' | null }
 export interface Provider { id: string; name: string; kind: string; engine: string; catalog: string | null; models: string[]; status: string; agents: number; readiness: Readiness; limits: { concurrency: number | null; windowTokens: number | null; windowHours: number | null } }
 interface CatalogEntry { kind: string; title: string; summary: string; billing: string; install: string; signIn?: string; named?: boolean; window: boolean; hasList: boolean; keySaved: boolean; providerId: string | null; readiness: Readiness;
-  key?: { variable: string; label: string; getAt: string; placeholder?: string }; models: { suggested: string[]; custom?: boolean } }
+  key?: { variable: string; label: string; getAt: string; placeholder?: string }; aliases?: string[] }
 
 export const BILLING: Record<string, string> = { subscription: 'Subscription', metered: 'Pay per use', local: 'Runs on your hardware' };
 export const READY_TONE: Record<Readiness['state'], DotTone> = { ready: 'working', waiting: 'attention', none: 'off' };
@@ -21,7 +21,10 @@ export function ProviderFlow({ open, kind, providers, onOpenChange, onDone }: { 
   const existing = entry ? providers.find(provider => provider.catalog === entry.kind) ?? null : null;
   const list = useResource<{ models: PickOption[]; error: string | null }>(entry ? `/api/providers/catalog/${entry.kind}/models` : null);
   const [models, setModels] = useState<string[]>([]);
-  useEffect(() => { setModels(existing?.models ?? entry?.models.suggested ?? []); }, [entry?.kind, existing?.id]);
+  useEffect(() => { setModels(existing?.models ?? entry?.aliases ?? []); setTyped(null); }, [entry?.kind, existing?.id]);
+  // A list that only opens with a key is asked for again with the key as typed, before anything is saved.
+  const [typed, setTyped] = useState<PickOption[] | null>(null);
+  const withKey = async (key: string) => { if (entry && key.trim().length >= 8) try { const found = await api<{ models: PickOption[] }>(`/api/providers/catalog/${entry.kind}/models`, { key: key.trim() }); if (found.models.length) setTyped(found.models); } catch { /* the saved list stays */ } };
   const pick = (next: string | null) => { setErrors({}); setFailure(null); onOpenChange(true, next); };
 
   async function save(form: HTMLFormElement) {
@@ -62,9 +65,9 @@ export function ProviderFlow({ open, kind, providers, onOpenChange, onDone }: { 
           <div className="flex items-center gap-2"><span className="grow"><StatusLine tone={READY_TONE[entry.readiness.state]}>{entry.readiness.message}</StatusLine></span><Chip tone={entry.billing === 'metered' ? 'attention' : 'neutral'}>{BILLING[entry.billing]}</Chip></div>
           {entry.readiness.need === 'tool' && <CodeBlock text={entry.install} />}
           {entry.readiness.state !== 'ready' && entry.signIn && <section className="flex flex-col gap-1.5"><SectionLabel>Sign in once on the worker</SectionLabel><CodeBlock text={entry.signIn} /></section>}
-          {entry.key && <SecretField name="key" label={entry.key.label} saved={entry.keySaved} getAt={entry.key.getAt} placeholder={entry.key.placeholder} error={errors.key} />}
+          {entry.key && <div onBlur={event => { if (event.target instanceof HTMLInputElement && event.target.name === 'key') void withKey(event.target.value); }}><SecretField name="key" label={entry.key.label} saved={entry.keySaved} getAt={entry.key.getAt} placeholder={entry.key.placeholder} error={errors.key} /></div>}
           {entry.named && <Field label="Name" error={errors.name}><Input name="name" defaultValue={existing?.name ?? ''} placeholder="Company gateway" required /></Field>}
-          <MultiPicker name="models" label="Models" options={list.data?.models ?? entry.models.suggested.map(id => ({ id, name: id }))} value={models} onChange={setModels} loading={entry.hasList && !list.data} custom={entry.models.custom ?? false} error={errors.models ?? list.data?.error ?? undefined} />
+          <MultiPicker name="models" label="Models" options={typed ?? list.data?.models ?? []} value={models} onChange={setModels} loading={entry.hasList && !list.data} custom error={errors.models ?? list.data?.error ?? undefined} />
           <More label="Limits">
             <Field label="Turns at once" error={errors.concurrency}><Input name="concurrency" inputMode="numeric" placeholder="2" defaultValue={existing?.limits.concurrency ?? ''} /></Field>
             {entry.window && <div className="grid grid-cols-2 gap-3">

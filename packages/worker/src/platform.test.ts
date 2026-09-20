@@ -33,7 +33,7 @@ test('a worker reports which engines it can start and which credential variables
   writeFileSync(path.join(dir, 'engine'), '');
   writeFileSync(path.join(dir, 'other.cmd'), '');
   const engines = { one: { bin: 'engine' }, two: { bin: 'other' }, three: { bin: 'missing' } };
-  assert.deepEqual(readiness(engines, ['A_KEY', 'B_KEY'], { platform: 'linux', env: { PATH: `/nowhere:${dir}`, A_KEY: 'secret' } }), { engines: ['one'], variables: ['A_KEY'] });
-  assert.deepEqual(readiness(engines, ['A_KEY'], { platform: 'win32', env: { PATH: dir, PATHEXT: '.CMD', A_KEY: '' } }), { engines: ['two'], variables: [] });
+  assert.deepEqual(readiness(engines, ['A_KEY', 'B_KEY'], { platform: 'linux', env: { PATH: `/nowhere:${dir}`, A_KEY: 'secret' } }), { engines: ['one'], variables: ['A_KEY'], models: {} });
+  assert.deepEqual(readiness(engines, ['A_KEY'], { platform: 'win32', env: { PATH: dir, PATHEXT: '.CMD', A_KEY: '' } }), { engines: ['two'], variables: [], models: {} });
   assert.equal(installed('engine', { platform: 'linux', env: {} }), false);
 });

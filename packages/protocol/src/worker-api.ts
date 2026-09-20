@@ -10,7 +10,9 @@ export const ClaimBody = z.object({
   // From the worker's own config file: a strict worker refuses a restricted turn its engine cannot enforce.
   isolation: z.enum(['strict', 'isolated']).optional(),
   // What this worker can run: engines whose command-line tool it found, and which credential variables are set. Names only, never values.
-  ready: z.object({ engines: z.array(z.string().max(40)).max(20), variables: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/)).max(40) }).optional(),
+  ready: z.object({ engines: z.array(z.string().max(40)).max(20), variables: z.array(z.string().regex(/^[A-Z][A-Z0-9_]{0,63}$/)).max(40),
+    // The models a tool on the worker says it has, by engine. Names and descriptions only.
+    models: z.record(z.string().max(40), z.array(z.object({ id: z.string().regex(/^\S{1,120}$/), name: z.string().max(120), note: z.string().max(160).optional() })).max(100)).optional() }).optional(),
 });
 export const TraceStepInput = z.object({ seq: z.number().int().min(0), kind: TraceKind, title: z.string().min(1).max(400), detail: z.string().max(200).optional(), status: z.enum(['running', 'ok', 'error']) });
 export type TraceStepInput = z.infer<typeof TraceStepInput>;

@@ -198,9 +198,8 @@ test('a model provider is added through its guided setup, and an agent is create
   await page.screenshot({ path: info.outputPath('provider-openrouter.png') });
 
   // What was typed is answered in plain words, next to the field.
-  // Models are ticked from a list or found by typing; the usual ones are chosen already.
-  await expect(flow.getByRole('button', { name: /^Remove / })).toHaveCount(3);
-  while (await flow.getByRole('button', { name: /^Remove / }).count()) await flow.getByRole('button', { name: /^Remove / }).first().click();
+  // Models are ticked from the product's own list or found by typing; no name is written into the app.
+  await expect(flow.getByRole('button', { name: /^Remove / })).toHaveCount(0);
   await flow.getByText('Limits', { exact: true }).click();
   await flow.getByLabel('Turns at once').fill('lots');
   await flow.getByRole('button', { name: 'Add', exact: true }).click();

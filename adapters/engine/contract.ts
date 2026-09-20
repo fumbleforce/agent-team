@@ -41,6 +41,8 @@ export interface EngineAdapter {
   bin: string;
   capabilities: EngineCapabilities;
   environment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
+  // The models the tool itself knows on this machine, when it keeps such a list. Read on the worker and reported with its readiness.
+  models?(env: NodeJS.ProcessEnv): { id: string; name: string; note?: string }[];
   prepare(spec: TurnSpec, turnDir: string, env: NodeJS.ProcessEnv): PreparedTurn;
   parse(line: string, state: ParseState): EngineStep[];
   classifyExit(exit: { code: number | null; signal: string | null }, state: ParseState, stderrTail: string): StopReason;

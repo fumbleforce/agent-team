@@ -37,7 +37,7 @@ export interface WorkerConfig {
   // A strict worker runs a restricted turn only on an engine that enforces the restriction itself; instructions are not isolation.
   isolation?: 'strict' | 'isolated';
   // What this machine can run, sent with every claim so the app can say which providers are ready here. Names only.
-  ready?: { engines: string[]; variables: string[] };
+  ready?: { engines: string[]; variables: string[]; models?: Record<string, { id: string; name: string; note?: string }[]> };
   // A disposable host that is gone after its turn (`--once`): it keeps neither a session nor a worktree, so it serves a project only when
   // the committed manifest authorizes publishing, runs every turn from its packet and pushes the branch at the end of every turn.
   ephemeral?: boolean;

@@ -16,8 +16,9 @@ export interface ProviderEntry {
   signIn?: string;
   // Asked only when there can be several of the kind.
   named?: boolean;
-  // Offered ticked when nothing was chosen yet; `custom` allows a name the list does not have.
-  models: { suggested: string[]; custom?: boolean };
+  // No model names are written down here: they come from `listModels` or from the tool on the worker. The one exception is a
+  // tool's own standing aliases (names it promises to keep pointing at its newest models), offered ticked. A name can always be typed.
+  aliases?: string[];
   // The product's own list of models, when it publishes one. The key is passed when one is saved and the list needs it.
   listModels?(key: string | null, request: Fetch): Promise<ModelChoice[]>;
   // Whether a usage allowance over some hours makes sense here.
@@ -30,13 +31,12 @@ const pick = (names: string[]): ModelChoice[] => names.map(id => ({ id, name: id
 export const PROVIDERS: ProviderEntry[] = [
   {
     kind: 'claude-subscription', title: 'Claude subscription', billing: 'subscription', engine: 'claude', install: 'npm install -g @anthropic-ai/claude-code',
-    summary: 'Your Pro or Max plan, through Claude Code.', signIn: 'claude', models: { suggested: ['sonnet', 'opus', 'haiku'], custom: true }, window: true,
+    summary: 'Your Pro or Max plan, through Claude Code.', signIn: 'claude', aliases: ['sonnet', 'opus', 'haiku'], window: true,
   },
   {
     kind: 'anthropic-api', title: 'Anthropic API', billing: 'metered', engine: 'opencode', install: OPENCODE,
     summary: 'Claude models, billed per token to an API key.', window: true,
     key: { variable: 'ANTHROPIC_API_KEY', label: 'Anthropic API key', getAt: 'https://platform.claude.com/settings/keys', placeholder: 'sk-ant-…', inAppOnly: true },
-    models: { suggested: ['anthropic/claude-sonnet-4-5', 'anthropic/claude-haiku-4-5'], custom: true },
     async listModels(key, request) {
       if (!key) return [];
       const response = await request('https://api.anthropic.com/v1/models?limit=100', { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' } });
@@ -48,7 +48,6 @@ export const PROVIDERS: ProviderEntry[] = [
     kind: 'openrouter', title: 'OpenRouter', billing: 'metered', engine: 'opencode', install: OPENCODE,
     summary: 'One key for models from many vendors, billed per token.', window: true,
     key: { variable: 'OPENROUTER_API_KEY', label: 'OpenRouter key', getAt: 'https://openrouter.ai/keys', placeholder: 'sk-or-…' },
-    models: { suggested: ['openrouter/anthropic/claude-sonnet-4.5', 'openrouter/openai/gpt-5', 'openrouter/google/gemini-2.5-pro'], custom: true },
     // The list is public; it needs no key.
     async listModels(_key, request) {
       const response = await request('https://openrouter.ai/api/v1/models');
@@ -63,11 +62,11 @@ export const PROVIDERS: ProviderEntry[] = [
   },
   {
     kind: 'openai-compatible', title: 'Another gateway', billing: 'metered', engine: 'opencode', install: OPENCODE, named: true,
-    summary: 'Any service that speaks the OpenAI API, set up in opencode on the worker.', signIn: 'opencode auth login', models: { suggested: [], custom: true }, window: true,
+    summary: 'Any service that speaks the OpenAI API, set up in opencode on the worker.', signIn: 'opencode auth login', window: true,
   },
   {
     kind: 'ollama', title: 'Local models (Ollama)', billing: 'local', engine: 'opencode', install: OPENCODE,
-    summary: 'Models on your own hardware. Nothing is billed.', models: { suggested: ['ollama/qwen2.5-coder'], custom: true }, window: false,
+    summary: 'Models on your own hardware. Nothing is billed.', window: false,
     // Reached only when Ollama runs next to the coordinator; anywhere else the names are typed.
     async listModels(_key, request) {
       const response = await request('http://127.0.0.1:11434/api/tags', { signal: AbortSignal.timeout(1500) });
@@ -76,15 +75,15 @@ export const PROVIDERS: ProviderEntry[] = [
   },
   {
     kind: 'codex-subscription', title: 'Codex with a ChatGPT plan', billing: 'subscription', engine: 'codex', install: 'npm install -g @openai/codex',
-    summary: 'Your ChatGPT plan, through the Codex tool.', signIn: 'codex login', models: { suggested: ['gpt-5.5', 'gpt-5.4'], custom: true }, window: true,
+    summary: 'Your ChatGPT plan, through the Codex tool.', signIn: 'codex login', window: true,
   },
   {
     kind: 'codex-api', title: 'Codex with an OpenAI key', billing: 'metered', engine: 'codex', install: 'npm install -g @openai/codex',
-    summary: 'The Codex tool, billed per token to an OpenAI key.', signIn: 'codex login --with-api-key', models: { suggested: ['gpt-5.5', 'gpt-5.4'], custom: true }, window: true,
+    summary: 'The Codex tool, billed per token to an OpenAI key.', signIn: 'codex login --with-api-key', window: true,
   },
   {
     kind: 'cursor', title: 'Cursor agent', billing: 'subscription', engine: 'cursor', install: 'curl https://cursor.com/install -fsS | bash',
-    summary: 'Your Cursor plan, through its command-line agent.', signIn: 'agent login', models: { suggested: ['auto'], custom: true }, window: false,
+    summary: 'Your Cursor plan, through its command-line agent.', signIn: 'agent login', aliases: ['auto'], window: false,
   },
 ];
 

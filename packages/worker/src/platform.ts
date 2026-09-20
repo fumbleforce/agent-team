@@ -32,9 +32,11 @@ export function installed(name: string, { env = process.env, platform = process.
   if (name.includes('/')) return existsSync(name);
   return searchPath(env).split(':').some(directory => { try { return directory !== '' && statSync(path.posix.join(directory, name)).isFile(); } catch { return false; } });
 }
-export function readiness(engines: Record<string, { bin: string }>, variables: readonly string[], host: Host = {}): { engines: string[]; variables: string[] } {
+type Listed = { id: string; name: string; note?: string };
+export function readiness(engines: Record<string, { bin: string; models?(env: NodeJS.ProcessEnv): Listed[] }>, variables: readonly string[], host: Host = {}): { engines: string[]; variables: string[]; models: Record<string, Listed[]> } {
   const env = host.env ?? process.env;
-  return { engines: Object.keys(engines).filter(name => installed(engines[name]!.bin, host)), variables: variables.filter(name => Boolean(env[name])) };
+  const models = Object.fromEntries(Object.entries(engines).map(([name, engine]) => [name, engine.models?.(env).slice(0, 100) ?? []] as const).filter(([, list]) => list.length));
+  return { engines: Object.keys(engines).filter(name => installed(engines[name]!.bin, host)), variables: variables.filter(name => Boolean(env[name])), models };
 }
 
 // A `.cmd` launcher written by a package manager runs one script with the host's own runtime, or hands its arguments

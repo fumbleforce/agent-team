@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
 import type { TraceStepInput } from '@agent-team/protocol';
 import { allowlistedEnvironment, type EngineAdapter } from './contract.ts';
 
@@ -11,6 +13,14 @@ export const codex: EngineAdapter = {
   bin: 'codex',
   capabilities: { resume: 'id', mcp: 'none', toolPolicy: 'sandbox', bounded: true, structuredOutput: true, usageLimits: 'detect', cost: 'tokens' },
   environment: env => allowlistedEnvironment(env),
+  // The tool keeps the list its sign-in may use in its own folder; the ones it hides from its own picker are left out.
+  models(env) {
+    try {
+      const file = path.join(env.CODEX_HOME ?? path.join(env.HOME ?? env.USERPROFILE ?? '', '.codex'), 'models_cache.json');
+      const cached = JSON.parse(readFileSync(file, 'utf8')) as { models?: { slug?: string; display_name?: string; description?: string; visibility?: string }[] };
+      return (cached.models ?? []).filter(model => model.slug && model.visibility !== 'hide').map(model => ({ id: model.slug!, name: model.display_name ?? model.slug!, ...(model.description ? { note: model.description.slice(0, 120) } : {}) }));
+    } catch { return []; }
+  },
 
   prepare(spec, _turnDir, env) {
     const sandbox = spec.toolProfile === 'write' ? 'workspace-write' : 'read-only';
