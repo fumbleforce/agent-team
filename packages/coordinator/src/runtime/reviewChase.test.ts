@@ -53,3 +53,22 @@ test('a worker on this machine publishes only where the project\'s own manifest 
   writeFileSync(path.join(checkout, '.agent-team.json'), JSON.stringify({ ...manifest, delivery: { ...manifest.delivery, publishAuthorized: true } }));
   assert.deepEqual(publishTarget(checkout), { scm: 'github', repository: 'acme/shop', base: 'trunk' });
 });
+
+test('a merge that was cut off does not freeze the project or wait for a person: it is queued to run again, and whatever set the task aside for it is lifted', async () => {
+  const coordinator = await startCoordinator({ port: 0, storage: { kind: 'sqlite', path: ':memory:' }, machineToken: 'x'.repeat(24), webRoot: null });
+  try {
+    await seedDemo(coordinator.context);
+    const db = coordinator.context.storage.db, turns = createTurns(coordinator.context), reviews = createReviews(coordinator.context, turns);
+    const names = Object.fromEntries((await db.selectFrom('agents').select(['id', 'name']).execute()).map(row => [row.name, row.id])) as Record<string, string>;
+    for (const [name, role] of [['Maren', 'pm'], ['Cleo', 'tester'], ['Ada', 'reviewer']] as const) await db.insertInto('agent_roles').values({ agent_id: names[name]!, role_slug: role }).onConflict(oc => oc.doNothing()).execute();
+    const task = await db.selectFrom('tasks').select(['id', 'project_id']).where('key', '=', 'CK-31').executeTakeFirstOrThrow();
+    // As an earlier version left it: the task set aside, its merge entry unknown, and two more approved tasks waiting behind it.
+    await db.updateTable('tasks').set({ state: 'quarantined', head_sha: SHA }).where('id', '=', task.id).execute();
+    await db.insertInto('merge_queue').values({ id: 'cut-off', project_id: task.project_id, task_id: task.id, head_sha: SHA, state: 'uncertain', reason: 'Lease expired during delivery', created_at: 1, finished_at: 2 }).execute();
+
+    assert.deepEqual(await reviews.chase(), { reviews: 0, merges: 1 });
+    assert.deepEqual([(await db.selectFrom('tasks').select('state').where('id', '=', task.id).executeTakeFirstOrThrow()).state, (await db.selectFrom('merge_queue').select('state').where('id', '=', 'cut-off').executeTakeFirstOrThrow()).state], ['approved', 'queued']);
+    assert.equal((await db.selectFrom('merge_queue').select('id').where('state', '=', 'uncertain').execute()).length, 0, 'nothing freezes the project any more');
+    assert.deepEqual((await db.selectFrom('work_items').select('kind').where('task_id', '=', task.id).where('state', '=', 'queued').execute()).map(item => item.kind), ['deliver']);
+  } finally { await coordinator.close(); }
+});

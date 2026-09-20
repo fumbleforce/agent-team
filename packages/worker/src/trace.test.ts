@@ -209,10 +209,10 @@ test('orphan sweep: a turn left by a restarted worker has its process ended by t
     assert.equal((await db.selectFrom('quarantines').select('id').execute()).length, 0, 'nobody is asked to investigate');
     assert.deepEqual((await db.selectFrom('work_items').select(['state', 'task_id']).execute()).map(item => [item.state, item.task_id]), [['queued', taskId]], 'the same work waits to continue');
     assert.ok(existsSync(path.join(turnDir, 'orphaned.json')) && !existsSync(path.join(turnDir, 'run.json')) && !existsSync(path.join(turnDir, 'platform-token')));
-    // The record is dealt with once; the work itself continues after the usual pause, not at once.
+    // The record is dealt with once, and the work may go on at once: a restart is no reason to wait.
     assert.deepEqual(await worker.sweep(), []);
-    assert.equal(await worker.tick(), false);
-    assert.equal((await db.selectFrom('turns').select('id').execute()).length, 1);
+    const waiting = await db.selectFrom('work_items').select('not_before').where('state', '=', 'queued').executeTakeFirstOrThrow();
+    assert.ok(waiting.not_before === null || Number(waiting.not_before) <= Date.now());
   } finally { child.kill('SIGKILL'); await coordinator.close(); }
 });
 

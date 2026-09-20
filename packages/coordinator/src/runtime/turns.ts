@@ -42,7 +42,8 @@ export function createTurns(context: Context) {
       if (turn.kind === 'review') await tx.updateTable('approvals').set({ state: 'stale' }).where('turn_id', '=', turn.id).where('state', '=', 'pending-verification').execute();
       // Lost while it changed the checkout's shared git state: the checkout itself is unknown, whatever kind of turn it was.
       if (turn.git_admin) await tx.insertInto('quarantines').values({ id: newId(now()), scope: 'checkout', ref_id: checkoutRef(turn.worker_id, turn.project_id), turn_id: turn.id, reason: 'Lease expired during a git-admin operation; inspect the primary checkout on this worker before releasing', opened_at: now(), released_by: null, released_at: null }).execute();
-      if (turn.access === 'write' && turn.task_id) {
+      // A delivery is run again rather than put in front of a person (the gate finds out from the host whether it merged), so it sets nothing aside.
+      if (turn.access === 'write' && turn.task_id && turn.kind !== 'deliver') {
         await tx.insertInto('quarantines').values({ id: newId(now()), scope: 'task', ref_id: turn.task_id, turn_id: turn.id, reason: 'Lease expired; inspect the worktree before releasing', opened_at: now(), released_by: null, released_at: null }).execute();
         await tx.updateTable('tasks').set({ state: 'quarantined', updated_at: now() }).where('id', '=', turn.task_id).execute();
       }
@@ -280,7 +281,7 @@ export function createTurns(context: Context) {
         const providerId = turn.provider_id ?? seat?.provider_id ?? null;
         const agent = providerId ? { provider_id: providerId, kind: (await tx.selectFrom('providers').select('kind').where('id', '=', providerId).executeTakeFirst())?.kind } : undefined;
         // A usage limit is nobody's fault: the provider is limited until its reset, every item routed to it waits with that reason, and work resumes by itself.
-        const limited = outcome.state === 'deferred' && RATE_LIMITED.test(outcome.stopReason ?? ''), until = limited && outcome.resetAt !== undefined && outcome.resetAt > now() ? outcome.resetAt : now() + LIMIT_BACKOFF_MS;
+        const limited = outcome.state === 'deferred' && RATE_LIMITED.test(outcome.stopReason ?? ''), until = limited && outcome.resetAt !== undefined && outcome.resetAt > now() ? outcome.resetAt : outcome.stopReason === 'worker-restarted' ? now() : now() + LIMIT_BACKOFF_MS;
         if (limited && providerId) {
           await tx.updateTable('providers').set({ limited_until: until, status_detail: `Usage limit reached; resumes ${new Date(until).toISOString()}` }).where('id', '=', providerId).execute();
           drafts.push({ type: 'provider.limited', actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, turnId, payload: { providerId, until } });

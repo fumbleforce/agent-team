@@ -12,7 +12,7 @@ import { createRedactor } from './redact.ts';
 import { createTracer, type StepArtifact } from './trace.ts';
 import { cappedBy, changedPaths, committedCeiling, ensureReviewWorktree, ensureWorktree, headSha, publishAuthorized, removeReviewWorktrees, reviewedTasks, untouchedOverlays, worktreeFor, type AdminHooks, type ReviewWorktree, type Worktree } from './worktree.ts';
 
-export interface DeliveryFacts { taskKey: string; headSha: string; prUrl: string; manifest: { scm?: { kind?: string }; delivery?: DeliveryConfig }; approvals: Approvals }
+export interface DeliveryFacts { taskKey: string; title?: string; headSha: string; prUrl: string | null; manifest: { scm?: { kind?: string }; delivery?: DeliveryConfig }; approvals: Approvals }
 export interface DeliveryResult { state: 'merged' | 'blocked'; reason: string; mergeAttempted: boolean; mergeCommit?: string }
 export type DeliverFn = (input: { config: DeliveryConfig; scm: string; prUrl: string; approvals: () => Promise<Approvals>; worktree: string; branch: string }) => Promise<DeliveryResult>;
 
@@ -111,10 +111,13 @@ export function createWorker(config: WorkerConfig) {
     if (!facts.manifest.delivery) throw new Error('The project manifest has no delivery section');
     // Approvals are re-read from the platform each time the gate asks, so one withdrawn in between stops the merge.
     const approvals = async () => (await call<DeliveryFacts>(`/worker/turns/${turn.turnId}/delivery`, lease)).approvals;
-    const delivery = await Promise.resolve().then(() => (config.deliver ?? defaultDeliver)({ config: facts.manifest.delivery!, scm, prUrl: facts.prUrl, approvals, worktree: worktree.path, branch: worktree.branch }))
+    // Approved but never published (the worker had nowhere to push at the time): the change is opened now, from the approved branch.
+    let prUrl = facts.prUrl;
+    if (!prUrl && config.publish) prUrl = (await publishChange(config.publish.scm, { worktree: worktree.path, repository: config.publish.repository, branch: worktree.branch, base: config.publish.base, title: `${facts.taskKey}: ${facts.title ?? facts.taskKey}`.slice(0, 200), body: '' }, config.publish.exec).catch((error: Error) => { console.error(`Publish failed: ${error.message}`); return null; }))?.url ?? null;
+    const delivery = await Promise.resolve().then(() => (prUrl ? (config.deliver ?? defaultDeliver)({ config: facts.manifest.delivery!, scm, prUrl, approvals, worktree: worktree.path, branch: worktree.branch }) : Promise.reject(new Error('No change was published for this task, and this worker has nowhere to publish to'))))
       .catch((error: Error): DeliveryResult => ({ state: 'blocked', reason: error.message, mergeAttempted: false }));
     const result = { state: delivery.state, reason: delivery.reason.slice(0, 500), mergeAttempted: delivery.mergeAttempted, ...(delivery.mergeCommit ? { mergeCommit: delivery.mergeCommit } : {}) };
-    await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'completed', summary: result.reason, delivery: result } });
+    await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'completed', summary: result.reason, delivery: result, ...(prUrl && !facts.prUrl ? { prUrl } : {}) } });
   }
 
   // No model runs here either: one headless browser run, the image uploaded under the lease, then the outcome.

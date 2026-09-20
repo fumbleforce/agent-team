@@ -126,7 +126,14 @@ export function createApp(context: Context) {
     const seen = { name: claim.workerId, lanes: JSON.stringify(claim.free), projects: JSON.stringify([...reported.keys()]), last_seen_at: context.now(), ...(claim.ready ? { providers: JSON.stringify(claim.ready) } : {}), ...(claim.isolation ? { isolation: claim.isolation } : {}) };
     await context.storage.db.insertInto('workers').values({ id: claim.workerId, isolation: 'isolated', providers: '[]', ...seen }).onConflict(oc => oc.column('id').doUpdateSet(seen)).execute();
     // Before handing out work: whatever review or merge was lost along the way is asked for again. At most twice a minute.
-    if (context.now() - chased > 30_000) { chased = context.now(); await reviews.chase().catch(error => console.error(`Chasing reviews failed: ${(error as Error).message}`)); }
+    if (context.now() - chased > 30_000) {
+      chased = context.now();
+      await reviews.chase().catch(error => console.error(`Chasing reviews failed: ${(error as Error).message}`));
+      // This worker is here and asking for work, so whatever it was running when it lost contact is over: it ends its own processes when it
+      // cannot confirm a lease, and again when it starts. Work it had in hand then is a known state and continues, without a person.
+      const mine = await context.storage.db.selectFrom('quarantines').innerJoin('turns', 'turns.id', 'quarantines.turn_id').select('quarantines.id').where('quarantines.released_at', 'is', null).where('quarantines.scope', '=', 'task').where('turns.worker_id', '=', claim.workerId).where('turns.kind', '!=', 'deliver').where('quarantines.opened_at', '<', context.now() - 60_000).execute();
+      for (const row of mine) await needsYou.releaseQuarantine(null, row.id, 'continue', 'Its worker is back and has ended what it was running, so the work continues from its worktree.').catch(() => {});
+    }
     const turn = await turns.claim(claim);
     // A key entered in the app travels with the one turn that needs it, over the worker's own authenticated channel.
     return c.json({ turn: turn ? { ...turn, secrets: await providerSetup.turnSecrets(turn.turnId) } : turn });

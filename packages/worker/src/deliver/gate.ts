@@ -82,6 +82,8 @@ export async function deliver(input: { config: DeliveryConfig; scm: ScmGate; app
     // Work is published as a draft. With every required approval valid at this head, and only then, the change is marked ready;
     // a draft that is not exactly the change that was approved is left alone and fails the identity check below.
     const first = await scm.view(exec, context);
+    // Run again after a merge that was cut off: the host says whether it went through. The same change at the approved head, already merged, is done.
+    if (first.url === prUrl && first.state === 'MERGED' && first.headSha === headSha && SHA.test(first.mergeCommit ?? '')) return { state: 'merged', reason: `${scm.name} shows it already merged`, mergeAttempted, headSha, mergeCommit: first.mergeCommit! };
     if (first.isDraft === true && first.url === prUrl && first.state === 'OPEN' && first.baseRef === config.baseBranch && first.headRef === branch && first.headSha === headSha && first.sameRepository === true) {
       abortCheck();
       await scm.ready(exec, context);
