@@ -178,6 +178,15 @@ export async function seedDemo(context: Context, options: { empty?: boolean; act
     for (const id of voters.filter(id => id !== bram.id)) await proposals.vote({ agent_id: id }, proposalId, { stance: 'for', note: 'Agreed; the numbers support it.' });
   }
 
+  // The seat that staffs the team, and one decision it made on its own: on record with its reason, like any proposal.
+  // Only where the agent library is there to hire from, as it is on every real start.
+  if (await db.selectFrom('versioned_docs').select('slug').where('kind', '=', 'library_agent').where('slug', '=', 'onion').executeTakeFirst()) {
+    const toby = seat('Toby', 6, 'HR', 'Calm, fair and unsentimental. Makes the smallest change that fixes it, and gives the reason in one plain sentence.', null, 5);
+    await db.insertInto('agents').values([toby]).execute();
+    await db.insertInto('agent_roles').values({ agent_id: toby.id, role_slug: 'hr' }).execute();
+    await proposals.staff({ agent_id: toby.id, project_id: checkout.id }, { title: 'Hire Onion to review', why: 'Ada and Finn review on top of their own tasks, and two reviews have waited more than a day. A seat that only reviews frees both.', change: { kind: 'hire_agent', library: 'onion' }, evidence: [{ label: 'Reviews waiting', value: '2' }, { label: 'Oldest wait', value: '26 h' }, { label: 'Seats that review', value: '2, both building' }] });
+  }
+
   // Nordlys Studio: a quarterly magazine made by an editorial team.
   const ingrid = seat('Ingrid', 6, 'Managing editor', 'Keeps the issue on schedule; decides what is cut when pages run out.', 'Planning the winter issue', 0, true, teams.nordlys);
   const sol = seat('Sol', 7, 'Writer', 'Writes plainly and warmly; asks who the reader is before the first line.', 'Draft: the lighthouse keepers', 1, false, teams.nordlys);

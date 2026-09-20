@@ -1,13 +1,15 @@
 import type { Context as Hc, Hono } from 'hono';
 import { z } from 'zod';
 import { WORKER_FRESH_MS } from '../runtime/scheduler.ts';
-import { AgentBody, AgentPatch, AuthSettingsBody, FromTemplateBody, HireBody, MachineTokenBody, MilestoneBody, MilestonePatch, ProjectLinkBody, ProjectMemberBody, ProjectStatusBody, SaveTemplateBody, SeatLoanBody, TeamOrderBody, UserPatch, VersionedDocBody, type StoredEvent, type TeamView } from '@agent-team/protocol';
+import { AgentBody, AgentPatch, AuthSettingsBody, DelegationRules, FromTemplateBody, HireBody, MachineTokenBody, MilestoneBody, MilestonePatch, ProjectLinkBody, ProjectMemberBody, ProjectStatusBody, SaveTemplateBody, SeatLoanBody, StaffingLimitsBody, TeamOrderBody, UserPatch, VersionedDocBody, type StoredEvent, type TeamView } from '@agent-team/protocol';
 import type { MachineTokens } from '../auth/machineTokens.ts';
 import { createMembers } from '../auth/members.ts';
 import { createAuthSettings } from '../auth/authSettings.ts';
 import { can, canSeeProject, type Action, type Viewer } from '../auth/rbac.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
 import { createOrg } from '../repos/org.ts';
+import { staffingSeat } from '../runtime/staffing.ts';
+import { RULES_SLUG } from '../runtime/turns.ts';
 import type { VersionedDocs } from '../repos/versionedDocs.ts';
 import type { createWorkspace } from '../repos/workspace.ts';
 import { ifMatch, pageOf, parseBody, preconditioned } from './conventions.ts';
@@ -176,13 +178,21 @@ export function registerOrgRoutes(app: Hono<Env>, context: Context, deps: { work
     return c.json(await org.teamFromTemplate(me(c), project.id, { slug: template.slug, version: template.version, name: template.doc.name, seats: template.doc.seats }, input.mode));
   });
   // Team editing by hand: whoever configures the project makes, changes, orders, rests and retires its seats, and says which one is the PM.
+  const delegationRules = async (rootId: string) => DelegationRules.parse((await docs.get('delegation_rules', { type: 'project', id: rootId }, RULES_SLUG).catch(() => null))?.doc ?? {});
   const roleLibrary = async () => (await docs.list('role', LIBRARY)).map(role => ({ slug: role.slug, summary: String((role.doc as { summary?: unknown }).summary ?? '') }));
   app.get('/api/projects/:slug/team', async c => {
     const project = await projectFor(c, 'project.read'), team = await org.team(project.id);
     // What "the worker decides" means right now: the tool each worker of this project runs by default, and that tool's own default model.
     const workers = await context.storage.db.selectFrom('workers').select(['name', 'projects', 'providers']).where('last_seen_at', '>', context.now() - WORKER_FRESH_MS).execute();
     const workerRuns = workers.filter(worker => (JSON.parse(worker.projects) as string[]).includes(project.id)).flatMap(worker => { const said = JSON.parse(worker.providers) as { runs?: { engine: string; model: string | null }; efforts?: Record<string, string[]> } | unknown[]; return Array.isArray(said) || !said.runs ? [] : [{ worker: worker.name, engine: said.runs.engine, model: said.runs.model, efforts: said.efforts?.[said.runs.engine] ?? [] }]; });
-    return c.json({ seats: team.seats, fallback: team.fallback, workerRuns, roles: await roleLibrary(), canEdit: can(c.get('viewer'), 'project.configure', team.rootId) } satisfies TeamView);
+    const rules = await delegationRules(team.rootId);
+    return c.json({ seats: team.seats, fallback: team.fallback, workerRuns, roles: await roleLibrary(), canEdit: can(c.get('viewer'), 'project.configure', team.rootId), staffing: { seat: await staffingSeat(db, project.id), decides: rules.staffing.decides, maxSeats: rules.staffing.maxSeats } } satisfies TeamView);
+  });
+  // What the seat that staffs the team may decide without the owner. The rest of the delegation rules stay as they are.
+  app.post('/api/projects/:slug/team/staffing', async c => {
+    const project = await projectFor(c, 'project.configure'), rootId = project.parent_id ?? project.id, input = await parseBody(c, StaffingLimitsBody);
+    await docs.save('delegation_rules', { type: 'project', id: rootId }, RULES_SLUG, { ...await delegationRules(rootId), staffing: input }, { author: await authorName(c), userId: me(c), projectId: rootId });
+    return c.json({ ok: true });
   });
   app.post('/api/projects/:slug/team/default', async c => {
     const project = await projectFor(c, 'project.configure');

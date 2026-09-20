@@ -1,7 +1,11 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { packageRoot } from '@agent-team/protocol';
 import { createStorage } from '@agent-team/storage';
 import { createContext } from '../context.ts';
+import { createVersionedDocs } from '../repos/versionedDocs.ts';
 import { createWorkspace } from '../repos/workspace.ts';
 import { createProposals } from './proposals.ts';
 
@@ -9,6 +13,8 @@ async function boot() {
   const storage = await createStorage({ kind: 'sqlite', path: ':memory:' });
   await storage.migrate();
   const context = createContext({ storage, machineToken: 'x'.repeat(24) });
+  // A role a proposal names has to be in the role library, as it is on every real start.
+  await createVersionedDocs(context).seed('role', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'roles.json'), 'utf8')) as Record<string, unknown>);
   const projectId = await createWorkspace(context).registerProject({ slug: 'shop', name: 'Shop', kind: 'repo', manifest: {} });
   const agents = Object.fromEntries((await storage.db.selectFrom('agents').select(['id', 'name']).execute()).map(agent => [agent.name, agent.id])) as Record<string, string>;
   const turn = (name: string) => ({ agent_id: agents[name]!, project_id: projectId });

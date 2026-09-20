@@ -3,7 +3,7 @@ import { useParams } from 'wouter';
 import { api, ApiError, type Agent, type TeamView } from '../../data/client';
 import { useResource } from '../../data/useResource';
 import { SeatRow, StatusLine } from '../../patterns';
-import { Button, Chip, IconButton, LinkButton, Menu, SectionLabel, Select, Text } from '../../ui';
+import { Button, Checkbox, Chip, IconButton, LinkButton, Menu, SectionLabel, Select, Text } from '../../ui';
 import { AgentDialog, type Seat } from './AgentDialog';
 import type { Provider } from './ProviderFlow';
 
@@ -28,6 +28,9 @@ export function TeamTab({ roster, onChanged, children }: { roster: Agent[]; onCh
   const defaultWords = fallbackProvider ? `${fallbackProvider.name} · ${fallback?.model}` : `the worker's: ${workerWords}`;
   const setDefault = (value: string) => { const [providerId, model] = value ? value.split('\n') : [null, null]; act(`/api/projects/${slug}/team/default`, { providerId: providerId ?? null, model: model ?? null }); };
   const defaultEfforts = effortsFor(fallback?.providerId, fallback?.model);
+  // What the seat that staffs the team may do without asking, when the team has such a seat.
+  const staffing = team.data?.staffing, hr = staffing?.seat;
+  const setStaffing = (decides: boolean, maxSeats: number) => act(`/api/projects/${slug}/team/staffing`, { decides, maxSeats });
 
   return (
     <div className="flex min-h-0 grow flex-col gap-5 overflow-y-auto p-5">
@@ -40,6 +43,10 @@ export function TeamTab({ roster, onChanged, children }: { roster: Agent[]; onCh
             {list.flatMap(provider => provider.models.map(model => <option key={`${provider.id}${model}`} value={`${provider.id}\n${model}`}>{provider.name} · {model}</option>))}
           </Select> : <Text size="small">{defaultWords}</Text>}
           {canEdit && defaultEfforts.length > 0 && <Select compact aria-label="The team's default effort" value={fallback?.effort ?? ''} onChange={event => act(`/api/projects/${slug}/team/default`, { providerId: fallback?.providerId ?? null, model: fallback?.model ?? null, effort: event.target.value || null })}><option value="">Effort: the tool's own</option>{defaultEfforts.map(level => <option key={level} value={level}>Effort: {level}</option>)}</Select>}
+        </div>}
+        {staffing && hr && <div className="flex flex-wrap items-center gap-2">
+          {canEdit ? <Checkbox checked={staffing.decides} onChange={event => setStaffing(event.target.checked, staffing.maxSeats)} label={`${hr.name} hires and retires without asking`} /> : <Text size="small" tone="muted">{staffing.decides ? `${hr.name} hires and retires without asking, up to ${staffing.maxSeats} seats` : `${hr.name} asks before every hire and retirement`}</Text>}
+          {canEdit && staffing.decides && <Select compact aria-label="How large the team may grow" value={staffing.maxSeats} onChange={event => setStaffing(true, Number(event.target.value))}>{[...new Set([4, 5, 6, 8, 10, 12, 16, 20, 30, 40, staffing.maxSeats])].sort((a, b) => a - b).map(size => <option key={size} value={size}>up to {size} seats</option>)}</Select>}
         </div>}
         {roster.map((agent, index) => {
           const seat = team.data?.seats.find(item => item.id === agent.id) ?? null, paused = agent.status === 'paused';

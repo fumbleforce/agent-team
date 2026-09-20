@@ -14,6 +14,7 @@
 | Structured deliberation, reviews, approvals, merge queue, publish and the merge gate | Built; the gate is tested on synthetic repositories and recorded host responses for both source hosts |
 | Roles, graded permissions, committed ceiling, write-scope gate | Built and tested |
 | Team proposals, delegation bounds, weekly retro | Built and tested |
+| HR: a seat that hires, retires and reshapes the team inside limits the owner sets on the Team tab | Built and tested with fakes; no real engine turn has used the staffing tools yet |
 | Knowledge pages, memories, search, optional semantic search, git mirror | Built; semantic search is tested with a toy embedder |
 | Document-folder sync | Two-way against a fake API: an inbound edit becomes a revision authored by the sync, a conflict keeps the local text current and the remote as a sibling revision. Never run against the real service |
 | Chat mirror, outbound and inbound | Built against fakes; never run against the real service |

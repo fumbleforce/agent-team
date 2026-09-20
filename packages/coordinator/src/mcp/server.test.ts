@@ -284,3 +284,21 @@ test('the PM gives a waiting task to a teammate who may do it; not to one who ma
   const other = await boot('reply', { agent: 'Bram' });
   try { assert.match((await other.call('task.assign', { taskId: other.taskId, ownerAgentId: other.agents.Ada, why: 'x' })).text, /Only the PM moves tasks/); } finally { await other.coordinator.close(); }
 });
+
+test('only the seat whose role staffs the team is offered the staffing tools, and it hires through them', async () => {
+  const plain = await boot('reply');
+  try {
+    assert.equal(((await plain.rpc('tools/list')).json.result.tools as { name: string }[]).some(tool => tool.name.startsWith('staffing.')), false);
+    assert.equal((await plain.call('staffing.decide', { title: 'Hire', why: 'x', change: { kind: 'hire_agent', library: 'gandalf' } })).error, true);
+  } finally { await plain.coordinator.close(); }
+
+  const { coordinator, db, rpc, call } = await boot('reply', { roles: ['hr'] });
+  try {
+    assert.deepEqual(((await rpc('tools/list')).json.result.tools as { name: string }[]).map(tool => tool.name).filter(name => name.startsWith('staffing.')), ['staffing.review', 'staffing.decide']);
+    const review = await call('staffing.review');
+    assert.ok(review.data.seats.length > 0 && review.data.library.some((item: { slug: string }) => item.slug === 'gandalf'));
+    const hired = await call('staffing.decide', { title: 'A second developer', why: 'Two tasks wait behind the only developer.', change: { kind: 'hire_agent', library: 'gandalf', name: 'Gandalf' } });
+    assert.equal(hired.data.state, 'applied');
+    assert.equal((await db.selectFrom('agents').select('name').where('id', '=', hired.data.agentIds[0]).executeTakeFirstOrThrow()).name, 'Gandalf');
+  } finally { await coordinator.close(); }
+});

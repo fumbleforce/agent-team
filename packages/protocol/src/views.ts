@@ -40,7 +40,9 @@ export const SeatView = z.object({ id: z.string(), name: z.string(), initials: z
 export type SeatView = z.infer<typeof SeatView>;
 export const RoleChoiceView = z.object({ slug: z.string(), summary: z.string() });
 export type RoleChoiceView = z.infer<typeof RoleChoiceView>;
-export const TeamView = z.object({ fallback: z.object({ providerId: z.string().nullable(), model: z.string().nullable(), effort: z.string().nullable() }), workerRuns: z.array(z.object({ worker: z.string(), engine: z.string(), model: z.string().nullable(), efforts: z.array(z.string()) })), seats: z.array(SeatView), roles: z.array(RoleChoiceView), canEdit: z.boolean() });
+export const TeamView = z.object({ fallback: z.object({ providerId: z.string().nullable(), model: z.string().nullable(), effort: z.string().nullable() }), workerRuns: z.array(z.object({ worker: z.string(), engine: z.string(), model: z.string().nullable(), efforts: z.array(z.string()) })), seats: z.array(SeatView), roles: z.array(RoleChoiceView), canEdit: z.boolean(),
+  // Who staffs the team, when someone does, and what that seat may decide without the owner.
+  staffing: z.object({ seat: z.object({ id: z.string(), name: z.string() }).nullable(), decides: z.boolean(), maxSeats: z.number() }) });
 export type TeamView = z.infer<typeof TeamView>;
 
 // Harness health, derived on read from the check runs of the base branch.

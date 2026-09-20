@@ -63,7 +63,7 @@ export function createApp(context: Context) {
   const knowledge = createKnowledge(context, process.env.AGENT_TEAM_EMBEDDINGS_URL ? httpEmbedder(process.env.AGENT_TEAM_EMBEDDINGS_URL, process.env.AGENT_TEAM_EMBEDDINGS_MODEL ?? 'nomic-embed-text') : null);
   const costs = createCosts(context);
   const checks = createChecks(context);
-  const proposals = createProposals(context);
+  const proposals = createProposals(context, turns);
   const issues = createIssues(context, path.join(context.dataDir, 'blobs'));
   const captures = createCaptures(context, turns, issues);
   const sessions = createSessions(context);

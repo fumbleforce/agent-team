@@ -1,5 +1,6 @@
 import { newId } from '@agent-team/protocol';
 import type { Context } from '../context.ts';
+import { staffingSeat } from './staffing.ts';
 import type { Turns } from './turns.ts';
 
 const WEEK_MS = 7 * 24 * 3600_000;
@@ -45,7 +46,9 @@ export function createRetro(context: Context, turns: Turns) {
         events.published(published);
         if (!thread) continue;
                 // The PM's turn opens an hour later, so the seats' notes are there to read.
-        for (const seat of figures) await turns.enqueue({ agentId: seat.id, projectId: schedule.project_id, kind: 'retro', threadId: thread.id, dedupeKey: `retro:${schedule.id}:${seat.id}:${now()}`, ...(seat.isPm ? { notBefore: now() + PM_DELAY_MS } : {}) });
+        // Whoever staffs the team reads the week like the PM does, after the others, and also in a week it did nothing itself.
+        const hr = figures.length ? await staffingSeat(db, schedule.project_id) : null;
+        for (const seat of [...figures, ...(hr && !figures.some(item => item.id === hr.id) ? [{ id: hr.id, isPm: false }] : [])]) await turns.enqueue({ agentId: seat.id, projectId: schedule.project_id, kind: 'retro', threadId: thread.id, dedupeKey: `retro:${schedule.id}:${seat.id}:${now()}`, ...(seat.isPm || seat.id === hr?.id ? { notBefore: now() + PM_DELAY_MS } : {}) });
       }
     },
   };

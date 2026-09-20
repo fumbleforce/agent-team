@@ -2,7 +2,7 @@ import { z } from 'zod';
 import { Conclusion, FeedbackBlock, Proposal, Revision } from '../deliberation.ts';
 import { MessageKind, type TurnKind } from '../enums.ts';
 import { PermissionGrant } from '../permissions.ts';
-import { ProposalInput, ProposalVote } from '../proposals.ts';
+import { ProposalInput, ProposalVote, StaffingDecision } from '../proposals.ts';
 
 const Words = (max: number) => z.string().min(1).max(max * 8);
 const ALL: readonly TurnKind[] = ['work', 'review', 'feedback', 'revise', 'conclude', 'triage', 'reply', 'retro', 'ideate'];
@@ -25,10 +25,10 @@ export type RateClass = keyof typeof RATE_LIMITS;
 export const MAX_TOOL_CALLS_PER_TURN = 200;
 
 // A graded key of the grant and the least value that allows the tool; null needs no grant beyond the turn kind.
-export type ToolPermission = 'issues:comment' | 'issues:edit' | 'comms:post' | null;
+export type ToolPermission = 'issues:comment' | 'issues:edit' | 'comms:post' | 'staffing:decide' | null;
 export function permits(grants: PermissionGrant, permission: ToolPermission): boolean {
   if (permission === null) return true;
-  const [key, least] = permission.split(':') as ['issues' | 'comms', string];
+  const [key, least] = permission.split(':') as ['issues' | 'comms' | 'staffing', string];
   const order: readonly string[] = PermissionGrant.shape[key].unwrap().options;
   return order.indexOf(grants[key]) >= order.indexOf(least);
 }
@@ -91,6 +91,24 @@ export const TOOLS = {
     input: z.object({ proposalId: z.string(), vote: ProposalVote }),
     output: z.object({ state: z.string() }),
     permission: null, turnKinds: ALL, mutating: true, rateClass: 'few',
+  }),
+  'staffing.review': tool({
+    description: 'The team as it stands, for whoever staffs it: every seat with its roles and its figures over the last days (turns, failures, spend, tasks finished and open, work waiting, reviews that asked for changes), what you may decide without the owner, and who and what can be brought in: library agents, team templates and the role library. Read it before any staffing decision.',
+    input: z.object({ days: z.number().int().min(1).max(60).default(14) }),
+    output: z.object({
+      limits: z.object({ decides: z.boolean(), maxSeats: z.number(), maxDailyCapMinor: z.number() }),
+      seats: z.array(z.object({ agentId: z.string(), name: z.string(), title: z.string(), roles: z.array(z.string()), status: z.string(), isPm: z.boolean(), dailyCapMinor: z.number().nullable(), turns: z.number(), failed: z.number(), spentMinor: z.number(), tasksDone: z.number(), tasksOpen: z.number(), waiting: z.number(), changesRequested: z.number() })),
+      library: z.array(z.object({ slug: z.string(), name: z.string(), title: z.string(), roles: z.array(z.string()), summary: z.string() })),
+      templates: z.array(z.object({ slug: z.string(), name: z.string(), summary: z.string(), seats: z.number() })),
+      roles: z.array(z.object({ slug: z.string(), summary: z.string() })),
+    }),
+    permission: 'staffing:decide', turnKinds: ['work', 'reply', 'retro', 'triage', 'conclude'], mutating: false, rateClass: 'few',
+  }),
+  'staffing.decide': tool({
+    description: 'Make one staffing decision: hire from the library (hire_agent), make a new seat from roles in the role library (create_agent), retire a seat (retire_agent), change the title, persona or roles of a seat (change_seat), pause or resume one (set_status), set a daily cap (set_daily_cap), or add the seats of a template to the team (staff_from_template). Inside what the owner allows it takes effect at once; otherwise it waits for the owner, and the result says which. Say why in words the owner can check, with figures from staffing.review as evidence. For advice without a change, use proposal.create.',
+    input: StaffingDecision,
+    output: z.object({ proposalId: z.string(), state: z.enum(['applied', 'needs_owner']), note: z.string().nullable(), agentIds: z.array(z.string()) }),
+    permission: 'staffing:decide', turnKinds: ['work', 'reply', 'retro', 'triage', 'conclude'], mutating: true, rateClass: 'few',
   }),
   'test.report': tool({
     description: 'Report a test or check run you executed: counts, the failing cases, and the names of cases skipped because they are quarantined as flaky. Non-software checks use the same shape.',

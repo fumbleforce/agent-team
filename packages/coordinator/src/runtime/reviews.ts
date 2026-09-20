@@ -66,7 +66,7 @@ export function createReviews(context: Context, turns: Turns) {
     // A task that was set aside carries on from where it was: back into review when it has a revision to review, else back to its owner.
     async carryOn(taskId: string) {
       const task = await storage.db.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state']).where('id', '=', taskId).executeTakeFirst();
-      if (!task || task.state !== 'blocked') throw refuse('Only a task that was set aside can carry on');
+      if (task?.state !== 'blocked') throw refuse('Only a task that was set aside can carry on');
       const reviewed = task.head_sha ? await storage.db.selectFrom('turns').select('id').where('task_id', '=', taskId).where('kind', '=', 'review').executeTakeFirst() : null;
       await storage.db.updateTable('tasks').set({ state: reviewed ? 'in_review' : 'in_progress', blocked_reason: null, updated_at: now() }).where('id', '=', taskId).execute();
       if (reviewed) await this.chase();

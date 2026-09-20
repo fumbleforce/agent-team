@@ -15,6 +15,9 @@ export function ProposalsPage({ id, me, projects, agents }: { id: string | null;
   const items = list.data?.proposals ?? [];
   const selected = items.find(item => item.id === id) ?? items.find(item => item.state === 'needs_you') ?? items[0];
   const agent = (agentId: string) => agents.find(item => item.id === agentId);
+  // A staffing decision is made by one seat: it is never voted on, so it has no team view to show.
+  const alone = (item: Proposal) => item.state !== 'voting' && item.votes.length === 0;
+  const chip = (item: Proposal) => (alone(item) && item.state === 'auto_applied' ? { label: 'done', tone: 'working' as ChipTone } : STATE[item.state] ?? { label: item.state, tone: 'neutral' as ChipTone });
   const decide = async (decision: 'approve' | 'decline') => { if (!selected) return; setBusy(true); await api(`/api/proposals/${selected.id}/decide`, { decision }).finally(() => setBusy(false)); list.reload(); };
 
   return (
@@ -22,7 +25,7 @@ export function ProposalsPage({ id, me, projects, agents }: { id: string | null;
       <PageHeader title="Team proposals" crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }]} />
       <div className="flex min-h-0 grow">
         <SidePanel label="Proposals" wide>
-          {items.map(item => <ListLink key={item.id} href={`/proposals/${item.id}`} active={item.id === selected?.id} aside={<Chip tone={STATE[item.state]?.tone ?? 'neutral'}>{STATE[item.state]?.label ?? item.state}</Chip>}>{item.title}</ListLink>)}
+          {items.map(item => <ListLink key={item.id} href={`/proposals/${item.id}`} active={item.id === selected?.id} aside={<Chip tone={chip(item).tone}>{chip(item).label}</Chip>}>{item.title}</ListLink>)}
           {items.length === 0 && <div className="p-2"><Text size="small" tone="muted">The team has not proposed anything yet.</Text></div>}
         </SidePanel>
         {selected && (
@@ -30,13 +33,13 @@ export function ProposalsPage({ id, me, projects, agents }: { id: string | null;
             <div className="flex items-start gap-3.5">
               <div className="flex min-w-0 grow flex-col gap-1.5">
                 <div className="flex items-center gap-2"><Chip tone="review">{selected.category}</Chip><Text as="h2" size="heading">{selected.title}</Text></div>
-                <Text size="small" tone="muted">Proposed by {agent(selected.proposerAgentId)?.name ?? 'an agent'}{selected.resolutionNote ? ` · ${selected.resolutionNote}` : ''}</Text>
+                <Text size="small" tone="muted">{alone(selected) ? (selected.state === 'auto_applied' ? 'Decided by' : 'Asked by') : 'Proposed by'} {agent(selected.proposerAgentId)?.name ?? 'an agent'}{selected.resolutionNote ? ` · ${selected.resolutionNote}` : ''}</Text>
               </div>
               {selected.state === 'needs_you' && <div className="flex gap-1.5"><Button variant="primary" disabled={busy} onClick={() => decide('approve')}>Approve</Button><Button disabled={busy} onClick={() => decide('decline')}>Decline</Button></div>}
             </div>
-            <div className="grid grid-cols-1 gap-3.5 xl:grid-cols-2">
+            <div className={alone(selected) ? 'grid grid-cols-1 gap-3.5' : 'grid grid-cols-1 gap-3.5 xl:grid-cols-2'}>
               <Card className="flex flex-col gap-2"><Text weight="semibold">Why</Text><Text tone="soft">{selected.why}</Text><Text weight="semibold">What changes</Text><Text tone="soft">{selected.whatChanges}</Text></Card>
-              <Card className="flex flex-col gap-2.5"><SectionLabel>Team view</SectionLabel>{selected.votes.map(vote => <VoteLine key={vote.agentId} agent={agent(vote.agentId)} stance={vote.stance} note={vote.note} />)}{selected.votes.length === 0 && <Text size="small" tone="muted">No votes yet.</Text>}</Card>
+              {!alone(selected) && <Card className="flex flex-col gap-2.5"><SectionLabel>Team view</SectionLabel>{selected.votes.map(vote => <VoteLine key={vote.agentId} agent={agent(vote.agentId)} stance={vote.stance} note={vote.note} />)}{selected.votes.length === 0 && <Text size="small" tone="muted">No votes yet.</Text>}</Card>}
             </div>
             {selected.evidence.length > 0 && <div className="grid grid-cols-2 gap-2 xl:grid-cols-4">{selected.evidence.map(item => <StatTile key={item.label} label={item.label} value={item.value} />)}</div>}
           </div>

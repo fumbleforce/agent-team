@@ -3,6 +3,7 @@ import { teamIdOf } from '../repos/issueTasks.ts';
 import { DESK_RULE, goingOn, wearsDesk } from './desk.ts';
 import type { Tx } from '@agent-team/storage';
 import { failingChecks } from '../checks/wake.ts';
+import { STAFFING_RULE, staffs } from './staffing.ts';
 
 export interface Packet { system: string; prompt: string }
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
@@ -12,7 +13,7 @@ const TASK_RULES: Record<TurnKind, string> = {
   feedback: 'Give exactly one block of feedback on the proposal below by calling deliberation.feedback: your stance, up to four concrete points from your own role and knowledge, risks, and conditions under which you would accept. You do not see the other reviewers and there is no second round, so say what matters. Do not restate the proposal.',
   revise: 'Reviewers answered your proposal below. Call deliberation.revise once with the revised proposal and what changed; answer every condition and blocking point, or say why not.',
   conclude: 'Decide the proposal below by calling deliberation.conclude. Name the outcome, state the decision in plain words with owners, and address every against or blocking block in dissent. Escalate when it changes scope, milestones, budget or the team beyond what you may decide.',
-  triage: 'Someone raised what is in the thread below. Settle it in this turn by calling triage.decide once. If it is work to do (a defect, a change, a request), the outcome is accept, with ownerAgentId set to the teammate below whose role fits and a priority: that makes a task on the board and starts them on it, so say who takes it and why in the decision (outside an issue, also give the task a title). When what was raised is several pieces of work, add each with task.create instead and answer with what you added. If it only needs an answer, the outcome is answer and the decision is the answer. Use decline or duplicate when that is what it is, and escalate when only the owner of the project can decide. Open a deliberation instead only when the team really has to weigh in first. Never file a second issue for what was raised here: this thread already is the issue. When the latest message is a workload note from the platform, act on it in this turn: move waiting tasks to a free teammate whose role may do them with task.assign, and when nobody can, call proposal.create for a hire (say which role, and the evidence: how many tasks wait and for how long); then answer with what you did.',
+  triage: 'Someone raised what is in the thread below. Settle it in this turn by calling triage.decide once. If it is work to do (a defect, a change, a request), the outcome is accept, with ownerAgentId set to the teammate below whose role fits (of several who fit, the one with the least in hand) and a priority: that makes a task on the board and starts them on it, so say who takes it and why in the decision (outside an issue, also give the task a title). When what was raised is several pieces of work, add each with task.create instead and answer with what you added. If it only needs an answer, the outcome is answer and the decision is the answer. Use decline or duplicate when that is what it is, and escalate when only the owner of the project can decide. Open a deliberation instead only when the team really has to weigh in first. Never file a second issue for what was raised here: this thread already is the issue. When the latest message is a workload note from the platform, act on it in this turn: move waiting tasks to a free teammate whose role may do them with task.assign, and when nobody can, ask for a hire the way the note says (say which role, and the evidence: how many tasks wait and for how long); then answer with what you did.',
   reply: 'Answer the message below in the thread with discussion.post. Be factual and brief: a few lines. If it gives you direction for a task of yours listed below, say how you will follow it; your next turn on that task sees the message too. If you are the PM and are asked to put work on the board, do it with task.create (after task.list, so nothing is added twice) and say what you added.',
   review: 'Review the task below. Your folder is a throwaway checkout of exactly the revision under review: read it, run its tests if you can run commands, and change nothing. Then record your verdict with the task.review tool (you do not need the commit id) and report findings precisely. The verdict is the whole point of this turn: a review that ends without a task.review call counts for nothing and is asked for again, so call it before you write anything else, even when all you can say is what you could not check. Keep it short: a few minutes. If you start a server or a watcher to check something, stop it again before you finish; a command that does not return makes the whole review run out of time.',
   retro: 'The weekly retro is open in the thread below, with the figures of this week. Post one note with discussion.post: what went well in a line, and at most three problems with their evidence and a suggestion. If you are the PM, read the notes already there and turn at most three of them into team proposals with proposal.create.',
@@ -95,6 +96,8 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
   const system = await systemFor(tx, turn.agentId, turn.projectId);
 
   const parts: string[] = [TASK_RULES[turn.kind]];
+  // Whoever staffs the team is told so wherever it can act on it.
+  if (['reply', 'retro', 'triage', 'work', 'conclude'].includes(turn.kind) && await staffs(tx, turn.agentId)) parts.push(STAFFING_RULE);
   if (turn.taskId) {
     const task = await tx.selectFrom('tasks').select(['key', 'title', 'brief', 'state']).where('id', '=', turn.taskId).executeTakeFirst();
     if (task) parts.push(`# Task ${task.key}: ${task.title}\n${clip(task.brief || '(no brief)', 2000)}`);
@@ -133,7 +136,10 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
     if (turn.kind === 'triage' || pm) {
       const teamId = await teamIdOf(tx, turn.projectId);
       const team = teamId ? await tx.selectFrom('agents').select(['id', 'name', 'title', 'is_pm']).where('team_id', '=', teamId).where('status', '=', 'active').orderBy('sort').execute() : [];
-      if (team.length) parts.push(`# The team\n${team.map(agent => `- ${agent.name}, ${agent.title}${agent.is_pm ? ' (the PM)' : ''}: ownerAgentId ${agent.id}`).join('\n')}`);
+      // Several seats may share a name and a role; what each has in hand is what tells them apart when work is given out.
+      const held = team.length ? await tx.selectFrom('tasks').select(['key', 'assignee_agent_id']).where('assignee_agent_id', 'in', team.map(agent => agent.id)).where('state', 'in', ['assigned', 'in_progress', 'awaiting_decision', 'in_review', 'approved', 'merging']).execute() : [];
+      const inHand = (id: string) => held.filter(task => task.assignee_agent_id === id).map(task => task.key).join(', ') || 'nothing';
+      if (team.length) parts.push(`# The team\n${team.map(agent => `- ${agent.name}, ${agent.title}${agent.is_pm ? ' (the PM)' : ''}: ownerAgentId ${agent.id}, has ${inHand(agent.id)} in hand`).join('\n')}`);
     }
   }
   return { system, prompt: parts.filter(Boolean).join('\n\n') };

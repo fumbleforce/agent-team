@@ -1,11 +1,11 @@
 import type { z } from 'zod';
-import { CostRules, LibraryAgent, ProjectSettings, Role, RoutingRules, TeamTemplate } from '@agent-team/protocol';
+import { CostRules, DelegationRules, LibraryAgent, ProjectSettings, Role, RoutingRules, TeamTemplate } from '@agent-team/protocol';
 import type { ExpressionBuilder } from 'kysely';
 import type { Schema, Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 
 // Every kind of versioned document and the schema that validates it. Adding a kind is one line here.
-export const DOC_KINDS = { role: Role, project_settings: ProjectSettings, team_template: TeamTemplate, library_agent: LibraryAgent, cost_rules: CostRules, routing_rules: RoutingRules } as const satisfies Record<string, z.ZodType>;
+export const DOC_KINDS = { role: Role, project_settings: ProjectSettings, team_template: TeamTemplate, library_agent: LibraryAgent, cost_rules: CostRules, routing_rules: RoutingRules, delegation_rules: DelegationRules } as const satisfies Record<string, z.ZodType>;
 export type DocKind = keyof typeof DOC_KINDS;
 export type DocOf<K extends DocKind> = z.infer<(typeof DOC_KINDS)[K]>;
 export interface DocScope { type: 'library' | 'org' | 'team' | 'project'; id: string }

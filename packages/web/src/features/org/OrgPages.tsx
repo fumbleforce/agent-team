@@ -10,7 +10,7 @@ import { RoleEditor, type EditableRole } from './RoleEditor';
 import { Avatar, Button, Card, Chip, Dialog, Field, Input, Meter, SectionLabel, StatusDot, Text } from '../../ui';
 
 interface OrgProject extends ProjectNode { roster: Agent[]; openTasks: number; spendMinor: number }
-interface Grant { repoRead: unknown; codeWrite: unknown; shell: string; browser: string; issues: string; comms: string; deploy: string; secrets: string[]; spendDailyCapMinor: number }
+interface Grant { repoRead: unknown; codeWrite: unknown; shell: string; browser: string; issues: string; comms: string; deploy: string; staffing?: string; secrets: string[]; spendDailyCapMinor: number }
 interface RoleDoc { slug: string; version: number; author: string; doc: { summary: string; perspective: string; skills: string[]; permissions: Grant; knowledgeFirst: string[]; approvalKinds: string[] }; wornBy: { id: string; name: string; initials: string; tint: string }[] }
 
 interface ArchivedProject { id: string; slug: string; name: string; kind: string; parentName: string | null }
@@ -116,7 +116,7 @@ export function RolesPage({ slug, me, projects }: { slug: string | null; me: Me;
             <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
               <Card className="flex flex-col gap-2.5">
                 <SectionLabel>Permissions</SectionLabel>
-                <KeyValueList items={[['Read repository', scope(role.doc.permissions.repoRead)], ['Write code', scope(role.doc.permissions.codeWrite)], ['Run shell', role.doc.permissions.shell], ['Run browser', role.doc.permissions.browser], ['Issues', role.doc.permissions.issues], ['Comms', role.doc.permissions.comms], ['Deploy', role.doc.permissions.deploy], ['Secrets', role.doc.permissions.secrets.join(', ') || 'none'], ['Spend per day', String(role.doc.permissions.spendDailyCapMinor / 100)]]} />
+                <KeyValueList items={[['Read repository', scope(role.doc.permissions.repoRead)], ['Write code', scope(role.doc.permissions.codeWrite)], ['Run shell', role.doc.permissions.shell], ['Run browser', role.doc.permissions.browser], ['Issues', role.doc.permissions.issues], ['Comms', role.doc.permissions.comms], ['Deploy', role.doc.permissions.deploy], ['Hire and retire', role.doc.permissions.staffing ?? 'none'], ['Secrets', role.doc.permissions.secrets.join(', ') || 'none'], ['Spend per day', String(role.doc.permissions.spendDailyCapMinor / 100)]]} />
               </Card>
               <Card className="flex flex-col gap-2.5"><SectionLabel>Reads first</SectionLabel>{role.doc.knowledgeFirst.map(page => <Text key={page} size="small" mono tone="soft">{page}</Text>)}{role.doc.knowledgeFirst.length === 0 && <Text size="small" tone="muted">Nothing pinned.</Text>}<SectionLabel>Approves as</SectionLabel><div className="flex gap-1">{role.doc.approvalKinds.map(kind => <Chip key={kind} tone="review">{kind}</Chip>)}{role.doc.approvalKinds.length === 0 && <Text size="small" tone="muted">Nothing.</Text>}</div></Card>
               <Card className="flex flex-col gap-2.5"><SectionLabel>Worn by</SectionLabel>{role.wornBy.map(agent => <div key={agent.id} className="flex items-center gap-2"><Avatar initials={agent.initials} tint={agent.tint} size="sm" /><Text>{agent.name}</Text></div>)}{role.wornBy.length === 0 && <Text size="small" tone="muted">Nobody yet.</Text>}</Card>

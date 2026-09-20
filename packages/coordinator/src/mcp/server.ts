@@ -38,7 +38,7 @@ export function createMcp(context: Context, deps: McpDeps) {
   const { storage, events, now } = context;
   const db = storage.db;
   const checks = createChecks(context);
-  const proposals = createProposals(context);
+  const proposals = createProposals(context, turns);
   const costs = createCosts(context);
   const actions = createActions(context, turns);
 
@@ -145,6 +145,8 @@ export function createMcp(context: Context, deps: McpDeps) {
     'knowledge.propose_memory': async (turn, input) => ({ memoryId: await knowledge.fileMemory({ scope: (await scopesOf(turn))[0]!, agentId: turn.agent_id, ...input }) }),
     'proposal.create': async (turn, input) => proposals.create(turn, input),
     'proposal.vote': async (turn, input) => proposals.vote(turn, input.proposalId, input.vote),
+    'staffing.review': async (turn, input) => proposals.review(turn, input.days),
+    'staffing.decide': async (turn, input) => proposals.staff(turn, input),
     'test.report': async (turn, input) => checks.record({ projectId: turn.project_id, suite: input.suite, kind: input.kind, branch: input.branch, sha: input.sha ?? null, source: 'agent', report: { passed: input.passed, failed: input.failed, skipped: input.skipped, total: input.passed + input.failed + input.skipped, durationMs: input.durationMs, failing: input.failing.map(item => ({ name: item.name, status: 'failed' as const, message: item.message ?? null })), quarantined: input.quarantined.map(name => ({ name, status: 'skipped' as const, message: null })) } }),
     // From an agent's turn a verdict is pending until the worker reports the head it verified.
     // The reviewer does not have to know the commit id: the turn was given the head under review, and the worker reports the head it really ran at.

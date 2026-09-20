@@ -4,7 +4,7 @@ import { Button, Field, Input, Select, Text, Textarea } from '../../ui';
 
 export interface EditableRole { slug: string; version: number; doc: { summary: string; perspective: string; permissions: Record<string, unknown>; [key: string]: unknown } }
 
-const LEVELS = { shell: ['none', 'restricted', 'full'], browser: ['none', 'allowed'], issues: ['none', 'comment', 'edit'], comms: ['none', 'mirror', 'post'], deploy: ['none', 'allowed'] } as const;
+const LEVELS = { shell: ['none', 'restricted', 'full'], browser: ['none', 'allowed'], issues: ['none', 'comment', 'edit'], comms: ['none', 'mirror', 'post'], deploy: ['none', 'allowed'], staffing: ['none', 'decide'] } as const;
 const scopeText = (value: unknown) => (typeof value === 'string' ? value : ((value as { paths?: string[] } | undefined)?.paths ?? []).join(', '));
 // "all", "none", or a comma-separated list of paths.
 const scopeValue = (text: string) => { const clean = text.trim(); return clean === 'all' || clean === 'none' || clean === '' ? (clean || 'none') : { paths: clean.split(',').map(item => item.trim()).filter(Boolean) }; };
@@ -28,7 +28,7 @@ export function RoleEditor({ role, onSaved, onCancel }: { role: EditableRole; on
       <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
         <Field label="Read repository: all, none, or paths"><Input name="repoRead" defaultValue={scopeText(role.doc.permissions.repoRead)} /></Field>
         <Field label="Write code: all, none, or paths"><Input name="codeWrite" defaultValue={scopeText(role.doc.permissions.codeWrite)} /></Field>
-        {Object.entries(LEVELS).map(([key, levels]) => <Field key={key} label={key}><Select name={key} defaultValue={String(role.doc.permissions[key] ?? 'none')}>{levels.map(level => <option key={level}>{level}</option>)}</Select></Field>)}
+        {Object.entries(LEVELS).map(([key, levels]) => <Field key={key} label={key === 'staffing' ? 'hire and retire' : key}><Select name={key} defaultValue={String(role.doc.permissions[key] ?? 'none')}>{levels.map(level => <option key={level}>{level}</option>)}</Select></Field>)}
         <Field label="Spend per day"><Input name="spend" type="number" min={0} step="0.5" defaultValue={Number(role.doc.permissions.spendDailyCapMinor ?? 0) / 100} /></Field>
       </div>
       <Field label="Note for the history"><Input name="note" maxLength={200} /></Field>

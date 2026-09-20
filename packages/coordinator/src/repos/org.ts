@@ -22,27 +22,79 @@ export async function effectiveProjects(executor: Db | Tx, agentId: string, opti
   return projects.filter(project => (roots.has(project.id) || (project.parent_id !== null && roots.has(project.parent_id))) && live(project)).map(project => project.id);
 }
 
+export async function addSeat(tx: Tx, now: () => number, teamId: string, input: Seat, sort: number): Promise<string> {
+  const id = newId(now());
+  const initials = input.name.split(/\s+/).map(word => word[0] ?? '').join('').slice(0, 2).toUpperCase() || input.name.slice(0, 2).toUpperCase();
+  await tx.insertInto('agents').values({ id, team_id: teamId, name: input.name, initials, tint: String((sort % 8) + 1), title: input.title, persona: input.persona, status: 'active', provider_id: null, model: null, daily_cap_minor: null, is_pm: input.isPm, doing: null, sort, created_at: now() }).execute();
+  for (const role of new Set(input.roles)) await tx.insertInto('agent_roles').values({ agent_id: id, role_slug: role }).execute();
+  // Whoever answers the owner should answer fast: the front desk starts on a provider's quick middle model when one that is set up names one.
+  // It is only a starting point; the seat's model is changed like anyone's.
+  if (input.roles.includes(DESK_ROLE)) {
+    for (const provider of await tx.selectFrom('providers').select(['id', 'engine_config', 'models']).orderBy('name').execute()) {
+      const quick = providerEntry((JSON.parse(provider.engine_config) as { catalog?: string }).catalog ?? '')?.responsive;
+      if (quick && (JSON.parse(provider.models) as string[]).includes(quick)) { await tx.updateTable('agents').set({ provider_id: provider.id, model: quick }).where('id', '=', id).execute(); break; }
+    }
+  }
+  return id;
+}
+
+// The team a project runs with is its own or its parent's.
+export async function teamOf(executor: Db | Tx, projectId: string) {
+  const project = await executor.selectFrom('projects').select(['id', 'name', 'parent_id', 'team_id']).where('id', '=', projectId).executeTakeFirst();
+  if (!project) throw notFound('Project');
+  const root = project.parent_id ? await executor.selectFrom('projects').select(['id', 'name', 'parent_id', 'team_id']).where('id', '=', project.parent_id).executeTakeFirstOrThrow() : project;
+  return { root, teamId: root.team_id };
+}
+
+
+// A seat joins the team of a project at the end of the order, never as the PM.
+export async function hireInto(tx: Tx, now: () => number, projectId: string, input: Omit<Seat, 'isPm'>) {
+  const { root, teamId } = await teamOf(tx, projectId);
+  if (!teamId) throw new HttpError(409, 'no_team', 'Create a team for this project before hiring into it');
+  const last = await tx.selectFrom('agents').select(eb => eb.fn.max('sort').as('sort')).where('team_id', '=', teamId).executeTakeFirst();
+  return { rootId: root.id, agentId: await addSeat(tx, now, teamId, { ...input, isPm: false }, Number(last?.sort ?? -1) + 1) };
+}
+
+// "create" gives a project without a team its team; "append" adds the template's seats to the team it has. Nothing is ever replaced.
+export async function stampTemplate(tx: Tx, now: () => number, projectId: string, template: { slug: string; version: number; seats: Seat[]; name: string }, mode: 'create' | 'append') {
+  const { root, teamId: current } = await teamOf(tx, projectId);
+  const existing = current ? await tx.selectFrom('agents').select(['sort', 'is_pm']).where('team_id', '=', current).where('status', '!=', 'retired').execute() : [];
+  if (existing.length > 0 && mode === 'create') throw new HttpError(409, 'team_exists', 'This project already has a team; append the template to it instead');
+  const teamId = current ?? newId(now());
+  if (!current) {
+    await tx.insertInto('teams').values({ id: teamId, scope: 'project', project_id: null, name: template.name, template_slug: template.slug, template_version: template.version }).execute();
+    await tx.updateTable('projects').set({ team_id: teamId }).where('id', '=', root.id).execute();
+  } else if (existing.length === 0) await tx.updateTable('teams').set({ template_slug: template.slug, template_version: template.version }).where('id', '=', teamId).execute();
+  // A team has one PM: a template's PM only takes the flag when nobody holds it.
+  let pmTaken = existing.some(agent => agent.is_pm === true);
+  const start = existing.reduce((max, agent) => Math.max(max, agent.sort + 1), 0);
+  const agentIds: string[] = [];
+  for (const [index, item] of template.seats.entries()) {
+    agentIds.push(await addSeat(tx, now, teamId, { ...item, isPm: item.isPm && !pmTaken }, start + index));
+    pmTaken = pmTaken || item.isPm;
+  }
+  return { rootId: root.id, teamId, agentIds };
+}
+
+// The seat leaves for good. What it had not finished goes back to the backlog for someone else, and what waited for it is dropped;
+// a turn that is running ends by itself. A team is never left without the one who decides ties.
+export async function retireSeat(tx: Tx, now: () => number, agentId: string): Promise<{ name: string; returned: { id: string; key: string; projectId: string }[] }> {
+  const agent = await tx.selectFrom('agents').select(['name', 'is_pm', 'status']).where('id', '=', agentId).executeTakeFirst();
+  if (!agent || agent.status === 'retired') throw notFound('Agent');
+  if (agent.is_pm === true) throw new HttpError(409, 'pm_needed', `${agent.name} is the team's PM. Make someone else the PM first, then retire this seat.`);
+  await tx.updateTable('agents').set({ status: 'retired' }).where('id', '=', agentId).execute();
+  await tx.updateTable('work_items').set({ state: 'expired' }).where('agent_id', '=', agentId).where('state', '=', 'queued').execute();
+  const tasks = await tx.selectFrom('tasks').select(['id', 'key', 'project_id']).where('assignee_agent_id', '=', agentId).where('state', 'in', ['backlog', 'assigned', 'in_progress', 'blocked']).execute();
+  if (tasks.length) await tx.updateTable('tasks').set({ assignee_agent_id: null, state: 'backlog', blocked_reason: null, updated_at: now() }).where('id', 'in', tasks.map(task => task.id)).execute();
+  return { name: agent.name, returned: tasks.map(task => ({ id: task.id, key: task.key, projectId: task.project_id })) };
+}
+
 // Structure around the projects: milestones, cross-project links, seats on loan, and teams stamped from templates or hired from the library.
 export function createOrg(context: Context) {
   const { storage, events, now } = context;
   const db = storage.db;
   const user = (userId: string) => ({ actorKind: 'user' as const, userId });
 
-  async function seat(tx: Tx, teamId: string, input: Seat, sort: number): Promise<string> {
-    const id = newId(now());
-    const initials = input.name.split(/\s+/).map(word => word[0] ?? '').join('').slice(0, 2).toUpperCase() || input.name.slice(0, 2).toUpperCase();
-    await tx.insertInto('agents').values({ id, team_id: teamId, name: input.name, initials, tint: String((sort % 8) + 1), title: input.title, persona: input.persona, status: 'active', provider_id: null, model: null, daily_cap_minor: null, is_pm: input.isPm, doing: null, sort, created_at: now() }).execute();
-    for (const role of new Set(input.roles)) await tx.insertInto('agent_roles').values({ agent_id: id, role_slug: role }).execute();
-    // Whoever answers the owner should answer fast: the front desk starts on a provider's quick middle model when one that is set up names one.
-    // It is only a starting point; the seat's model is changed like anyone's.
-    if (input.roles.includes(DESK_ROLE)) {
-      for (const provider of await tx.selectFrom('providers').select(['id', 'engine_config', 'models']).orderBy('name').execute()) {
-        const quick = providerEntry((JSON.parse(provider.engine_config) as { catalog?: string }).catalog ?? '')?.responsive;
-        if (quick && (JSON.parse(provider.models) as string[]).includes(quick)) { await tx.updateTable('agents').set({ provider_id: provider.id, model: quick }).where('id', '=', id).execute(); break; }
-      }
-    }
-    return id;
-  }
   // What a hand-made seat may name: roles from the library, and a model its provider offers. Refusals say which field.
   async function checkSeat(tx: Tx, input: { roles?: string[] | undefined; providerId?: string | null | undefined; model?: string | null | undefined }, knownRoles: string[]) {
     const unknown = (input.roles ?? []).filter(role => !knownRoles.includes(role));
@@ -52,14 +104,6 @@ export function createOrg(context: Context) {
     if (!provider) throw new HttpError(400, 'invalid', 'Some fields need another look', { provider: 'That provider is no longer there. Pick another.' });
     if (input.model && !(JSON.parse(provider.models) as string[]).includes(input.model)) throw new HttpError(400, 'invalid', 'Some fields need another look', { provider: `${provider.name} does not offer ${input.model}` });
   }
-  // The team a project runs with is its own or its parent's.
-  async function teamOf(executor: Db | Tx, projectId: string) {
-    const project = await executor.selectFrom('projects').select(['id', 'name', 'parent_id', 'team_id']).where('id', '=', projectId).executeTakeFirst();
-    if (!project) throw notFound('Project');
-    const root = project.parent_id ? await executor.selectFrom('projects').select(['id', 'name', 'parent_id', 'team_id']).where('id', '=', project.parent_id).executeTakeFirstOrThrow() : project;
-    return { root, teamId: root.team_id };
-  }
-
   return {
     async milestones(projectIds: string[]) {
       if (projectIds.length === 0) return [];
@@ -214,23 +258,8 @@ export function createOrg(context: Context) {
     // "create" gives a project without a team its team; "append" adds the template's seats to the team it has. Nothing is ever replaced.
     async teamFromTemplate(userId: string, projectId: string, template: { slug: string; version: number; seats: Seat[]; name: string }, mode: z.infer<typeof FromTemplateBody>['mode']) {
       const result = await storage.transaction(async tx => {
-        const { root, teamId: current } = await teamOf(tx, projectId);
-        const existing = current ? await tx.selectFrom('agents').select(['sort', 'is_pm']).where('team_id', '=', current).where('status', '!=', 'retired').execute() : [];
-        if (existing.length > 0 && mode === 'create') throw new HttpError(409, 'team_exists', 'This project already has a team; append the template to it instead');
-        const teamId = current ?? newId(now());
-        if (!current) {
-          await tx.insertInto('teams').values({ id: teamId, scope: 'project', project_id: null, name: template.name, template_slug: template.slug, template_version: template.version }).execute();
-          await tx.updateTable('projects').set({ team_id: teamId }).where('id', '=', root.id).execute();
-        } else if (existing.length === 0) await tx.updateTable('teams').set({ template_slug: template.slug, template_version: template.version }).where('id', '=', teamId).execute();
-        // A team has one PM: a template's PM only takes the flag when nobody holds it.
-        let pmTaken = existing.some(agent => agent.is_pm === true);
-        const start = existing.reduce((max, agent) => Math.max(max, agent.sort + 1), 0);
-        const agentIds: string[] = [];
-        for (const [index, item] of template.seats.entries()) {
-          agentIds.push(await seat(tx, teamId, { ...item, isPm: item.isPm && !pmTaken }, start + index));
-          pmTaken = pmTaken || item.isPm;
-        }
-        return { teamId, agentIds, published: await events.append(tx, [{ type: 'team.created_from_template', category: 'audit', ...user(userId), projectId: root.id, payload: { teamId, template: template.slug, version: template.version, seats: agentIds.length, mode } }]) };
+        const made = await stampTemplate(tx, now, projectId, template, mode);
+        return { ...made, published: await events.append(tx, [{ type: 'team.created_from_template', category: 'audit', ...user(userId), projectId: made.rootId, payload: { teamId: made.teamId, template: template.slug, version: template.version, seats: made.agentIds.length, mode } }]) };
       });
       events.published(result.published);
       return { teamId: result.teamId, agentIds: result.agentIds };
@@ -271,7 +300,7 @@ export function createOrg(context: Context) {
         }
         const existing = await tx.selectFrom('agents').select(['sort', 'is_pm', 'status']).where('team_id', '=', teamId).execute();
         const isPm = !existing.some(agent => agent.is_pm === true && agent.status !== 'retired');
-        const agentId = await seat(tx, teamId, { name: input.name, title: input.title, persona: input.persona, roles: input.roles, isPm }, existing.reduce((max, agent) => Math.max(max, agent.sort + 1), 0));
+        const agentId = await addSeat(tx, now, teamId, { name: input.name, title: input.title, persona: input.persona, roles: input.roles, isPm }, existing.reduce((max, agent) => Math.max(max, agent.sort + 1), 0));
         if (input.providerId) await tx.updateTable('agents').set({ provider_id: input.providerId, model: input.model }).where('id', '=', agentId).execute();
         return { agentId, published: await events.append(tx, [{ type: 'agent.created', category: 'audit', ...user(userId), agentId, projectId: root.id, payload: { name: input.name, title: input.title, roles: input.roles, isPm, providerId: input.providerId, model: input.providerId ? input.model : null } }]) };
       });
@@ -284,19 +313,18 @@ export function createOrg(context: Context) {
       const published = await storage.transaction(async tx => {
         const agent = await tx.selectFrom('agents').select(['id', 'name', 'is_pm', 'status', 'provider_id']).where('id', '=', agentId).executeTakeFirst();
         if (!agent || agent.status === 'retired') throw notFound('Agent');
-        // A team is never left without the one who decides ties.
-        if (input.status === 'retired' && agent.is_pm === true) throw new HttpError(409, 'pm_needed', `${agent.name} is the team's PM. Make someone else the PM first, then retire this seat.`);
         await checkSeat(tx, { ...input, ...(input.model !== undefined && input.providerId === undefined ? { providerId: agent.provider_id } : {}) }, knownRoles);
         const initials = input.name ? input.name.split(/\s+/).map(word => word[0] ?? '').join('').slice(0, 2).toUpperCase() : undefined;
-        const set = { ...(input.name !== undefined ? { name: input.name, initials: initials! } : {}), ...(input.title !== undefined ? { title: input.title } : {}), ...(input.persona !== undefined ? { persona: input.persona } : {}), ...(input.status !== undefined ? { status: input.status } : {}),
+        const set = { ...(input.name !== undefined ? { name: input.name, initials: initials! } : {}), ...(input.title !== undefined ? { title: input.title } : {}), ...(input.persona !== undefined ? { persona: input.persona } : {}), ...(input.status !== undefined && input.status !== 'retired' ? { status: input.status } : {}),
           ...(input.providerId !== undefined ? { provider_id: input.providerId, model: input.providerId ? input.model ?? null : null } : input.model !== undefined ? { model: agent.provider_id ? input.model : null } : {}) };
         if (Object.keys(set).length) await tx.updateTable('agents').set(set).where('id', '=', agentId).execute();
         if (input.roles) {
           await tx.deleteFrom('agent_roles').where('agent_id', '=', agentId).execute();
           for (const role of new Set(input.roles)) await tx.insertInto('agent_roles').values({ agent_id: agentId, role_slug: role }).execute();
         }
+        const returned = input.status === 'retired' ? (await retireSeat(tx, now, agentId)).returned : [];
         const type = input.status === 'retired' ? 'agent.retired' : input.status === 'paused' && agent.status !== 'paused' ? 'agent.paused' : input.status === 'active' && agent.status !== 'active' ? 'agent.resumed' : 'agent.updated';
-        return events.append(tx, [{ type, category: 'audit', ...user(userId), agentId, projectId, payload: { name: input.name ?? agent.name, changed: Object.keys(input) } }]);
+        return events.append(tx, [{ type, category: 'audit', ...user(userId), agentId, projectId, payload: { name: input.name ?? agent.name, changed: Object.keys(input), ...(returned.length ? { returned: returned.map(task => task.key) } : {}) } }]);
       });
       events.published(published);
     },
@@ -329,11 +357,8 @@ export function createOrg(context: Context) {
 
     async hire(userId: string,projectId: string, library: { slug: string; doc: Omit<Seat, 'isPm'> }, input: z.infer<typeof HireBody>) {
       const result = await storage.transaction(async tx => {
-        const { root, teamId } = await teamOf(tx, projectId);
-        if (!teamId) throw new HttpError(409, 'no_team', 'Create a team for this project before hiring into it');
-        const last = await tx.selectFrom('agents').select(eb => eb.fn.max('sort').as('sort')).where('team_id', '=', teamId).executeTakeFirst();
-        const agentId = await seat(tx, teamId, { ...library.doc, name: input.name ?? library.doc.name, isPm: false }, Number(last?.sort ?? -1) + 1);
-        return { agentId, published: await events.append(tx, [{ type: 'agent.hired', ...user(userId), agentId, projectId: root.id, payload: { library: library.slug } }]) };
+        const { rootId, agentId } = await hireInto(tx, now, projectId, { ...library.doc, name: input.name ?? library.doc.name });
+        return { agentId, published: await events.append(tx, [{ type: 'agent.hired', ...user(userId), agentId, projectId: rootId, payload: { library: library.slug } }]) };
       });
       events.published(result.published);
       return result.agentId;

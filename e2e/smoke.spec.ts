@@ -57,7 +57,7 @@ test('a post to the discussion appears in the thread', async ({ page }) => {
 test('a proposal that needs the owner can be approved', async ({ page }) => {
   await enter(page);
   await page.goto('/proposals');
-  await page.locator('a[href^="/proposals/"]').first().click();
+  await page.locator('a[href^="/proposals/"]').filter({ hasText: /needs you/i }).first().click();
   const approve = page.getByRole('button', { name: /^approve$/i });
   await expect(approve).toBeVisible();
   await approve.click();
