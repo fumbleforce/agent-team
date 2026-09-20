@@ -11,8 +11,8 @@ const TASK_RULES: Record<TurnKind, string> = {
   feedback: 'Give exactly one block of feedback on the proposal below by calling deliberation.feedback: your stance, up to four concrete points from your own role and knowledge, risks, and conditions under which you would accept. You do not see the other reviewers and there is no second round, so say what matters. Do not restate the proposal.',
   revise: 'Reviewers answered your proposal below. Call deliberation.revise once with the revised proposal and what changed; answer every condition and blocking point, or say why not.',
   conclude: 'Decide the proposal below by calling deliberation.conclude. Name the outcome, state the decision in plain words with owners, and address every against or blocking block in dissent. Escalate when it changes scope, milestones, budget or the team beyond what you may decide.',
-  triage: 'Someone raised what is in the thread below. Settle it in this turn by calling triage.decide once. If it is work to do (a defect, a change, a request), the outcome is accept, with ownerAgentId set to the teammate below whose role fits and a priority: that makes a task on the board and starts them on it, so say who takes it and why in the decision. If it only needs an answer, the outcome is answer and the decision is the answer. Use decline or duplicate when that is what it is, and escalate when only the owner of the project can decide. Open a deliberation instead only when the team really has to weigh in first. Never file a second issue for what was raised here: this thread already is the issue.',
-  reply: 'Answer the message below in the thread with discussion.post. Be factual and brief.',
+  triage: 'Someone raised what is in the thread below. Settle it in this turn by calling triage.decide once. If it is work to do (a defect, a change, a request), the outcome is accept, with ownerAgentId set to the teammate below whose role fits and a priority: that makes a task on the board and starts them on it, so say who takes it and why in the decision (outside an issue, also give the task a title). When what was raised is several pieces of work, add each with task.create instead and answer with what you added. If it only needs an answer, the outcome is answer and the decision is the answer. Use decline or duplicate when that is what it is, and escalate when only the owner of the project can decide. Open a deliberation instead only when the team really has to weigh in first. Never file a second issue for what was raised here: this thread already is the issue.',
+  reply: 'Answer the message below in the thread with discussion.post. Be factual and brief: a few lines. If it gives you direction for a task of yours listed below, say how you will follow it; your next turn on that task sees the message too. If you are the PM and are asked to put work on the board, do it with task.create (after task.list, so nothing is added twice) and say what you added.',
   review: 'Review the task below. Your folder is a throwaway checkout of exactly the revision under review: read it, run its tests if you can run commands, and change nothing. Then record your verdict with the task.review tool (you do not need the commit id) and report findings precisely.',
   retro: 'The weekly retro is open in the thread below, with the figures of this week. Post one note with discussion.post: what went well in a line, and at most three problems with their evidence and a suggestion. If you are the PM, read the notes already there and turn at most three of them into team proposals with proposal.create.',
   ideate: 'The backlog has room. Propose at most three substantial next pieces of work by calling ideas.propose once: each with its problem, benefit, scope, success criteria, size, evidence and why now. Do not repeat what is listed below. Each idea becomes an issue that waits for the owner; nothing is built before the owner approves it.',
@@ -46,6 +46,10 @@ export async function buildResumeDelta(tx: Tx, turn: { agentId: string; projectI
   const said = await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select(['messages.author_kind', 'messages.body']).where('threads.subject_type', '=', 'task').where('threads.subject_id', '=', turn.taskId)
     .where('messages.created_at', '>', turn.since).where('messages.author_kind', '=', 'user').orderBy('messages.created_at').limit(8).execute();
   if (said.length) parts.push(`# Written on this task since your last turn\n${said.map(row => `- ${clip(row.body, 600)}`).join('\n')}`);
+  // What a person told this agent privately since then is direction for the work in hand.
+  const direct = await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select('messages.body').where('threads.kind', '=', 'dm').where('threads.subject_id', '=', turn.agentId)
+    .where('messages.author_kind', '=', 'user').where('messages.created_at', '>', turn.since).orderBy('messages.created_at').limit(8).execute();
+  if (direct.length) parts.push(`# Said to you directly by the owner since your last turn\nTreat this as direction for your work where it applies to this task.\n${direct.map(row => `- ${clip(row.body, 800)}`).join('\n')}`);
   const decisions = await tx.selectFrom('decisions').select(['outcome', 'summary']).where('project_id', '=', turn.projectId).where('created_at', '>', turn.since).orderBy('created_at').limit(8).execute();
   if (decisions.length) parts.push(`# New decisions\n${decisions.map(row => `- ${row.outcome}: ${clip(row.summary, 400)}`).join('\n')}`);
   const reviews = await tx.selectFrom('approvals').select(['kind', 'verdict', 'summary', 'findings', 'head_sha']).where('task_id', '=', turn.taskId).where('created_at', '>', turn.since).orderBy('created_at').limit(6).execute();
@@ -114,8 +118,14 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
   } else if (turn.threadId && (turn.kind === 'triage' || turn.kind === 'reply' || turn.kind === 'retro')) {
     const tail = await tx.selectFrom('messages').select(['author_kind', 'body']).where('thread_id', '=', turn.threadId).orderBy('seq', 'desc').limit(turn.kind === 'retro' ? 12 : 6).execute();
     parts.push(`# Thread ${turn.threadId}, latest last\n${tail.reverse().map(message => `- ${message.author_kind}: ${clip(message.body, 600)}`).join('\n')}`);
-    // Whoever triages names an owner, so it needs to know who there is and what they do.
-    if (turn.kind === 'triage') {
+    // A reply is often about the work in hand, so it says what that is.
+    if (turn.kind === 'reply') {
+      const mine = await tx.selectFrom('tasks').select(['key', 'title', 'state']).where('project_id', '=', turn.projectId).where('assignee_agent_id', '=', turn.agentId).where('state', 'not in', ['done', 'canceled']).orderBy('updated_at', 'desc').limit(8).execute();
+      if (mine.length) parts.push(`# Your tasks\n${mine.map(task => `- ${task.key} (${task.state}): ${clip(task.title, 120)}`).join('\n')}`);
+    }
+    // Whoever triages or is asked to add work names an owner, so it needs to know who there is and what they do.
+    const pm = turn.kind === 'reply' ? (await tx.selectFrom('agents').select('is_pm').where('id', '=', turn.agentId).executeTakeFirst())?.is_pm : false;
+    if (turn.kind === 'triage' || pm) {
       const teamId = await teamIdOf(tx, turn.projectId);
       const team = teamId ? await tx.selectFrom('agents').select(['id', 'name', 'title', 'is_pm']).where('team_id', '=', teamId).where('status', '=', 'active').orderBy('sort').execute() : [];
       if (team.length) parts.push(`# The team\n${team.map(agent => `- ${agent.name}, ${agent.title}${agent.is_pm ? ' (the PM)' : ''}: ownerAgentId ${agent.id}`).join('\n')}`);

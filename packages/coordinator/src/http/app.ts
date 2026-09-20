@@ -22,6 +22,7 @@ import { ENGINES } from '../../../../adapters/engine/index.ts';
 import { createControls } from '../runtime/controls.ts';
 import { createNeedsYou, type NeedsYouKind } from '../runtime/needsYou.ts';
 import { mountProviderRoutes } from './providerSetupRoutes.ts';
+import { mountTaskRoutes } from './taskRoutes.ts';
 import { SCM_KINDS, scmAdapter } from '../../../../adapters/scm/index.ts';
 import { TRACKER_KINDS } from '../../../../adapters/tracker/index.ts';
 import { createWorkspace } from '../repos/workspace.ts';
@@ -510,6 +511,7 @@ export function createApp(context: Context) {
 
   // Providers are organization-wide: which engine serves them, how they bill, and which models an agent may be given.
   providerSetup = mountProviderRoutes(app, context);
+  mountTaskRoutes(app, context, turns);
   app.post('/api/agents/:id/provider', async c => {
     const agent = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'projects.id as project_id']).where('agents.id', '=', c.req.param('id')).executeTakeFirst();
     if (!agent) throw new HttpError(404, 'not_found', 'Agent not found');

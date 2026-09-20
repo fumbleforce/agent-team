@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { api, postToThread, uploadImage, type Me, type ProjectNode, type ProjectView, type ThreadMessagesView } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
@@ -9,6 +9,7 @@ import { ChecksTab } from './ChecksTab';
 import { IssuesTab } from './IssuesTab';
 import { ProductTab } from './ProductTab';
 import { KnowledgeTab } from './KnowledgeTab';
+import { TaskDialog } from './TaskDialog';
 import { TeamTab } from './TeamTab';
 import { TeamExtras } from '../org/TeamExtras';
 import { MilestoneStrip } from '../settings/ProjectSettingsPage';
@@ -44,6 +45,7 @@ function Discussion({ threadId, view, me }: { threadId: string; view: ProjectVie
 export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: string; tab: string; pageId?: string | null; me: Me; projects: ProjectNode[] }) {
   const [, navigate] = useLocation();
   const view = useResource<ProjectView>(`/api/projects/${slug}`);
+  const [openTask, setOpenTask] = useState<string | null>(null);
   useStream(event => event.type.startsWith('task.') && event.projectId === view.data?.project.id, view.reload);
   const data = view.data;
   const root = projects.find(project => project.slug === slug || project.subprojects.some(sub => sub.slug === slug));
@@ -61,7 +63,7 @@ export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: 
         <Tabs items={[...tabsFor(data.project.kind).map(label => ({ label, href: `/p/${slug}/${label.toLowerCase()}`, active: label.toLowerCase() === shown })), ...(data.customTabs ?? []).map(item => ({ label: item.label, href: item.url, external: true }))]} />
       </PageHeader>
       {tab === 'tasks'
-        ? <div className="grid min-h-0 grow grid-cols-1 gap-3 overflow-y-auto px-5 pt-4 pb-5 sm:grid-cols-2 xl:grid-cols-4">{COLUMNS.map(column => <BoardColumn key={column.key} name={column.name} tone={column.tone} tasks={data.board[column.key]} roster={data.roster} onAssign={(taskId, agentId) => { void api(`/api/tasks/${taskId}/assign`, { agentId }).then(view.reload); }} />)}</div>
+        ? <div className="grid min-h-0 grow grid-cols-1 gap-3 overflow-y-auto px-5 pt-4 pb-5 sm:grid-cols-2 xl:grid-cols-4">{COLUMNS.map(column => <BoardColumn key={column.key} name={column.name} tone={column.tone} tasks={data.board[column.key]} roster={data.roster} onAssign={(taskId, agentId) => { void api(`/api/tasks/${taskId}/assign`, { agentId }).then(view.reload); }} onOpen={setOpenTask} />)}<TaskDialog taskId={openTask} roster={data.roster} onClose={() => setOpenTask(null)} /></div>
         : tab === 'knowledge' ? <KnowledgeTab slug={slug} pageId={pageId} />
         : tab === 'issues' ? <IssuesTab slug={slug} number={pageId ? Number(pageId) : null} roster={data.roster} me={me} navigate={navigate} />
         : tab === 'product' ? <ProductTab slug={slug} navigate={navigate} />

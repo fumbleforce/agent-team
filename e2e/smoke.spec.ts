@@ -530,3 +530,19 @@ test('an accent button has dark text on it, not the light text of the page', asy
   // Dark on amber: the text must be much darker than what it sits on.
   expect(light(background) - light(text)).toBeGreaterThan(0.4);
 });
+
+test('a card on the board opens to the task: what it asks for, who has it, and a place to give direction', async ({ page }, info) => {
+  const errors = await enter(page);
+  await page.goto(`${PROJECT}/tasks`);
+  await page.getByRole('button', { name: 'Migrate billing webhooks to v2 payload' }).click();
+  const dialog = page.getByRole('dialog');
+  await expect(dialog.getByRole('heading', { name: /CK-27 · Migrate billing webhooks/ })).toBeVisible();
+  await expect(dialog.getByRole('link', { name: 'Ada' })).toBeVisible();
+  await dialog.getByPlaceholder('Give Ada direction on this').fill('Keep v1 working behind the version check.');
+  await dialog.getByRole('button', { name: 'Send' }).click();
+  await expect(dialog.getByText('Written on it')).toBeVisible();
+  await expect(dialog.getByPlaceholder('Give Ada direction on this')).toHaveValue('');
+  await expect(dialog.getByText('Keep v1 working behind the version check.')).toBeVisible();
+  await page.screenshot({ path: info.outputPath('task-open.png') });
+  expect(errors).toEqual([]);
+});
