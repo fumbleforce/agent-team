@@ -216,7 +216,10 @@ export function createTurns(context: Context) {
             continue;
           }
           if (kind === 'deliver') {
-            await tx.updateTable('merge_queue').set({ state: 'running' }).where('task_id', '=', item.taskId).where('state', '=', 'queued').execute();
+            // Exactly one entry runs. Earlier versions could queue the same task more than once; the extra entries are closed here, not started.
+            const entries = await tx.selectFrom('merge_queue').select('id').where('task_id', '=', item.taskId).where('state', '=', 'queued').orderBy('created_at', 'desc').execute();
+            if (entries.length > 1) await tx.updateTable('merge_queue').set({ state: 'blocked', reason: 'Queued more than once; the newest entry runs', finished_at: now() }).where('id', 'in', entries.slice(1).map(entry => entry.id)).execute();
+            if (entries[0]) await tx.updateTable('merge_queue').set({ state: 'running' }).where('id', '=', entries[0].id).execute();
             await tx.updateTable('tasks').set({ state: 'merging', updated_at: now() }).where('id', '=', item.taskId).execute();
           }
           const turnId = newId(now()), leaseToken = newToken();

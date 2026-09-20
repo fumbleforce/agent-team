@@ -72,3 +72,27 @@ test('a merge that was cut off does not freeze the project or wait for a person:
     assert.deepEqual((await db.selectFrom('work_items').select('kind').where('task_id', '=', task.id).where('state', '=', 'queued').execute()).map(item => item.kind), ['deliver']);
   } finally { await coordinator.close(); }
 });
+
+test('a task that an earlier version queued for merging more than once is merged once: claiming its delivery does not fail, and the extra entries are closed', async () => {
+  const coordinator = await startCoordinator({ port: 0, storage: { kind: 'sqlite', path: ':memory:' }, machineToken: 'x'.repeat(24), webRoot: null });
+  try {
+    await seedDemo(coordinator.context);
+    const db = coordinator.context.storage.db, turns = createTurns(coordinator.context), reviews = createReviews(coordinator.context, turns);
+    const names = Object.fromEntries((await db.selectFrom('agents').select(['id', 'name']).execute()).map(row => [row.name, row.id])) as Record<string, string>;
+    const task = await db.selectFrom('tasks').select(['id', 'project_id']).where('key', '=', 'CK-31').executeTakeFirstOrThrow();
+    await db.updateTable('tasks').set({ state: 'approved', head_sha: SHA }).where('id', '=', task.id).execute();
+    for (const [index, id] of ['first', 'second', 'third'].entries()) await db.insertInto('merge_queue').values({ id, project_id: task.project_id, task_id: task.id, head_sha: SHA, state: 'queued', reason: null, created_at: index + 1, finished_at: null }).execute();
+
+    // Straight to a claim, as when the worker asks before anything tidied up: one entry runs, the others are closed, and the claim succeeds.
+    await turns.enqueue({ agentId: names.Maren!, projectId: task.project_id, kind: 'deliver', taskId: task.id, dedupeKey: `deliver:${task.id}:${SHA}` });
+    const claimed = await turns.claim({ workerId: 'w1', free: { work: 0, bounded: 0, deliver: 1 }, projects: [task.project_id] });
+    assert.equal(claimed?.kind, 'deliver');
+    assert.deepEqual((await db.selectFrom('merge_queue').select(['id', 'state']).where('task_id', '=', task.id).orderBy('created_at').execute()).map(row => [row.id, row.state]), [['first', 'blocked'], ['second', 'blocked'], ['third', 'running']]);
+
+    // And the tidy-up alone does the same for entries nobody has claimed yet.
+    const other = await db.selectFrom('tasks').select(['id', 'project_id']).where('key', '=', 'CK-32').executeTakeFirstOrThrow();
+    for (const [index, id] of ['a', 'b'].entries()) await db.insertInto('merge_queue').values({ id, project_id: other.project_id, task_id: other.id, head_sha: SHA, state: 'queued', reason: null, created_at: index + 1, finished_at: null }).execute();
+    await reviews.chase();
+    assert.deepEqual((await db.selectFrom('merge_queue').select(['id', 'state']).where('task_id', '=', other.id).orderBy('created_at').execute()).map(row => [row.id, row.state]), [['a', 'blocked'], ['b', 'queued']]);
+  } finally { await coordinator.close(); }
+});
