@@ -45,7 +45,7 @@ export function TeamTab({ roster, teamName, onChanged, children }: { roster: Age
           const seat = team.data?.seats.find(item => item.id === agent.id) ?? null, paused = agent.status === 'paused';
           return (
             <SeatRow key={agent.id} agent={agent}>
-              {paused && <Chip tone="attention">Paused</Chip>}
+              {paused ? <Chip tone="attention">Paused</Chip> : agent.activity === 'working' ? <Chip tone="working">{agent.doing ?? 'Working'}</Chip> : agent.activity === 'queued' ? <Chip tone="review">Work queued</Chip> : <Chip>Idle</Chip>}
               <Select compact aria-label={`Provider and model for ${agent.name}`} value={agent.provider_id ? `${agent.provider_id}\n${agent.model ?? ''}` : ''} onChange={event => assign(agent, event.target.value)}>
                 <option value="">Team default ({defaultWords})</option>
                 {list.flatMap(provider => provider.models.map(model => <option key={`${provider.id}${model}`} value={`${provider.id}\n${model}`}>{provider.name} · {model}</option>))}

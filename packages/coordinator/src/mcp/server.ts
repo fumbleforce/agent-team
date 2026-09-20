@@ -10,6 +10,7 @@ import type { Knowledge, Scope } from '../knowledge/knowledge.ts';
 import type { Issues } from '../repos/issues.ts';
 import type { Integrations } from '../repos/integrations.ts';
 import type { Mentions } from '../runtime/mentions.ts';
+import type { Answering } from '../runtime/answering.ts';
 import type { Turns } from '../runtime/turns.ts';
 import { createChecks } from '../checks/checks.ts';
 import { createCosts } from '../costs/costs.ts';
@@ -21,7 +22,7 @@ import { ideationOf } from '../sync/tracker.ts';
 interface Turn { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; grants: string }
 class ToolError extends Error {}
 type Handlers = { [N in ToolName]: (turn: Turn, input: ToolInput<N>) => Promise<ToolOutput<N>> };
-export interface McpDeps { workspace: Workspace; deliberation: Deliberation; reviews: Reviews; knowledge: Knowledge; turns: Turns; issues: Issues; integrations: Integrations; mentions: Mentions }
+export interface McpDeps { workspace: Workspace; deliberation: Deliberation; reviews: Reviews; knowledge: Knowledge; turns: Turns; issues: Issues; integrations: Integrations; mentions: Mentions; answering: Answering }
 
 const RECORDED = { recorded: true } as const;
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
@@ -34,7 +35,7 @@ const rpcError = (id: unknown, code: number, message: string) => ({ jsonrpc: '2.
 // Tools-only MCP over plain JSON-RPC. Every call re-checks the lease, the turn kind, the frozen grants and the project;
 // mutations are remembered by key, so a retried call returns what the first one returned.
 export function createMcp(context: Context, deps: McpDeps) {
-  const { workspace, deliberation, reviews, knowledge, turns, issues, integrations, mentions } = deps;
+  const { workspace, deliberation, reviews, knowledge, turns, issues, integrations, mentions, answering } = deps;
   const { storage, events, now } = context;
   const db = storage.db;
   const checks = createChecks(context);
@@ -174,9 +175,8 @@ export function createMcp(context: Context, deps: McpDeps) {
     'task.handoff': async (turn, input) => actions.handoff(turn, input),
     'issue.create': async (turn, input) => {
       const created = await issues.create(null, turn.project_id, { title: input.title, body: input.body, source: 'discussion', markers: [] }, turn.agent_id);
-      // Like an issue a person raises, it goes to the PM, unless the PM filed it.
-      const pm = await workspace.pm(turn.project_id);
-      if (pm && pm !== turn.agent_id) await turns.enqueue({ agentId: pm, projectId: turn.project_id, kind: 'triage', threadId: created.threadId, dedupeKey: `triage:${created.threadId}` });
+      // Like an issue a person raises, it goes to the PM, unless the PM filed it; the thread says so either way.
+      await answering.triage({ projectId: turn.project_id, threadId: created.threadId, raisedBy: turn.agent_id });
       // @name and @role in the body are directed requests like anywhere else; naming nobody reachable is not an error here.
       await mentions.fromText({ projectId: turn.project_id, threadId: created.threadId, message: { id: created.messageId }, author: { kind: 'agent', id: turn.agent_id }, body: input.body, turnId: turn.id }).catch(() => []);
       return created;

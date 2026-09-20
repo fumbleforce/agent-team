@@ -1,8 +1,8 @@
 import { useState } from 'react';
-import type { Me, ProjectNode } from '../../data/client';
+import type { Me, ProjectNode, SeatActivity } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
-import { AppShell, Attachment, DiffView, Disclosure, OutputView, PageHeader, Sidebar, TraceRow } from '../../patterns';
+import { AppShell, Attachment, DiffView, Disclosure, OutputView, PageHeader, seatTone, Sidebar, TraceRow } from '../../patterns';
 import { AgentControls, DirectMessages } from './AgentControls';
 import { Avatar, Card, Chip, ListRow, SectionLabel, Text, type ChipTone } from '../../ui';
 
@@ -11,7 +11,7 @@ type ArtifactKind = 'diff' | 'output' | 'think' | 'image';
 interface Step { seq: number; at: number; kind: string; title: string; detail: string | null; artifact_kind?: ArtifactKind | null }
 interface Trace { steps: Step[] }
 interface Artifact { artifact: { kind: ArtifactKind; body: string; truncated: boolean } }
-interface View { agent: { id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; model: string | null; doing: string | null }; turns: Turn[]; steps: Step[] }
+interface View { agent: { id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; model: string | null; doing: string | null; activity: SeatActivity }; turns: Turn[]; steps: Step[] }
 
 const KIND: Record<string, string> = { work: 'Work on a task', review: 'A review', reply: 'A reply to a message', triage: 'Sorting out what was raised', feedback: 'Feedback on a proposal', revise: 'Revising a proposal', conclude: 'Deciding a proposal', retro: 'The retro', ideate: 'New ideas', publish: 'Publishing a change', deliver: 'Merging a change', capture: 'A screenshot' };
 const STATE: Record<string, ChipTone> = { running: 'working', completed: 'neutral', deferred: 'attention', failed: 'stop', timed_out: 'stop', uncertain: 'stop', interrupted: 'attention' };
@@ -48,7 +48,7 @@ export function AgentPage({ id, me, projects }: { id: string; me: Me; projects: 
         <div className="grid min-h-0 grow grid-cols-1 gap-3 overflow-y-auto px-5 pt-4 pb-5 xl:grid-cols-3">
           <Card className="flex flex-col gap-3">
             <div className="flex items-center gap-3">
-              <Avatar initials={data.agent.initials} tint={data.agent.tint} size="lg" status={data.agent.doing ? 'working' : 'idle'} />
+              <Avatar initials={data.agent.initials} tint={data.agent.tint} size="lg" status={seatTone(data.agent)} />
               <div className="flex flex-col"><Text size="title">{data.agent.name}</Text><Text size="small" tone="muted">{data.agent.title}</Text></div>
               {data.agent.model && <span className="ml-auto"><Chip mono>{data.agent.model}</Chip></span>}
             </div>

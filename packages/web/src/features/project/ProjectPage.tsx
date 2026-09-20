@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react';
 import { api, postToThread, uploadImage, type Me, type ProjectNode, type ProjectView, type ThreadMessagesView } from '../../data/client';
-import { useStream } from '../../data/stream';
+import { threadOf, useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
-import { AppShell, BoardColumn, Composer, mentionOptions, Message, PageHeader, RailHeader, resolveAuthor, Sidebar } from '../../patterns';
+import { AppShell, BoardColumn, Composer, mentionOptions, Message, PageHeader, PendingLine, RailHeader, resolveAuthor, Sidebar } from '../../patterns';
 import { Button, Dialog, Tabs, Text } from '../../ui';
 import { useLocation } from 'wouter';
 import { ChecksTab } from './ChecksTab';
@@ -29,7 +29,8 @@ const links = (slug: string) => [{ href: '/proposals', label: 'Team proposals' }
 
 function Discussion({ threadId, view, me }: { threadId: string; view: ProjectView; me: Me }) {
   const thread = useResource<ThreadMessagesView>(`/api/threads/${threadId}/messages`);
-  useStream(event => event.type === 'message.posted' && event.threadId === threadId, thread.reload);
+  // Messages and the scheduling of an answer both change what this thread has to say about itself.
+  useStream(event => /^(message|work_item|turn)\./.test(event.type) && threadOf(event) === threadId, thread.reload);
   const end = useRef<HTMLDivElement>(null);
   useEffect(() => { end.current?.scrollIntoView({ block: 'end' }); }, [thread.data?.messages.length]);
   return (
@@ -39,6 +40,8 @@ function Discussion({ threadId, view, me }: { threadId: string; view: ProjectVie
         {thread.data?.messages.map(message => <Message key={message.id} message={message} author={resolveAuthor(message, view.roster, me.user)} />)}
         <div ref={end} />
       </div>
+      {/* Who has what was raised here, from the coordinator's own queue: nothing here means it has been answered. */}
+      {thread.data?.pending && <div className="px-4 pb-2"><PendingLine pending={thread.data.pending} roster={view.roster} /></div>}
       <Composer placeholder="Raise an issue or suggestion — the team will pick it up and discuss…" action="Send to team" mentions={mentionOptions(view.roster)} onAttach={uploadImage} onSend={(body, images) => postToThread(threadId, body, images)} />
     </>
   );
@@ -48,7 +51,8 @@ export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: 
   const [, navigate] = useLocation();
   const view = useResource<ProjectView>(`/api/projects/${slug}`);
   const [raising, setRaising] = useState(false);
-  useStream(event => (event.type.startsWith('task.') || event.type.startsWith('issue.')) && event.projectId === view.data?.project.id, view.reload);
+  // Seats say whether they are working, have a turn queued, or are idle: every scheduling change moves that.
+  useStream(event => /^(task|turn|work_item|agent|issue)\./.test(event.type) && event.projectId === view.data?.project.id, view.reload);
   const data = view.data;
   const root = projects.find(project => project.slug === slug || project.subprojects.some(sub => sub.slug === slug));
 

@@ -1,4 +1,4 @@
-import type { AgentView, BoardView, MessageView, TaskCardView } from '@agent-team/protocol';
+import type { AgentView, BoardView, MessageView, SeatActivity as SeatActivityView, TaskCardView, ThreadPendingView } from '@agent-team/protocol';
 
 export class ApiError extends Error {
   status: number; code: string; fields: Record<string, string>;
@@ -41,5 +41,7 @@ export type Agent = AgentView;
 export type TaskCardData = TaskCardView;
 export type Board = BoardView;
 export type { CostCurrency, CostsSummaryView, CostTotal, HarnessHealthView, ProjectView, RoleChoiceView, SeatView, TeamView, ThreadMessagesView } from '@agent-team/protocol';
+export type ThreadPending = ThreadPendingView;
+export type SeatActivity = SeatActivityView;
 export type Message = MessageView;
 export interface StreamEvent { seq: number; type: string; projectId: string | null; threadId: string | null; taskId: string | null; payload: Record<string, unknown> }

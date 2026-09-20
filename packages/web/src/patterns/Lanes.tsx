@@ -1,15 +1,23 @@
 import type { ReactNode } from 'react';
 import { Link } from 'wouter';
-import type { Agent } from '../data/client';
-import { Avatar, Card, Chip, cx, Text } from '../ui';
+import type { Agent, ThreadPending } from '../data/client';
+import { Avatar, Card, Chip, cx, Text, type DotTone } from '../ui';
+import { StatusLine } from './Setup';
 
 export interface LaneItem { id: string; kind: string; key: string | null; title: string; deferReason: string | null }
+
+// A seat that is out of use says so; otherwise it says whether it is busy. A seat with a turn queued is not idle.
+export interface SeatState { status: string; doing: string | null; activity: Agent['activity'] }
+const ACTIVITY: Record<Agent['activity'], DotTone> = { working: 'working', queued: 'review', idle: 'idle' };
+export const seatTone = (seat: SeatState): DotTone => (seat.status === 'paused' ? 'attention' : seat.status === 'retired' ? 'off' : ACTIVITY[seat.activity]);
+// What a seat is doing, in its own words when it has reported a step, and from its queue until then.
+export const seatWord = (seat: SeatState): string => (seat.status !== 'active' ? seat.status : seat.doing ?? (seat.activity === 'working' ? 'starting a turn' : seat.activity === 'queued' ? 'work queued' : 'idle'));
 
 export function LaneRow({ agent, load, children }: { agent: Agent; load: string; children: ReactNode }) {
   return (
     <Card pad="sm" className="flex items-start gap-3">
       <Link href={`/agents/${agent.id}`} className="flex w-42 shrink-0 items-center gap-2.5">
-        <Avatar initials={agent.initials} tint={agent.tint} size="lg" status={agent.status === 'paused' ? 'attention' : agent.doing ? 'working' : 'idle'} />
+        <Avatar initials={agent.initials} tint={agent.tint} size="lg" status={seatTone(agent)} />
         <span className="flex min-w-0 flex-col"><Text weight="semibold">{agent.name}</Text><Text size="caption" tone="muted">{agent.title}</Text><Text size="caption" tone="faint" mono>{load}</Text></span>
       </Link>
       {children}
@@ -21,6 +29,16 @@ export function LaneRow({ agent, load, children }: { agent: Agent; load: string;
 const KIND: Record<string, string> = { work: 'Working on a task', review: 'Reviewing', feedback: 'Giving feedback', revise: 'Revising a proposal', conclude: 'Deciding', triage: 'Sorting out what came in', reply: 'Replying', retro: 'Looking back on the week', ideate: 'Proposing new work', deliver: 'Merging', publish: 'Publishing a branch', capture: 'Capturing a page' };
 const WAITS: Record<string, string> = { 'agent-paused': 'agent is paused', 'task-blocked': 'task is blocked', 'task-closed': 'task is closed', 'task-quarantined': 'needs a person first', 'lane-busy': 'after the current task', 'writer-busy': 'someone else is editing this', 'writers-busy': 'project is at its limit of editors', 'delivery-busy': 'a merge is under way',
   'provider-unavailable': 'provider is not available', 'provider-limited': 'provider hit its usage limit', 'provider-busy': 'provider is at its limit', 'provider-window': 'close to the usage allowance', 'over-cap': 'over today’s cap', 'over-budget': 'budget is used up', 'project-paused': 'project is paused', 'no-worktree-holder': 'its worker is away', 'checkout-quarantined': 'that worker’s copy needs a person' };
+
+// What was raised in a thread, and what is being done about it: the same scheduling facts the queue is picked from.
+// Queued names what the turn is for, running names who is answering, and a waiting item says why it waits.
+const ANSWERS: Record<string, string> = { triage: 'Queued for triage', reply: 'Queued for a reply', feedback: 'Queued for feedback', conclude: 'Queued for a decision', revise: 'Queued for a revision', work: 'Queued as work', review: 'Queued for review' };
+export function PendingLine({ pending, roster }: { pending: ThreadPending; roster: Agent[] }) {
+  const name = roster.find(agent => agent.id === pending.agentId)?.name ?? 'A teammate';
+  if (pending.state === 'running') return <StatusLine tone="working" busy>{name} is answering</StatusLine>;
+  const waits = pending.deferReason ? ` — waiting: ${WAITS[pending.deferReason] ?? pending.deferReason.replaceAll('-', ' ')}` : '';
+  return <StatusLine tone={pending.deferReason ? 'attention' : 'review'}>{ANSWERS[pending.kind] ?? 'Queued'} · {name} is next{waits}</StatusLine>;
+}
 
 // Why something waits is shown on the item itself; idle is a signal, so it is said out loud.
 export function LaneCell({ items, empty, emphasis }: { items: LaneItem[]; empty: string; emphasis?: boolean }) {
@@ -41,7 +59,7 @@ export function LaneCell({ items, empty, emphasis }: { items: LaneItem[]; empty:
 export function SeatRow({ agent, children }: { agent: Agent; children?: ReactNode }) {
   return (
     <Card tone={agent.is_pm ? 'decision' : 'raised'} pad="sm" className="flex items-center gap-3">
-      <Avatar initials={agent.initials} tint={agent.tint} size="lg" />
+      <Avatar initials={agent.initials} tint={agent.tint} size="lg" status={seatTone(agent)} />
       <span className="flex w-38 shrink-0 flex-col">
         <span className="flex items-center gap-1.5"><Text weight="semibold">{agent.name}</Text>{agent.is_pm && <Chip tone="attention">PM</Chip>}</span>
         <Text size="caption" tone="muted">{agent.title}</Text>

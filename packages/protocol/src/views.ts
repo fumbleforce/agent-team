@@ -3,8 +3,13 @@ import { z } from 'zod';
 // What the API answers with for the resources the web app reads most. The coordinator builds its responses against these
 // types and the web app reads them, so neither side writes the shape by hand.
 
+// What a seat has on it right now: a turn running, a turn waiting its place in the queue, or neither.
+// `status` says whether the seat is in use at all (active, paused, retired); this says whether it is busy.
+export const SeatActivity = z.enum(['working', 'queued', 'idle']);
+export type SeatActivity = z.infer<typeof SeatActivity>;
+
 // An agent on a project's roster, as the sidebar, the board and the team page show it.
-export const AgentView = z.object({ id: z.string(), name: z.string(), initials: z.string(), tint: z.string(), title: z.string(), persona: z.string(), status: z.string(), provider_id: z.string().nullable(), model: z.string().nullable(), effort: z.string().nullable().optional(), is_pm: z.boolean(), doing: z.string().nullable() });
+export const AgentView = z.object({ id: z.string(), name: z.string(), initials: z.string(), tint: z.string(), title: z.string(), persona: z.string(), status: z.string(), provider_id: z.string().nullable(), model: z.string().nullable(), effort: z.string().nullable().optional(), is_pm: z.boolean(), doing: z.string().nullable(), activity: SeatActivity });
 export type AgentView = z.infer<typeof AgentView>;
 
 export const TaskCardView = z.object({ id: z.string(), key: z.string(), title: z.string(), tag: z.string().nullable(), state: z.string(), assignee_agent_id: z.string().nullable(),
@@ -25,7 +30,11 @@ export type ProjectView = z.infer<typeof ProjectView>;
 
 export const MessageView = z.object({ id: z.string(), seq: z.number(), authorKind: z.enum(['user', 'agent', 'system']), authorId: z.string().nullable(), kind: z.string(), body: z.string(), payload: z.record(z.string(), z.unknown()), createdAt: z.number() });
 export type MessageView = z.infer<typeof MessageView>;
-export const ThreadMessagesView = z.object({ messages: z.array(MessageView), next: z.number().nullable(), seq: z.number() });
+// What is being done about what was raised in a thread: who has it, whether they are answering right now, and
+// why it waits if it does. Nothing pending means it has been answered, or that the thread says why nobody took it.
+export const ThreadPendingView = z.object({ agentId: z.string(), kind: z.string(), state: z.enum(['queued', 'running']), deferReason: z.string().nullable() });
+export type ThreadPendingView = z.infer<typeof ThreadPendingView>;
+export const ThreadMessagesView = z.object({ messages: z.array(MessageView), next: z.number().nullable(), pending: ThreadPendingView.nullable(), seq: z.number() });
 export type ThreadMessagesView = z.infer<typeof ThreadMessagesView>;
 
 // Costs are shown in the organization's currency. `rate` is how many of it one US dollar buys, which is what engines report in.

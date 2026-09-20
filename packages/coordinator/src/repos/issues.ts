@@ -2,10 +2,11 @@ import { createHash } from 'node:crypto';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import type { z } from 'zod';
-import { newId, type CreateIssueBody } from '@agent-team/protocol';
+import { newId, type CreateIssueBody, type TurnKind } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 import { indexIssue } from '../knowledge/indexing.ts';
+import { pendingOf } from '../runtime/scheduler.ts';
 import { inboxTask, taskFromIssue, teamIdOf } from './issueTasks.ts';
 
 const IMAGE = /^image\/(png|jpeg|webp|gif)$/;
@@ -62,10 +63,11 @@ export function createIssues(context: Context, blobDir: string) {
       if (rows.length === 0) return [];
       // What became of each: the task it turned into, and whether someone is about to answer or answering right now.
       const tasks = await db.selectFrom('links').innerJoin('tasks', 'tasks.id', 'links.to_id').select(['links.from_id', 'tasks.id', 'tasks.key', 'tasks.state', 'tasks.assignee_agent_id']).where('links.from_type', '=', 'issue').where('links.to_type', '=', 'task').where('links.rel', '=', 'fixes').where('links.from_id', 'in', rows.map(row => row.id)).execute();
-      const live = await db.selectFrom('work_items').select(['thread_id', 'agent_id', 'state']).where('project_id', '=', projectId).where('state', 'in', ['queued', 'leased']).where('thread_id', 'in', rows.map(row => row.thread_id)).execute();
+      const live = await db.selectFrom('work_items').select(['thread_id', 'agent_id', 'kind', 'state', 'defer_reason', 'created_at']).where('project_id', '=', projectId).where('state', 'in', ['queued', 'leased']).where('thread_id', 'in', rows.map(row => row.thread_id)).execute();
       return rows.map(row => {
-        const task = tasks.find(item => item.from_id === row.id), item = live.find(other => other.thread_id === row.thread_id);
-        return { ...row, task: task ? { id: task.id, key: task.key, state: task.state, assigneeAgentId: task.assignee_agent_id } : null, pending: item ? { agentId: item.agent_id, running: item.state === 'leased' } : null };
+        const task = tasks.find(item => item.from_id === row.id);
+        const mine = live.filter(other => other.thread_id === row.thread_id).map(other => ({ agentId: other.agent_id, kind: other.kind as TurnKind, state: other.state as 'queued' | 'leased', deferReason: other.defer_reason, createdAt: Number(other.created_at) }));
+        return { ...row, task: task ? { id: task.id, key: task.key, state: task.state, assigneeAgentId: task.assignee_agent_id } : null, pending: pendingOf(mine) };
       });
     },
 

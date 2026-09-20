@@ -1,21 +1,20 @@
 import { useEffect, useState, type ReactNode } from 'react';
 import { Link, useLocation } from 'wouter';
 import type { Agent, ProjectNode } from '../data/client';
-import { Avatar, Button, Chip, cx, Dialog, IconButton, Meter, SectionLabel, Text, type DotTone } from '../ui';
+import { Avatar, Button, Chip, cx, Dialog, IconButton, Meter, SectionLabel, Text } from '../ui';
 import { useStream } from '../data/stream';
 import { useResource } from '../data/useResource';
 import { openPalette } from './CommandPalette';
 import { NewProject } from './NewProject';
-
-const agentStatus = (agent: Agent): DotTone => (agent.status === 'paused' ? 'attention' : agent.doing ? 'working' : 'idle');
+import { seatTone, seatWord } from './Lanes';
 
 export function AgentLine({ agent }: { agent: Agent }) {
   return (
     <Link href={`/agents/${agent.id}`} className="flex items-center gap-2.5 rounded-control p-1.5 hover:bg-active">
-      <Avatar initials={agent.initials} tint={agent.tint} status={agentStatus(agent)} />
+      <Avatar initials={agent.initials} tint={agent.tint} status={seatTone(agent)} />
       <span className="flex min-w-0 flex-col">
         <Text size="small" weight="medium">{agent.name}</Text>
-        <Text size="caption" tone="muted" truncate>{agent.doing ?? 'idle'}</Text>
+        <Text size="caption" tone="muted" truncate>{seatWord(agent)}</Text>
       </span>
     </Link>
   );

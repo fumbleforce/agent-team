@@ -1,15 +1,32 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { BOARD_COLUMNS, newId, packageRoot, type BoardColumn, type MessageKind, type MessageView, type TaskState } from '@agent-team/protocol';
+import { BOARD_COLUMNS, newId, packageRoot, type AgentView, type BoardColumn, type MessageKind, type MessageView, type TaskState, type ThreadPendingView, type TurnKind } from '@agent-team/protocol';
+import type { Db, Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 import { canSeeProject, type Viewer } from '../auth/rbac.ts';
 import { indexMessage } from '../knowledge/indexing.ts';
+import { pendingOf, seatActivity } from '../runtime/scheduler.ts';
 
 interface Blueprint { slug: string; name: string; seats: { name: string; title: string; isPm?: boolean; roles: string[]; persona: string }[] }
 const defaultTeam = (): Blueprint => JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'default-team.json'), 'utf8'));
 
 const DONE: readonly string[] = BOARD_COLUMNS.done;
 const OPEN_STATES: readonly string[] = [...BOARD_COLUMNS.inbox, ...BOARD_COLUMNS.backlog, ...BOARD_COLUMNS.in_progress, ...BOARD_COLUMNS.review, ...BOARD_COLUMNS.done];
+const LIVE: readonly string[] = ['queued', 'leased'];
+
+// What each of these seats is busy with, in one query: a leased item is a turn running, a queued one is a turn waiting.
+export async function seatLoad(executor: Db | Tx, agentIds: string[]): Promise<(agentId: string) => AgentView['activity']> {
+  const rows = agentIds.length ? await executor.selectFrom('work_items').select(['agent_id', 'state']).select(eb => eb.fn.countAll<number>().as('n'))
+    .where('agent_id', 'in', agentIds).where('state', 'in', LIVE).groupBy(['agent_id', 'state']).execute() : [];
+  const count = (agentId: string, state: string) => Number(rows.find(row => row.agent_id === agentId && row.state === state)?.n ?? 0);
+  return agentId => seatActivity({ running: count(agentId, 'leased'), queued: count(agentId, 'queued') });
+}
+
+// What is being done about what was raised in a thread, from the work items the thread's own wakes created.
+export async function threadPending(executor: Db | Tx, threadId: string): Promise<ThreadPendingView | null> {
+  const rows = await executor.selectFrom('work_items').select(['agent_id', 'kind', 'state', 'defer_reason', 'created_at']).where('thread_id', '=', threadId).where('state', 'in', LIVE).execute();
+  return pendingOf(rows.map(row => ({ agentId: row.agent_id, kind: row.kind as TurnKind, state: row.state as 'queued' | 'leased', deferReason: row.defer_reason, createdAt: Number(row.created_at) })));
+}
 
 export function createWorkspace(context: Context) {
   const { storage, events, now } = context;
@@ -82,9 +99,12 @@ export function createWorkspace(context: Context) {
       return (await db.selectFrom('agents').select('id').where('team_id', '=', teamId).where('is_pm', '=', true).where('status', '=', 'active').executeTakeFirst())?.id ?? null;
     },
 
-    async roster(teamId: string) {
-      return db.selectFrom('agents').select(['id', 'name', 'initials', 'tint', 'title', 'persona', 'status', 'provider_id', 'model', 'effort', 'is_pm', 'doing'])
+    // Each seat carries what it is busy with, so no view says idle about a seat that already has work scheduled on it.
+    async roster(teamId: string): Promise<AgentView[]> {
+      const agents = await db.selectFrom('agents').select(['id', 'name', 'initials', 'tint', 'title', 'persona', 'status', 'provider_id', 'model', 'effort', 'is_pm', 'doing'])
         .where('team_id', '=', teamId).where('status', '!=', 'retired').orderBy('sort').execute();
+      const load = await seatLoad(db, agents.map(agent => agent.id));
+      return agents.map(agent => ({ ...agent, is_pm: agent.is_pm === true, activity: load(agent.id) }));
     },
 
     async board(projectId: string) {
@@ -133,6 +153,9 @@ export function createWorkspace(context: Context) {
       if (!thread) throw notFound('Thread');
       return thread;
     },
+
+    // Who has what was raised in this thread, and whether they are answering right now.
+    async pending(threadId: string) { return threadPending(db, threadId); },
 
     async messages(threadId: string, options: { after?: number; limit: number }) {
       const rows = await db.selectFrom('messages').selectAll().where('thread_id', '=', threadId).where('seq', '>', options.after ?? 0).orderBy('seq').limit(options.limit).execute();

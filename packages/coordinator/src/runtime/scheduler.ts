@@ -96,3 +96,19 @@ export function pick(snapshot: Snapshot, claim: ClaimDraft): Picked {
 
 // Idle is announced once: when the agent's last live item closes, and not again until it has had work.
 export const idleFires = (agent: { liveItems: number; idleAt: number | null }): boolean => agent.liveItems === 0 && agent.idleAt === null;
+
+// A seat is working while a turn of its runs, queued while an item of its waits for one, and idle only when it has
+// neither. Read from the same work items a claim picks from, so no view calls a seat idle while work is scheduled on it.
+export type SeatActivity = 'working' | 'queued' | 'idle';
+export const seatActivity = (seat: { running: number; queued: number }): SeatActivity => (seat.running > 0 ? 'working' : seat.queued > 0 ? 'queued' : 'idle');
+
+export interface ThreadItem { agentId: string; kind: TurnKind; state: 'queued' | 'leased'; deferReason: string | null; createdAt: number }
+export interface ThreadPending { agentId: string; kind: TurnKind; state: 'queued' | 'running'; deferReason: string | null }
+
+// What a thread is waiting for: the turn already running on it, else the item that has waited longest, with the
+// reason that item last failed its gate. A running turn has no reason to give: it is under way.
+export function pendingOf(items: readonly ThreadItem[]): ThreadPending | null {
+  const chosen = items.find(item => item.state === 'leased') ?? [...items].sort((a, b) => a.createdAt - b.createdAt)[0];
+  if (!chosen) return null;
+  return { agentId: chosen.agentId, kind: chosen.kind, state: chosen.state === 'leased' ? 'running' : 'queued', deferReason: chosen.state === 'leased' ? null : chosen.deferReason };
+}

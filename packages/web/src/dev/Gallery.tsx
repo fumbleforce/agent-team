@@ -3,8 +3,8 @@ import type { Agent, Message as MessageData } from '../data/client';
 import { AgentLine, CommandPalette, Composer, EmptyState, EntityLink, Markdown, mentionOptions, Message, openPalette, TaskCard } from '../patterns';
 import { Avatar, Button, Card, Checkbox, Chip, Dialog, Field, Icon, IconButton, Input, KeyValue, ListRow, Menu, Meter, Popover, SectionLabel, Segmented, Select, SelectMenu, StatTile, StatusDot, Text, Textarea, Tooltip, type IconName } from '../ui';
 
-const AGENT: Agent = { id: 'a', name: 'Maren', initials: 'MA', tint: '1', title: 'PM', persona: '', status: 'active', provider_id: null, model: null, is_pm: true, doing: 'Triaging your Safari report' };
-const CLEO: Agent = { ...AGENT, id: 'c', name: 'Cleo', initials: 'CL', tint: '4', title: 'QA', is_pm: false, doing: null };
+const AGENT: Agent = { id: 'a', name: 'Maren', initials: 'MA', tint: '1', title: 'PM', persona: '', status: 'active', provider_id: null, model: null, is_pm: true, doing: 'Triaging your Safari report', activity: 'working' };
+const CLEO: Agent = { ...AGENT, id: 'c', name: 'Cleo', initials: 'CL', tint: '4', title: 'QA', is_pm: false, doing: null, activity: 'queued' };
 const message = (kind: string, body: string, payload: Record<string, unknown> = {}): MessageData => ({ id: kind, seq: 1, authorKind: 'agent', authorId: 'a', kind, body, payload, createdAt: Date.UTC(2026, 8, 19, 14, 19) });
 const AUTHOR = { name: 'Maren', initials: 'MA', tint: '1', role: 'PM' };
 const ICONS: IconName[] = ['back', 'check', 'close', 'send', 'image', 'attach', 'chevron', 'link', 'search', 'menu'];

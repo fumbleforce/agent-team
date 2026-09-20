@@ -14,7 +14,7 @@ const { sanitize, purify } = vi.hoisted(() => {
 });
 vi.mock('dompurify', () => ({ default: purify }));
 
-const agent = (id: string, name: string, title: string): Agent => ({ id, name, initials: name.slice(0, 2).toUpperCase(), tint: '1', title, persona: '', status: 'active', provider_id: null, model: null, is_pm: false, doing: null });
+const agent = (id: string, name: string, title: string): Agent => ({ id, name, initials: name.slice(0, 2).toUpperCase(), tint: '1', title, persona: '', status: 'active', provider_id: null, model: null, is_pm: false, doing: null, activity: 'idle' });
 const ROSTER = [agent('a1', 'Maren', 'PM'), agent('a2', 'Cleo Vance', 'QA'), agent('a3', 'Milo', 'QA')];
 const PROJECTS: ProjectNode[] = [{ id: 'p1', slug: 'web-shop', name: 'Web shop', kind: 'repo', status: 'active', team: null, progress: 0.5, subprojects: [{ id: 'p2', slug: 'checkout-v2', name: 'Checkout v2', progress: 0.2 }] }];
 

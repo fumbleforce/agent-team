@@ -26,13 +26,14 @@ import { mountTaskRoutes } from './taskRoutes.ts';
 import { deskOf } from '../runtime/desk.ts';
 import { SCM_KINDS, scmAdapter } from '../../../../adapters/scm/index.ts';
 import { TRACKER_KINDS } from '../../../../adapters/tracker/index.ts';
-import { createWorkspace } from '../repos/workspace.ts';
+import { createWorkspace, seatLoad } from '../repos/workspace.ts';
 import { createTurns } from '../runtime/turns.ts';
 import { createMcp } from '../mcp/server.ts';
 import { createDeliberation } from '../runtime/deliberation.ts';
 import { createReviews } from '../runtime/reviews.ts';
 import { createRetro } from '../runtime/retro.ts';
 import { createMentions } from '../runtime/mentions.ts';
+import { createAnswering } from '../runtime/answering.ts';
 import { createKnowledge, httpEmbedder, type Scope } from '../knowledge/knowledge.ts';
 import { createCosts } from '../costs/costs.ts';
 import { createChecks } from '../checks/checks.ts';
@@ -70,7 +71,8 @@ export function createApp(context: Context) {
   const docs = createVersionedDocs(context);
   const integrations = createIntegrations(context, turns);
   const mentions = createMentions(context, turns);
-  const mcp = createMcp(context, { workspace, deliberation, reviews, knowledge, turns, issues, integrations, mentions });
+  const answering = createAnswering(context, { turns, workspace });
+  const mcp = createMcp(context, { workspace, deliberation, reviews, knowledge, turns, issues, integrations, mentions, answering });
   const LIBRARY = { type: 'library' as const, id: '' };
   const cookieName = context.secureCookies ? '__Host-session' : 'session';
   const app = new Hono<Env>();
@@ -293,7 +295,7 @@ export function createApp(context: Context) {
   };
   app.get('/api/threads/:id/messages', async c => {
     const thread = await threadFor(c, 'project.read');
-    return c.json({ ...await (async () => { const page = pageOf(c), rows = await workspace.messages(thread.id, { after: page.after ?? 0, limit: page.limit + 1 }); return { messages: rows.slice(0, page.limit), next: rows.length > page.limit ? rows[page.limit - 1]!.seq : null }; })(), seq: await context.events.head() } satisfies ThreadMessagesView);
+    return c.json({ ...await (async () => { const page = pageOf(c), rows = await workspace.messages(thread.id, { after: page.after ?? 0, limit: page.limit + 1 }); return { messages: rows.slice(0, page.limit), next: rows.length > page.limit ? rows[page.limit - 1]!.seq : null }; })(), pending: await workspace.pending(thread.id), seq: await context.events.head() } satisfies ThreadMessagesView);
   });
   app.post('/api/threads/:id/messages', async c => {
     const thread = await threadFor(c, 'project.contribute');
@@ -308,10 +310,10 @@ export function createApp(context: Context) {
     const open = thread.project_id && thread.visibility === 'team' && named.length === 0, issueThread = open ? Boolean(await context.storage.db.selectFrom('issues').select('id').where('thread_id', '=', thread.id).executeTakeFirst()) : false;
     // A team with a front desk hears from it first, except on an issue, which is the PM's to settle. It answers, or passes it to the PM.
     const desk = open && !issueThread ? await deskOf(context.storage.db, thread.project_id!) : null;
-    if (desk) { await turns.enqueue({ agentId: desk, projectId: thread.project_id!, kind: 'reply', threadId: thread.id, dedupeKey: `desk:${thread.id}:${id}` }); return c.json({ id }); }
-    const pm = open ? await workspace.pm(thread.project_id!) : null;
-    if (pm && thread.project_id) await turns.enqueue({ agentId: pm, projectId: thread.project_id, kind: 'triage', threadId: thread.id, dedupeKey: `triage:${thread.id}` });
-    return c.json({ id });
+    if (desk) { await turns.enqueue({ agentId: desk, projectId: thread.project_id!, kind: 'reply', threadId: thread.id, dedupeKey: `desk:${thread.id}:${id}` }); return c.json({ id, pending: await workspace.pending(thread.id) }); }
+    // Either way the thread says what became of it: who has it, or why nobody could be given it.
+    if (open) await answering.triage({ projectId: thread.project_id!, threadId: thread.id });
+    return c.json({ id, pending: await workspace.pending(thread.id) });
   });
 
   // Resolves a project slug the viewer may act on, and its knowledge scope.
@@ -413,9 +415,8 @@ export function createApp(context: Context) {
     const created = await issues.create(c.get('viewer').userId, project.id, input);
     // Whoever the body names with @ is asked directly, under the same limits as in any thread; the PM still triages the issue.
     await mentions.fromText({ projectId: project.id, threadId: created.threadId, message: { id: created.messageId }, author: { kind: 'user', id: c.get('viewer').userId }, body: input.body });
-    const pm = await workspace.pm(project.id);
-    if (pm) await turns.enqueue({ agentId: pm, projectId: project.id, kind: 'triage', threadId: created.threadId, dedupeKey: `triage:${created.threadId}` });
-    return c.json(created);
+    await answering.triage({ projectId: project.id, threadId: created.threadId });
+    return c.json({ ...created, pending: await workspace.pending(created.threadId) });
   });
   app.get('/api/projects/:slug/issues/:number', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ issue: await issues.get(project.id, Number(c.req.param('number'))) }); });
   app.post('/api/projects/:slug/issues/:number/accept', async c => {
@@ -552,12 +553,14 @@ export function createApp(context: Context) {
   });
 
   app.get('/api/agents', async c => {
-    const rows = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'agents.name', 'agents.initials', 'agents.tint', 'agents.title', 'agents.persona', 'agents.status', 'agents.provider_id', 'agents.model', 'agents.is_pm', 'agents.doing', 'projects.id as project_id']).execute();
-    return c.json({ agents: rows.filter(row => canSeeProject(c.get('viewer'), row.project_id)) });
+    const rows = (await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'agents.name', 'agents.initials', 'agents.tint', 'agents.title', 'agents.persona', 'agents.status', 'agents.provider_id', 'agents.model', 'agents.is_pm', 'agents.doing', 'projects.id as project_id']).execute()).filter(row => canSeeProject(c.get('viewer'), row.project_id));
+    const load = await seatLoad(context.storage.db, rows.map(row => row.id));
+    return c.json({ agents: rows.map(row => ({ ...row, is_pm: row.is_pm === true, activity: load(row.id) })) });
   });
   app.get('/api/agents/:id', async c => {
-    const agent = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'agents.name', 'agents.initials', 'agents.tint', 'agents.title', 'agents.persona', 'agents.status', 'agents.model', 'agents.doing', 'projects.id as project_id']).where('agents.id', '=', c.req.param('id')).executeTakeFirst();
-    if (!agent) throw new HttpError(404, 'not_found', 'Agent not found');
+    const row = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'agents.name', 'agents.initials', 'agents.tint', 'agents.title', 'agents.persona', 'agents.status', 'agents.model', 'agents.doing', 'projects.id as project_id']).where('agents.id', '=', c.req.param('id')).executeTakeFirst();
+    if (!row) throw new HttpError(404, 'not_found', 'Agent not found');
+    const agent = { ...row, activity: (await seatLoad(context.storage.db, [row.id]))(row.id) };
     allow(c, 'project.read', agent.project_id);
     const turns = await context.storage.db.selectFrom('turns').select(['id', 'kind', 'state', 'task_id', 'summary', 'tokens_in', 'tokens_out', 'cost_minor', 'started_at', 'finished_at']).where('agent_id', '=', agent.id).orderBy('started_at', 'desc').limit(10).execute();
     const steps = turns[0] ? await context.storage.db.selectFrom('trace_steps').selectAll().where('turn_id', '=', turns[0].id).orderBy('seq').limit(400).execute() : [];

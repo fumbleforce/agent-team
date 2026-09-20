@@ -18,6 +18,10 @@ export function startStream(fromSeq: number) {
   };
 }
 
+// The thread an event is about: on the envelope for what is said in it, in the payload for work scheduled on it,
+// which stays visible to the whole team rather than only to a private thread's owner.
+export const threadOf = (event: StreamEvent): string | null => event.threadId ?? (typeof event.payload.threadId === 'string' ? event.payload.threadId : null);
+
 // Calls `onEvent` for stream events that pass `match`; the view refetches or patches its own state.
 export function useStream(match: (event: StreamEvent) => boolean, onEvent: (event: StreamEvent) => void) {
   const latest = useRef({ match, onEvent });

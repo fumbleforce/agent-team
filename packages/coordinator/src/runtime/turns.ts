@@ -184,7 +184,9 @@ export function createTurns(context: Context) {
         await input.prepare?.(tx, id);
         // Having work again ends the idle period, so the next one is announced.
         await tx.updateTable('agents').set({ idle_at: null }).where('id', '=', input.agentId).where('idle_at', 'is not', null).execute();
-        return events.append(tx, [{ type: 'work_item.queued', actorKind: 'system', projectId: input.projectId, agentId: input.agentId, taskId: input.taskId ?? null, payload: { workItemId: id, kind: input.kind } }]);
+        // The thread is named in the payload, not on the envelope: an envelope thread makes the event private to that
+        // thread's owner, and being scheduled to answer is not a secret from the team.
+        return events.append(tx, [{ type: 'work_item.queued', actorKind: 'system', projectId: input.projectId, agentId: input.agentId, taskId: input.taskId ?? null, payload: { workItemId: id, kind: input.kind, threadId: input.threadId ?? null } }]);
       });
       if (!published) return null;
       events.published(published);
@@ -232,7 +234,7 @@ export function createTurns(context: Context) {
           if (kind === 'work' && item.taskId) await tx.updateTable('tasks').set({ state: 'in_progress', updated_at: now() }).where('id', '=', item.taskId).where('state', 'in', ['backlog', 'assigned']).execute();
           // A work turn resumes its (agent, task) session or starts a new one; everything else is a fresh packet.
           const session = await sessions.open(tx, { turnId, workItemId: item.id, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, workerId: request.workerId, providerId: route.providerId, model: route.model, engine });
-          const started = await events.append(tx, [{ type: 'turn.started', actorKind: 'worker', projectId: item.projectId, agentId: item.agentId, taskId: item.taskId, turnId, payload: { kind, workerId: request.workerId, providerId: route.providerId } }]);
+          const started = await events.append(tx, [{ type: 'turn.started', actorKind: 'worker', projectId: item.projectId, agentId: item.agentId, taskId: item.taskId, turnId, payload: { kind, workerId: request.workerId, providerId: route.providerId, threadId: row.thread_id } }]);
           return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, threadId: row.thread_id, grants, engine, model: route.model, effort: effortOf?.effort ?? effortOf?.default_effort ?? null, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, review, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
         }
       });
@@ -313,7 +315,9 @@ export function createTurns(context: Context) {
           }
         }
         if (turn.task_id && !after.requeued && (outcome.state === 'failed' || outcome.state === 'timed_out')) await tx.updateTable('tasks').set({ state: 'blocked', blocked_reason: 'needs-attention', updated_at: now() }).where('id', '=', turn.task_id).where('state', 'not in', ['quarantined', 'done', 'canceled', 'stopped']).execute();
-        return events.append(tx, [...drafts, { type: `turn.${outcome.state}`, actorKind: 'worker', projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, turnId, payload: { stopReason: outcome.stopReason ?? null } }]);
+        // The thread this turn was for, so a thread's own view stops saying somebody is answering it.
+        const item = await tx.selectFrom('work_items').select('thread_id').where('id', '=', turn.work_item_id).executeTakeFirst();
+        return events.append(tx, [...drafts, { type: `turn.${outcome.state}`, actorKind: 'worker', projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, turnId, payload: { stopReason: outcome.stopReason ?? null, threadId: item?.thread_id ?? null } }]);
       });
       events.published(published);
       return { reviewTaskId: reviewTaskId as string | null };
