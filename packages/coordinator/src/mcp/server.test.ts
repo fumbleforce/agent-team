@@ -115,7 +115,7 @@ test('graded tools need the permission in the grants frozen at claim', async () 
     assert.deepEqual((await call('issue.link', { number: issue.data.number, to: { type: 'task', id: taskId } })).data, { linked: true });
     assert.equal((await call('issue.link', { number: issue.data.number, to: { type: 'task', id: 'elsewhere' } })).error, true);
     assert.equal((await call('issue.comment', { number: 9999, body: 'x' })).error, true);
-    assert.deepEqual((await db.selectFrom('links').select(['from_id', 'to_id', 'rel']).where('from_id', '=', issue.data.id).execute()).map(link => ({ ...link })), [{ from_id: issue.data.id, to_id: taskId, rel: 'relates' }]);
+    assert.deepEqual((await db.selectFrom('links').select(['from_id', 'to_id', 'rel']).where('from_id', '=', issue.data.id).where('rel', '=', 'relates').execute()).map(link => ({ ...link })), [{ from_id: issue.data.id, to_id: taskId, rel: 'relates' }]);
     const sent = await call('handoff.send', { destination: 'design-agency', title: 'Icon set', summary: 'Need the retry icon in three sizes.', taskId });
     assert.deepEqual({ ...await db.selectFrom('handoffs').select(['direction', 'source', 'state', 'project_id']).where('id', '=', sent.data.handoffId).executeTakeFirstOrThrow() }, { direction: 'out', source: 'design-agency', state: 'outbox', project_id: projectId });
     for (const type of ['link.added', 'handoff.sent']) assert.equal(await count(db, type), 1, type);

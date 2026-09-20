@@ -9,9 +9,11 @@ export type AgentView = z.infer<typeof AgentView>;
 
 export const TaskCardView = z.object({ id: z.string(), key: z.string(), title: z.string(), tag: z.string().nullable(), state: z.string(), assignee_agent_id: z.string().nullable(),
   // Why a task in the backlog is not to be worked on yet (an idea waiting for its owner, say), or why a blocked one is blocked.
-  blocked_reason: z.string().nullable().optional() });
+  blocked_reason: z.string().nullable().optional(),
+  // For what sits in the inbox: where it came from, in words.
+  raised: z.string().nullable().optional() });
 export type TaskCardView = z.infer<typeof TaskCardView>;
-export const BoardView = z.object({ backlog: z.array(TaskCardView), in_progress: z.array(TaskCardView), review: z.array(TaskCardView), done: z.array(TaskCardView) });
+export const BoardView = z.object({ inbox: z.array(TaskCardView), backlog: z.array(TaskCardView), in_progress: z.array(TaskCardView), review: z.array(TaskCardView), done: z.array(TaskCardView) });
 export type BoardView = z.infer<typeof BoardView>;
 
 export const ProjectView = z.object({

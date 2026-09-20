@@ -44,7 +44,9 @@ export async function buildResumeDelta(tx: Tx, turn: { agentId: string; projectI
   // What the task asks for may have changed, and people write in the task's own thread (or its tracker issue, which is mirrored there).
   const task = await tx.selectFrom('tasks').select(['key', 'title', 'brief', 'updated_at']).where('id', '=', turn.taskId).executeTakeFirst();
   if (task && Number(task.updated_at) > turn.since && task.brief) parts.push(`# The task as it reads now (it changed since your last turn)\n${task.key}: ${task.title}\n${clip(task.brief, 2000)}`);
-  const said = await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select(['messages.author_kind', 'messages.body']).where('threads.subject_type', '=', 'task').where('threads.subject_id', '=', turn.taskId)
+  const said = await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select(['messages.author_kind', 'messages.body']).where(eb => eb.or([eb.and([eb('threads.subject_type', '=', 'task'), eb('threads.subject_id', '=', turn.taskId)]),
+      // A task that was raised as a report keeps the report's thread as its own.
+      eb('threads.id', 'in', eb.selectFrom('links').innerJoin('issues', 'issues.id', 'links.from_id').select('issues.thread_id').where('links.from_type', '=', 'issue').where('links.to_type', '=', 'task').where('links.to_id', '=', turn.taskId))]))
     .where('messages.created_at', '>', turn.since).where('messages.author_kind', '=', 'user').orderBy('messages.created_at').limit(8).execute();
   if (said.length) parts.push(`# Written on this task since your last turn\n${said.map(row => `- ${clip(row.body, 600)}`).join('\n')}`);
   // What a person told this agent privately since then is direction for the work in hand.

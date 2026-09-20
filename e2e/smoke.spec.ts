@@ -531,19 +531,49 @@ test('an accent button has dark text on it, not the light text of the page', asy
   expect(light(background) - light(text)).toBeGreaterThan(0.4);
 });
 
-test('a card on the board opens to the task: what it asks for, who has it, and a place to give direction', async ({ page }, info) => {
+test('what is raised lands in the inbox column as a task, opens as a page with where it is, and is accepted from there; any card opens the same page', async ({ page }, info) => {
   const errors = await enter(page);
   await page.goto(`${PROJECT}/tasks`);
-  await page.getByRole('button', { name: 'Migrate billing webhooks to v2 payload' }).click();
-  const dialog = page.getByRole('dialog');
-  await expect(dialog.getByRole('heading', { name: /CK-27 · Migrate billing webhooks/ })).toBeVisible();
-  await expect(dialog.getByRole('link', { name: 'Ada' })).toBeVisible();
-  await dialog.getByPlaceholder('Give Ada direction on this').fill('Keep v1 working behind the version check.');
-  await dialog.getByRole('button', { name: 'Send' }).click();
-  await expect(dialog.getByText('Written on it')).toBeVisible();
-  await expect(dialog.getByPlaceholder('Give Ada direction on this')).toHaveValue('');
-  await expect(dialog.getByText('Keep v1 working behind the version check.')).toBeVisible();
-  await page.screenshot({ path: info.outputPath('task-open.png') });
+  // No separate issues tab any more: raising happens on the board.
+  await expect(page.getByRole('link', { name: 'Issues', exact: true })).toHaveCount(0);
+  await page.getByRole('button', { name: '+ Raise' }).click();
+  const form = page.getByRole('dialog');
+  const title = `Pay button hangs ${Date.now()}`;
+  await form.getByLabel('Title').fill(title);
+  await form.getByLabel('What is wrong, and where').fill('It stays on Processing after a network drop.');
+  await form.getByRole('button', { name: 'Send to team' }).click();
+
+  // Its own page: the strip lit at the PM's decision, the report, and Accept / Merge into / Decline.
+  await expect(page).toHaveURL(/\/tasks\/[0-9a-f-]{36}$/);
+  await expect(page.getByRole('heading', { name: title })).toBeVisible();
+  await expect(page.getByText('Inbox · triage')).toBeVisible();
+  const strip = page.getByRole('list', { name: 'Where this is' });
+  await expect(strip.getByRole('listitem')).toHaveCount(6);
+  await expect(strip.locator('[aria-current="step"]')).toContainText('Accepted');
+  await expect(page.getByText('It stays on Processing after a network drop.')).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Merge into…' })).toBeVisible();
+  await expect(page.getByRole('button', { name: 'Decline' })).toBeVisible();
+  await page.screenshot({ path: info.outputPath('task-inbox.png') });
+  await page.getByRole('link', { name: 'Back to the board' }).click();
+  const inbox = page.locator('section').filter({ has: page.getByText('Inbox', { exact: true }) });
+  await expect(inbox.getByRole('link', { name: title })).toBeVisible();
+  await inbox.getByRole('link', { name: title }).click();
+  await page.getByLabel('Accept and give it to').selectOption({ label: 'Bram · Frontend' });
+  await expect(page.getByText('Assigned', { exact: true })).toBeVisible();
+  await expect(page.getByText('Accepted. Bram takes it.')).toBeVisible();
+  await expect(strip.locator('[aria-current="step"]')).toContainText('Picked up');
+
+  // A task that is being worked on: the same page, with its work log and a place to give direction.
+  await page.goto(`${PROJECT}/tasks`);
+  await page.getByRole('link', { name: 'Migrate billing webhooks to v2 payload' }).click();
+  await expect(page.getByRole('heading', { name: 'Migrate billing webhooks to v2 payload' })).toBeVisible();
+  await expect(page.getByText('Work log')).toBeVisible();
+  await expect(page.getByText(/Webhook handler accepts the v2 payload/)).toBeVisible();
+  await page.getByLabel('Write on this task').fill('Keep v1 working behind the version check.');
+  await page.getByRole('button', { name: 'Send' }).click();
+  await expect(page.getByLabel('Write on this task')).toHaveValue('');
+  await expect(page.getByRole('complementary', { name: 'Task details' }).getByText('Keep v1 working behind the version check.')).toBeVisible();
+  await page.screenshot({ path: info.outputPath('task-page.png') });
   expect(errors).toEqual([]);
 });
 
