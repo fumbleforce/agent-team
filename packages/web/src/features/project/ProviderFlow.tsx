@@ -5,7 +5,7 @@ import { ChoiceCard, More, MultiPicker, SecretField, StatusLine, type PickOption
 import { Button, Chip, CodeBlock, Dialog, Field, Input, SectionLabel, type DotTone } from '../../ui';
 
 export interface Readiness { state: 'ready' | 'waiting' | 'none'; message: string; workers: string[]; need?: 'worker' | 'tool' | 'key' | null }
-export interface Provider { id: string; name: string; kind: string; engine: string; catalog: string | null; models: string[]; status: string; agents: number; readiness: Readiness; limits: { concurrency: number | null; windowTokens: number | null; windowHours: number | null } }
+export interface Provider { id: string; name: string; kind: string; engine: string; catalog: string | null; models: string[]; status: string; agents: number; readiness: Readiness; keyLabel?: string | null; keySaved?: boolean; limits: { concurrency: number | null; windowTokens: number | null; windowHours: number | null } }
 interface CatalogEntry { kind: string; title: string; summary: string; billing: string; install: string; signIn?: string; named?: boolean; window: boolean; hasList: boolean; keySaved: boolean; providerId: string | null; readiness: Readiness;
   key?: { variable: string; label: string; getAt: string; placeholder?: string }; aliases?: string[] }
 
@@ -67,7 +67,7 @@ export function ProviderFlow({ open, kind, providers, onOpenChange, onDone }: { 
           {entry.readiness.state !== 'ready' && entry.signIn && <section className="flex flex-col gap-1.5"><SectionLabel>Sign in once on the worker</SectionLabel><CodeBlock text={entry.signIn} /></section>}
           {entry.key && <div onBlur={event => { if (event.target instanceof HTMLInputElement && event.target.name === 'key') void withKey(event.target.value); }}><SecretField name="key" label={entry.key.label} saved={entry.keySaved} getAt={entry.key.getAt} placeholder={entry.key.placeholder} error={errors.key} /></div>}
           {entry.named && <Field label="Name" error={errors.name}><Input name="name" defaultValue={existing?.name ?? ''} placeholder="Company gateway" required /></Field>}
-          <MultiPicker name="models" label="Models" options={typed ?? list.data?.models ?? []} value={models} onChange={setModels} loading={entry.hasList && !list.data} custom error={errors.models ?? list.data?.error ?? undefined} />
+          <MultiPicker name="models" label="Models" options={typed ?? list.data?.models ?? []} value={models} onChange={setModels} loading={entry.hasList && !list.data} error={errors.models ?? list.data?.error ?? undefined} />
           <More label="Limits">
             <Field label="Turns at once" error={errors.concurrency}><Input name="concurrency" inputMode="numeric" placeholder="2" defaultValue={existing?.limits.concurrency ?? ''} /></Field>
             {entry.window && <div className="grid grid-cols-2 gap-3">

@@ -185,8 +185,11 @@ test('a new project can be created from the sidebar, given a connection, and lef
 
 test('a model provider is added through its guided setup, and an agent is created, given it, reordered and retired', async ({ page }, info) => {
   const errors = await enter(page);
+  // Providers are the first thing on the Integrations page; the Team page only points there while there is none.
   await page.goto(`${PROJECT}/team`);
-  await page.getByRole('button', { name: /add a model provider/i }).click();
+  await page.getByRole('link', { name: 'Add a model provider' }).click();
+  await expect(page).toHaveURL(/\/integrations$/);
+  await page.getByRole('region', { name: 'Model providers' }).getByRole('button', { name: '+ Add' }).click();
   const flow = page.getByRole('dialog');
   for (const title of ['Claude subscription', 'Anthropic API', 'OpenRouter', 'Local models (Ollama)', 'Cursor agent']) await expect(flow.getByText(title, { exact: true })).toBeVisible();
   await page.screenshot({ path: info.outputPath('provider-pick.png') });
@@ -211,9 +214,19 @@ test('a model provider is added through its guided setup, and an agent is create
   await flow.getByLabel('Turns at once').fill('3');
   await flow.getByRole('button', { name: 'Add', exact: true }).click();
   await expect(flow).toBeHidden();
-  const card = page.locator('article, div').filter({ hasText: /^OpenRouterPay per use/ }).first();
-  await expect(card).toBeVisible();
-  await expect(page.getByText('No agent uses it yet · 3 at a time')).toBeVisible();
+  // Flat from here on: the models are changed in the provider's own row and saved as they change, with no panel to open.
+  const row = page.getByRole('region', { name: 'Model providers' });
+  await expect(row.getByText('OpenRouter', { exact: true })).toBeVisible();
+  await expect(row.getByLabel('Turns at once on OpenRouter')).toHaveValue('3');
+  await row.getByLabel('Search models of OpenRouter').fill('openrouter/vendor/model-c');
+  await row.getByLabel('Search models of OpenRouter').press('Enter');
+  await row.getByRole('button', { name: 'Remove openrouter/vendor/model-a' }).click();
+  await expect(row.getByRole('button', { name: /^Remove / })).toHaveCount(2);
+  await page.screenshot({ path: info.outputPath('providers-flat.png') });
+  await page.reload();
+  await expect(page.getByRole('region', { name: 'Model providers' }).getByRole('button', { name: 'Remove openrouter/vendor/model-c' })).toBeVisible();
+  await expect(page.getByRole('dialog')).toHaveCount(0);
+  await page.goto(`${PROJECT}/team`);
 
   // A new seat, in the product's words: name, what they do, persona, roles with their summaries, and what it runs on.
   await page.getByRole('button', { name: /add an agent/i }).click();
@@ -227,23 +240,30 @@ test('a model provider is added through its guided setup, and an agent is create
   await dialog.getByRole('button', { name: 'Add to the team' }).click();
   await expect(dialog).toBeHidden();
   await expect(page.getByLabel('Provider and model for Noor Hale')).toHaveValue(/model-b$/);
-  await expect(page.getByText('1 agent · 3 at a time')).toBeVisible();
 
   // Up one seat, then out again: a provider in use cannot be removed, and says so.
   await page.getByRole('button', { name: 'Move Noor Hale up' }).click();
   await expect(page.getByRole('button', { name: 'Move Noor Hale down' })).toBeEnabled();
   await page.screenshot({ path: info.outputPath('team-with-provider.png'), fullPage: true });
+  // A model an agent runs on is not taken away from under it, and neither is its provider; both say so in the row.
+  await page.goto(`${PROJECT}/integrations`);
+  await page.getByRole('region', { name: 'Model providers' }).getByRole('button', { name: 'Remove openrouter/vendor/model-b' }).click();
+  await expect(page.getByText(/Noor Hale still runs on openrouter\/vendor\/model-b/)).toBeVisible();
   page.once('dialog', dialog => { void dialog.accept(); });
-  await page.getByRole('button', { name: 'Remove', exact: true }).first().click();
+  await page.getByRole('button', { name: 'More for OpenRouter' }).click();
+  await page.getByRole('menuitem', { name: 'Remove…' }).click();
   await expect(page.getByText(/Noor Hale still runs on OpenRouter/)).toBeVisible();
+  await page.goto(`${PROJECT}/team`);
   await page.getByRole('button', { name: 'More for Noor Hale' }).click();
   await page.screenshot({ path: info.outputPath('seat-menu.png') });
   page.once('dialog', dialog => { void dialog.accept(); });
   await page.getByRole('menuitem', { name: 'Retire…' }).click();
   await expect(page.getByLabel('Provider and model for Noor Hale')).toHaveCount(0);
+  await page.goto(`${PROJECT}/integrations`);
   page.once('dialog', dialog => { void dialog.accept(); });
-  await page.getByRole('button', { name: 'Remove', exact: true }).first().click();
-  await expect(page.getByText('No provider yet.', { exact: false })).toBeVisible();
+  await page.getByRole('button', { name: 'More for OpenRouter' }).click();
+  await page.getByRole('menuitem', { name: 'Remove…' }).click();
+  await expect(page.getByText('None yet.', { exact: false })).toBeVisible();
 
   // The agent library has its own small editor: what is kept there can be hired into any team.
   await page.goto('/library');

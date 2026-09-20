@@ -59,7 +59,7 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
     const seats = await db.selectFrom('agents').select('provider_id').select(eb => eb.fn.countAll<number>().as('n')).where('status', '!=', 'retired').groupBy('provider_id').execute();
     return c.json({ canEdit: can(c.get('viewer'), 'org.members'), providers: rows.map(row => {
       const limits = JSON.parse(row.limits) as Limits, kind = catalogKind(row.engine_config);
-      return { id: row.id, name: row.name, kind: row.kind, engine: row.engine, catalog: kind, models: JSON.parse(row.models) as string[], status: row.status, statusDetail: row.status_detail, limitedUntil: row.limited_until === null ? null : Number(row.limited_until),
+      return { id: row.id, name: row.name, kind: row.kind, engine: row.engine, catalog: kind, models: JSON.parse(row.models) as string[], keyLabel: (kind ? providerEntry(kind)?.key?.label : undefined) ?? null, keySaved: Boolean(kind && providerEntry(kind)?.key && context.secrets.has(providerEntry(kind)!.key!.variable)), status: row.status, statusDetail: row.status_detail, limitedUntil: row.limited_until === null ? null : Number(row.limited_until),
         limits: { concurrency: limits.maxConcurrentTurns ?? null, windowTokens: limits.windowTokens ?? null, windowHours: limits.windowTokens ? (limits.windowMs ?? 5 * HOUR) / HOUR : null },
         agents: Number(seats.find(seat => seat.provider_id === row.id)?.n ?? 0), readiness: readiness(workers, row.engine, kind ? providerEntry(kind) : null) };
     }) });
@@ -126,6 +126,26 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
     const body = ProviderBody.parse({ name, kind: entry.billing, engine: entry.engine, models, limits: { ...(concurrency ? { concurrency } : {}), ...(windowTokens ? { windowTokens, windowMs: (windowHours ?? 5) * HOUR } : {}) } });
     const id = await save(userId, body, { catalog: entry.kind, ...(existing ? { id: existing.id } : {}) });
     return c.json({ id, readiness: readiness(await workersNow(), entry.engine, entry) });
+  });
+
+  // One thing changed in place, from the provider's own row: the models, how many turns at once, or its key. Everything else stays as it was.
+  const ChangeBody = z.object({ models: z.array(z.string().regex(/^\S{1,120}$/, 'A model name has no spaces')).max(40).optional(), concurrency: z.number().int().min(1).max(64).optional(), key: z.string().trim().min(8).max(400).regex(/^\S+$/).optional() });
+  app.post('/api/providers/:id/change', async c => {
+    const userId = admin(c), input = await parseBody(c, ChangeBody);
+    const row = await db.selectFrom('providers').selectAll().where('id', '=', c.req.param('id')).executeTakeFirst();
+    if (!row) throw notFound('Provider');
+    const models = input.models ? [...new Set(input.models)] : JSON.parse(row.models) as string[], limits = JSON.parse(row.limits) as Limits, kind = catalogKind(row.engine_config);
+    if (input.models) {
+      if (models.length === 0) throw new HttpError(400, 'invalid', 'Keep at least one model', { models: 'Keep at least one model' });
+      // A model an agent runs on is not taken away from under it.
+      const used = await db.selectFrom('agents').select(['name', 'model']).where('provider_id', '=', row.id).where('status', '!=', 'retired').execute(), stranded = used.filter(agent => agent.model && !models.includes(agent.model));
+      if (stranded.length) throw new HttpError(409, 'in_use', `${list(stranded.map(agent => agent.name))} still ${stranded.length === 1 ? 'runs' : 'run'} on ${list([...new Set(stranded.map(agent => agent.model!))])}. Give ${stranded.length === 1 ? 'that agent' : 'them'} another model first.`);
+    }
+    const variable = kind ? providerEntry(kind)?.key?.variable : undefined;
+    if (input.key && !variable) throw new HttpError(400, 'invalid', 'This provider signs in on the worker; it takes no key', { key: 'This provider signs in on the worker; it takes no key' });
+    if (input.key && variable) { await context.secrets.set(variable, input.key, userId); lists.clear(); }
+    if (input.models || input.concurrency) await save(userId, ProviderBody.parse({ name: row.name, kind: row.kind, engine: row.engine, models, limits: { concurrency: input.concurrency ?? limits.maxConcurrentTurns, ...(limits.windowTokens ? { windowTokens: limits.windowTokens, windowMs: limits.windowMs } : {}) } }), { id: row.id });
+    return c.json({ ok: true });
   });
 
   // Agents are never moved silently: a provider still in use stays until its agents were given another.

@@ -54,10 +54,22 @@ test('a model provider is added through the guided flow, in plain words, and rea
     assert.match(entries.find(entry => entry.kind === 'claude-subscription')!.readiness.message, /atlas and old-worker still need the tool installed/);
     assert.match(entries.find(entry => entry.kind === 'openai-compatible')!.readiness.message, /Ready on atlas/);
 
+    // Changed in place from its own row: the models alone, with the limits left as they were; a model an agent runs on stays.
+    const limitsBefore = (await db.selectFrom('providers').select('limits').where('id', '=', made.json.id).executeTakeFirstOrThrow()).limits;
+    assert.equal((await call(`/api/providers/${made.json.id}/change`, { cookie: member.cookie, body: { models: ['x/y'] } })).status, 403);
+    assert.equal((await call(`/api/providers/${made.json.id}/change`, { cookie, body: { models: [] } })).status, 400);
+    assert.equal((await call(`/api/providers/${made.json.id}/change`, { cookie, body: { models: ['openrouter/vendor/model-c', 'openrouter/vendor/model-d'] } })).status, 200);
+    const changedRow = await db.selectFrom('providers').select(['models', 'limits']).where('id', '=', made.json.id).executeTakeFirstOrThrow();
+    assert.deepEqual([JSON.parse(changedRow.models), changedRow.limits], [['openrouter/vendor/model-c', 'openrouter/vendor/model-d'], limitsBefore]);
+    await call(`/api/providers/${made.json.id}/change`, { cookie, body: { concurrency: 5 } });
+    assert.equal(JSON.parse((await db.selectFrom('providers').select('limits').where('id', '=', made.json.id).executeTakeFirstOrThrow()).limits).maxConcurrentTurns, 5);
+
     // A provider in use is not removed from under its agents.
     await call('/api/projects', { cookie, body: { name: 'Shop' } });
     const agent = (await call('/api/projects/shop', { cookie })).json.roster[0];
     await call(`/api/agents/${agent.id}/provider`, { cookie, body: { providerId: made.json.id, model: 'openrouter/vendor/model-c' } });
+    const stranded = await call(`/api/providers/${made.json.id}/change`, { cookie, body: { models: ['openrouter/vendor/model-d'] } });
+    assert.deepEqual([stranded.status, new RegExp(`${agent.name} still runs on openrouter/vendor/model-c`).test(stranded.json.error.message)], [409, true]);
     const refused = await call(`/api/providers/${made.json.id}/remove`, { cookie, body: {} });
     assert.deepEqual([refused.status, new RegExp(`${agent.name} still runs on OpenRouter`).test(refused.json.error.message)], [409, true]);
     await call(`/api/agents/${agent.id}/provider`, { cookie, body: { providerId: null, model: null } });

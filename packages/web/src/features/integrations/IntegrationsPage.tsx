@@ -5,6 +5,7 @@ import { useResource } from '../../data/useResource';
 import { AppShell, Attachment, PageHeader, Sidebar, SidePanel } from '../../patterns';
 import { Button, Card, Chip, Field, SectionLabel, Select, StatusDot, Text, Textarea } from '../../ui';
 import { CATEGORY, ConnectFlow } from './ConnectFlow';
+import { ProvidersSection } from './ProvidersSection';
 
 interface Connection { projectScoped: boolean; id: string; kind: string; name: string; category: string; mode: string; status: string; statusDetail: string | null; credentialRef: string | null }
 interface Handoff { id: string; source: string; title: string; summary: string; attachmentId: string | null; state: string; direction: string; target: { type: string; key: string | null; title: string | null } | null; result: string | null }
@@ -71,6 +72,7 @@ export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me;
       </PageHeader>
       <div className="flex min-h-0 grow">
         <div className="flex min-w-0 grow flex-col gap-3 overflow-y-auto px-5 py-3.5">
+          <ProvidersSection />
           {groups.map(group => (
             <section key={group.key} className="flex flex-col gap-1.5">
               <SectionLabel>{CATEGORY[group.key]}</SectionLabel>
@@ -85,7 +87,7 @@ export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me;
             </section>
           ))}
           {view.data?.sync?.map(row => <Text key={row.resource} size="caption" tone="muted">{row.resource}: {row.failingSince ? `failing since ${new Date(row.failingSince).toLocaleString()} (${row.error ?? "unknown"})` : row.lastOkAt ? `last synced ${new Date(row.lastOkAt).toLocaleString()}` : "not synced yet"}</Text>)}
-          {groups.length === 0 && <Text tone="muted">Nothing is connected yet. Start with the code and the task board.</Text>}
+          {groups.length === 0 && <Text size="small" tone="muted">Nothing else is connected yet. Start with the code and the task board.</Text>}
         </div>
         <SidePanel label="Handoffs" side="right" wide>
           <div className="flex flex-col gap-2.5 px-1.5">
