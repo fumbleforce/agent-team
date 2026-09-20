@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { Router } from 'wouter';
 import { memoryLocation } from 'wouter/memory-location';
 import type { Agent, Message as MessageData, ProjectNode } from '../data/client';
-import { AppShell, CommandPalette, Composer, EmptyState, EntityLink, Markdown, mentionOptions, Message, openPalette, renderMarkdown } from './index';
+import { AgentLine, AppShell, CommandPalette, Composer, EmptyState, EntityLink, Markdown, mentionOptions, Message, openPalette, PendingLine, renderMarkdown, seatTone } from './index';
 
 // DOMPurify walks the tree with DOM APIs that happy-dom only approximates (it removes every node there), so the sanitizer
 // is a pass-through here and these tests check that all markup goes through it. What it strips in a real browser is
@@ -184,5 +184,35 @@ describe('EntityLink and EmptyState', () => {
     expect(screen.getByRole('link', { name: /CK-28.*Fix double-submit/ }).getAttribute('href')).toBe('/p/web-shop/tasks');
     expect(screen.getByRole('heading', { name: 'No pages yet' })).toBeTruthy();
     expect(screen.getByRole('button', { name: 'Write one' })).toBeTruthy();
+  });
+});
+
+describe('a seat and a thread say what is being done, never silence', () => {
+  const seat = (over: Partial<Agent>): Agent => ({ ...ROSTER[0]!, ...over });
+
+  it('calls a seat idle only when it has neither a running nor a queued turn', () => {
+    expect([
+      seatTone(seat({ activity: 'idle' })), seatTone(seat({ activity: 'queued' })),
+      seatTone(seat({ activity: 'working' })), seatTone(seat({ activity: 'working', status: 'paused' })),
+    ]).toEqual(['idle', 'review', 'working', 'attention']);
+  });
+
+  it('says what a seat is busy with from its queue until it reports a step of its own', () => {
+    render(<Router hook={memoryLocation({ path: '/' }).hook}><><AgentLine agent={seat({ activity: 'queued' })} /><AgentLine agent={seat({ id: 'a9', name: 'Milo', activity: 'working' })} /></></Router>);
+    expect(screen.getByText('work queued')).toBeTruthy();
+    expect(screen.getByText('starting a turn')).toBeTruthy();
+  });
+
+  it('names who has what was raised, whether they are answering, and why it waits', () => {
+    const { container } = render(<PendingLine roster={ROSTER} pending={{ agentId: 'a1', kind: 'triage', state: 'queued', deferReason: null }} />);
+    expect(container.textContent).toBe('Queued for triage · Maren is next');
+    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a1', kind: 'triage', state: 'running', deferReason: null }} />).container.textContent).toBe('Maren is answering');
+    // A reason the scheduler wrote down is said in a person's words, and an unknown one is still said.
+    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a2', kind: 'reply', state: 'queued', deferReason: 'provider-limited' }} />).container.textContent)
+      .toBe('Queued for a reply · Cleo Vance is next — waiting: provider hit its usage limit');
+    expect(render(<PendingLine roster={ROSTER} pending={{ agentId: 'a2', kind: 'reply', state: 'queued', deferReason: 'some-new-reason' }} />).container.textContent)
+      .toContain('waiting: some new reason');
+    // A seat that has left the team still leaves the thread able to say something is being done about it.
+    expect(render(<PendingLine roster={[]} pending={{ agentId: 'gone', kind: 'work', state: 'running', deferReason: null }} />).container.textContent).toBe('A teammate is answering');
   });
 });

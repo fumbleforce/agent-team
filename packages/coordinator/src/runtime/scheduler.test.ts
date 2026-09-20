@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CostRules, RoutingRules, type TurnKind } from '@agent-team/protocol';
-import { AGING_MS, effectiveClass, enqueue, gate, idleFires, laneOf, pick, type Snapshot, type TurnDraft } from './scheduler.ts';
+import { AGING_MS, effectiveClass, enqueue, gate, idleFires, laneOf, pendingOf, pick, seatActivity, type Snapshot, type ThreadItem, type TurnDraft } from './scheduler.ts';
 import { suggest } from './rebalance.ts';
 
 const T0 = 1_000_000_000;
@@ -102,6 +102,22 @@ test('fairness over a run: agents with equal queues alternate', () => {
 test('idle fires once per idle period', () => {
   const cases: [number, number | null, boolean][] = [[1, null, false], [0, null, true], [0, T0, false], [2, T0, false]];
   for (const [liveItems, idleAt, fires] of cases) assert.equal(idleFires({ liveItems, idleAt }), fires);
+});
+
+test('a seat is idle only when it has neither a running nor a queued turn', () => {
+  const cases: [number, number, string][] = [[1, 0, 'working'], [1, 3, 'working'], [0, 1, 'queued'], [0, 0, 'idle']];
+  for (const [running, queued, activity] of cases) assert.equal(seatActivity({ running, queued }), activity);
+});
+
+test('a thread is pending on the turn running for it, else on the item that has waited longest, with its reason', () => {
+  const thread = (over: Partial<ThreadItem>): ThreadItem => ({ agentId: 'a', kind: 'triage', state: 'queued', deferReason: null, createdAt: T0, ...over });
+  assert.equal(pendingOf([]), null);
+  // Nothing has started: the oldest item is what the thread waits on, whatever order the rows arrived in.
+  assert.deepEqual(pendingOf([thread({ agentId: 'b', createdAt: T0 + 5 }), thread({ createdAt: T0 })]), { agentId: 'a', kind: 'triage', state: 'queued', deferReason: null });
+  // A refused item says why it waits; a running one is under way and has nothing to explain.
+  assert.deepEqual(pendingOf([thread({ deferReason: 'provider-limited' })]), { agentId: 'a', kind: 'triage', state: 'queued', deferReason: 'provider-limited' });
+  assert.deepEqual(pendingOf([thread({ createdAt: T0 - 10 }), thread({ agentId: 'b', kind: 'reply', state: 'leased', deferReason: 'lane-busy' })]),
+    { agentId: 'b', kind: 'reply', state: 'running', deferReason: null });
 });
 
 test('rebalance.suggest is deterministic, levels queued work and never moves started or running work', () => {

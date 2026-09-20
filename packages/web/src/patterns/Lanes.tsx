@@ -10,8 +10,10 @@ export interface LaneItem { id: string; kind: string; key: string | null; title:
 export interface SeatState { status: string; doing: string | null; activity: Agent['activity'] }
 const ACTIVITY: Record<Agent['activity'], DotTone> = { working: 'working', queued: 'review', idle: 'idle' };
 export const seatTone = (seat: SeatState): DotTone => (seat.status === 'paused' ? 'attention' : seat.status === 'retired' ? 'off' : ACTIVITY[seat.activity]);
-// What a seat is doing, in its own words when it has reported a step, and from its queue until then.
-export const seatWord = (seat: SeatState): string => (seat.status !== 'active' ? seat.status : seat.doing ?? (seat.activity === 'working' ? 'starting a turn' : seat.activity === 'queued' ? 'work queued' : 'idle'));
+// What a seat is doing, in its own words once a running turn has reported a step. What it last said is no longer
+// true when nothing of its is running, so the queue speaks for it instead.
+export const seatWord = (seat: SeatState): string =>
+  seat.status !== 'active' ? seat.status : seat.activity === 'working' ? seat.doing ?? 'starting a turn' : seat.activity === 'queued' ? 'work queued' : 'idle';
 
 export function LaneRow({ agent, load, children }: { agent: Agent; load: string; children: ReactNode }) {
   return (
