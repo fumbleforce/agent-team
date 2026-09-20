@@ -72,11 +72,12 @@ test('templates are filled from the deployment and refuse unknown placeholders',
   assert.equal(bake, 'clone gitlab.com/group/project with GITLAB_TOKEN then npm ci from https://github.com/fumbleforce/agent-team.git@main in eu-central-1 /agent-team/example');
   assert.throws(() => bakeScript(deployment, { template: '__NOPE__' }), /no value for NOPE/);
   // The real templates: Node 24, the two TypeScript entrypoints, one port, nothing of the old processes.
+  // The `\r` guard is not cosmetic: these go to a Linux host, where a CRLF shebang line fails to run.
   const real = bakeScript(deployment);
   assert.match(real, /shutdown -h now/); assert.match(real, /setup_24\.x/); assert.match(real, /ExecStart=\/usr\/bin\/node packages\/worker\/src\/main\.ts /);
-  for (const text of [real, controlPlaneUserData(deployment)]) assert.doesNotMatch(text, /4311|\.mjs|DASHBOARD_PASSWORD|__[A-Z_]+__/);
-  // Whatever the checkout looks like, what is handed to cloud-init is a Linux script: no carriage returns.
-  for (const text of [real, controlPlaneUserData(deployment)]) assert.doesNotMatch(text, /\r/);
+  for (const text of [real, controlPlaneUserData(deployment)]) assert.doesNotMatch(text, /4311|\.mjs|DASHBOARD_PASSWORD|__[A-Z_]+__|\r/);
+  // Templates handed in by a caller are made LF too: whatever the checkout looks like, what is handed
+  // to cloud-init is a Linux script.
   assert.equal(controlPlaneUserData(deployment, { template: '#!/bin/bash\r\necho hi\r\n' }).split('\n').at(-2), 'echo hi');
   assert.equal(bakeScript(deployment, { template: 'set +x\r\nTOKEN=__TOKEN_VARIABLE__\r\n' }), 'set +x\nTOKEN=GITLAB_TOKEN\n');
   deployment.secrets = deployment.secrets.filter(secret => secret.adapter !== 'gitlab');

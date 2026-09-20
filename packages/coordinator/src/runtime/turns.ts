@@ -13,12 +13,14 @@ import { accessOf, laneOf, maxWritersOf, WORKER_FRESH_MS, type ClaimDraft, type 
 import { effectiveProjects } from '../repos/org.ts';
 export const LEASE_MS = 90_000;
 export { laneOf };
+// What an author is told when its approved change no longer merges. Merging the base in, never rebasing: a published branch is never force-pushed.
+const UPDATE_BRANCH = 'This change was approved, but it no longer merges into the base branch: the base moved on since you started. Bring your branch up to date: fetch the base branch from origin and MERGE it into your branch (do not rebase and do not rewrite history: your branch is published and is never force-pushed). Resolve every conflict by reading both sides, run the tests, commit, and report ready_for_review; it will be reviewed again at the new revision. First check whether the base already contains what this task was for: if it does, change nothing and report not_needed with one line saying where it was done.';
 export const RULES_SCOPE = { type: 'org', id: '' } as const, RULES_SLUG = 'default', LIMIT_BACKOFF_MS = 5 * 60_000;
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const RATE_LIMITED = /rate-limit|usage-limit/;
 
 export type ClaimRequest = z.infer<typeof ClaimBody>;
-export interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; threadId: string | null; packet: Packet; resume: Resume | null; grants: PermissionGrant; engine: string | null; model: string | null; capture: { url: string; viewport: Viewport } | null; /* A review turn: the head to look at, and which kind of reviewer looks, which names its detached worktree. */ review: { headSha: string; reviewer: string } | null }
+export interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; threadId: string | null; packet: Packet; resume: Resume | null; grants: PermissionGrant; engine: string | null; model: string | null; /* How much effort the model is asked to spend: the agent's own, else its team's. */ effort: string | null; capture: { url: string; viewport: Viewport } | null; /* A review turn: the head to look at, and which kind of reviewer looks, which names its detached worktree. */ review: { headSha: string; reviewer: string } | null }
 // The checkout a quarantine names is one worker's copy of one project.
 export const checkoutRef = (workerId: string, projectId: string) => `${workerId}:${projectId}`;
 export type Outcome = z.infer<typeof FinishBody>['outcome'];
@@ -42,7 +44,8 @@ export function createTurns(context: Context) {
       if (turn.kind === 'review') await tx.updateTable('approvals').set({ state: 'stale' }).where('turn_id', '=', turn.id).where('state', '=', 'pending-verification').execute();
       // Lost while it changed the checkout's shared git state: the checkout itself is unknown, whatever kind of turn it was.
       if (turn.git_admin) await tx.insertInto('quarantines').values({ id: newId(now()), scope: 'checkout', ref_id: checkoutRef(turn.worker_id, turn.project_id), turn_id: turn.id, reason: 'Lease expired during a git-admin operation; inspect the primary checkout on this worker before releasing', opened_at: now(), released_by: null, released_at: null }).execute();
-      if (turn.access === 'write' && turn.task_id) {
+      // A delivery is run again rather than put in front of a person (the gate finds out from the host whether it merged), so it sets nothing aside.
+      if (turn.access === 'write' && turn.task_id && turn.kind !== 'deliver') {
         await tx.insertInto('quarantines').values({ id: newId(now()), scope: 'task', ref_id: turn.task_id, turn_id: turn.id, reason: 'Lease expired; inspect the worktree before releasing', opened_at: now(), released_by: null, released_at: null }).execute();
         await tx.updateTable('tasks').set({ state: 'quarantined', updated_at: now() }).where('id', '=', turn.task_id).execute();
       }
@@ -75,8 +78,9 @@ export function createTurns(context: Context) {
     const today = day(now()), month = today.slice(0, 7);
     const spent = new Map((await tx.selectFrom('cost_daily').select('agent_id').select(eb => eb.fn.sum<number>('amount_minor').as('total')).where('agent_id', 'in', agentIds).where('day', '=', today).groupBy('agent_id').execute()).map(row => [row.agent_id, Number(row.total)]));
     const last = new Map((await tx.selectFrom('turns').select('agent_id').select(eb => eb.fn.max('started_at').as('at')).where('agent_id', 'in', agentIds).groupBy('agent_id').execute()).map(row => [row.agent_id, Number(row.at)]));
-    for (const agent of await tx.selectFrom('agents').select(['id', 'status', 'provider_id', 'model', 'daily_cap_minor']).where('id', 'in', agentIds).execute())
-      snapshot.agents[agent.id] = { status: agent.status, providerId: agent.provider_id, model: agent.model, dailyCapMinor: agent.daily_cap_minor, spentTodayMinor: spent.get(agent.id) ?? 0, lastStartedAt: last.get(agent.id) ?? 0 };
+    // An agent without a provider of its own runs on its team's; a team without one leaves it to the worker.
+    for (const agent of await tx.selectFrom('agents').innerJoin('teams', 'teams.id', 'agents.team_id').select(['agents.id', 'agents.status', 'agents.provider_id', 'agents.model', 'agents.daily_cap_minor', 'teams.default_provider_id', 'teams.default_model']).where('agents.id', 'in', agentIds).execute())
+      snapshot.agents[agent.id] = { status: agent.status, providerId: agent.provider_id ?? agent.default_provider_id, model: agent.provider_id ? agent.model : agent.model ?? (agent.default_provider_id ? agent.default_model : null), dailyCapMinor: agent.daily_cap_minor, spentTodayMinor: spent.get(agent.id) ?? 0, lastStartedAt: last.get(agent.id) ?? 0 };
 
     const running = await tx.selectFrom('turns').innerJoin('agents', 'agents.id', 'turns.agent_id').select(['turns.agent_id', 'turns.lane', 'turns.task_id', 'turns.access', 'turns.kind', 'turns.project_id', 'turns.provider_id', 'agents.provider_id as seat_provider_id']).where('turns.state', '=', 'running').execute();
     snapshot.running = running.map(turn => ({ agentId: turn.agent_id, lane: turn.lane as Lane }));
@@ -157,11 +161,18 @@ export function createTurns(context: Context) {
 
   async function leased(tx: Tx, turnId: string, workerId: string, leaseToken: string) {
     const turn = await tx.selectFrom('turns').selectAll().where('id', '=', turnId).executeTakeFirst();
-    if (!turn || turn.state !== 'running' || turn.worker_id !== workerId || Number(turn.lease_until) < now() || !sameSecret(turn.lease_token_hash, hashToken(leaseToken))) throw new HttpError(409, 'lease', 'Lease lost or invalid');
+    if (turn?.state !== 'running' || turn.worker_id !== workerId || Number(turn.lease_until) < now() || !sameSecret(turn.lease_token_hash, hashToken(leaseToken))) throw new HttpError(409, 'lease', 'Lease lost or invalid');
     return turn;
   }
 
+  // Whose turn this was, by the lease it was claimed with, whether or not that lease has run out since.
+  async function claimedBy(tx: Tx, turnId: string, workerId: string, leaseToken: string) {
+    const turn = await tx.selectFrom('turns').selectAll().where('id', '=', turnId).executeTakeFirst();
+    return turn && turn.worker_id === workerId && sameSecret(turn.lease_token_hash, hashToken(leaseToken)) ? turn : null;
+  }
+
   return {
+    claimedBy: (turnId: string, workerId: string, leaseToken: string) => storage.transaction(tx => claimedBy(tx, turnId, workerId, leaseToken)),
     async enqueue(input: { agentId: string; projectId: string; kind: TurnKind; taskId?: string | null; threadId?: string | null; dedupeKey?: string; causeEventId?: string; notBefore?: number; priorityClass?: number; prepare?: (tx: Tx, workItemId: string) => Promise<void> }): Promise<string | null> {
       const id = newId(now());
       const published = await storage.transaction(async tx => {
@@ -207,12 +218,16 @@ export function createTurns(context: Context) {
             continue;
           }
           if (kind === 'deliver') {
-            await tx.updateTable('merge_queue').set({ state: 'running' }).where('task_id', '=', item.taskId).where('state', '=', 'queued').execute();
+            // Exactly one entry runs. Earlier versions could queue the same task more than once; the extra entries are closed here, not started.
+            const entries = await tx.selectFrom('merge_queue').select('id').where('task_id', '=', item.taskId).where('state', '=', 'queued').orderBy('created_at', 'desc').execute();
+            if (entries.length > 1) await tx.updateTable('merge_queue').set({ state: 'blocked', reason: 'Queued more than once; the newest entry runs', finished_at: now() }).where('id', 'in', entries.slice(1).map(entry => entry.id)).execute();
+            if (entries[0]) await tx.updateTable('merge_queue').set({ state: 'running' }).where('id', '=', entries[0].id).execute();
             await tx.updateTable('tasks').set({ state: 'merging', updated_at: now() }).where('id', '=', item.taskId).execute();
           }
           const turnId = newId(now()), leaseToken = newToken();
           const grants = await grantsFor(tx, item.agentId, item.projectId);
           // Provider and model come from the agent unless a rule routed the turn elsewhere; the route is frozen on the turn.
+          const effortOf = await tx.selectFrom('agents').innerJoin('teams', 'teams.id', 'agents.team_id').select(['agents.effort', 'teams.default_effort']).where('agents.id', '=', item.agentId).executeTakeFirst();
           const engine = route.providerId ? (await tx.selectFrom('providers').select('engine').where('id', '=', route.providerId).executeTakeFirst())?.engine ?? null : null;
           const row = await tx.selectFrom('work_items').select(['thread_id', 'dedupe_key']).where('id', '=', item.id).executeTakeFirstOrThrow();
           const subject = item.taskId ? await tx.selectFrom('tasks').select(['key', 'head_sha']).where('id', '=', item.taskId).executeTakeFirst() : undefined, taskKey = subject?.key ?? null;
@@ -224,7 +239,7 @@ export function createTurns(context: Context) {
           // A work turn resumes its (agent, task) session or starts a new one; everything else is a fresh packet.
           const session = await sessions.open(tx, { turnId, workItemId: item.id, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, workerId: request.workerId, providerId: route.providerId, model: route.model, engine });
           const started = await events.append(tx, [{ type: 'turn.started', actorKind: 'worker', projectId: item.projectId, agentId: item.agentId, taskId: item.taskId, turnId, payload: { kind, workerId: request.workerId, providerId: route.providerId } }]);
-          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, threadId: row.thread_id, grants, engine, model: route.model, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, review, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
+          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, threadId: row.thread_id, grants, engine, model: route.model, effort: effortOf?.effort ?? effortOf?.default_effort ?? null, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, review, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
         }
       });
       events.published(result.expired);
@@ -259,7 +274,7 @@ export function createTurns(context: Context) {
     },
 
     async finish(turnId: string, workerId: string, leaseToken: string, outcome: Outcome) {
-      let reviewTaskId: string | null = null;
+      let reviewTaskId: string | null = null, requeue: { agentId: string; projectId: string; taskId: string } | null = null;
       const published = await storage.transaction(async tx => {
         const turn = await leased(tx, turnId, workerId, leaseToken);
         if (turn.kind === 'work' && turn.task_id && outcome.state === 'completed' && (await tx.selectFrom('tasks').select('state').where('id', '=', turn.task_id).executeTakeFirst())?.state === 'in_review') reviewTaskId = turn.task_id;
@@ -271,7 +286,7 @@ export function createTurns(context: Context) {
         const providerId = turn.provider_id ?? seat?.provider_id ?? null;
         const agent = providerId ? { provider_id: providerId, kind: (await tx.selectFrom('providers').select('kind').where('id', '=', providerId).executeTakeFirst())?.kind } : undefined;
         // A usage limit is nobody's fault: the provider is limited until its reset, every item routed to it waits with that reason, and work resumes by itself.
-        const limited = outcome.state === 'deferred' && RATE_LIMITED.test(outcome.stopReason ?? ''), until = limited && outcome.resetAt !== undefined && outcome.resetAt > now() ? outcome.resetAt : now() + LIMIT_BACKOFF_MS;
+        const limited = outcome.state === 'deferred' && RATE_LIMITED.test(outcome.stopReason ?? ''), until = limited && outcome.resetAt !== undefined && outcome.resetAt > now() ? outcome.resetAt : outcome.stopReason === 'worker-restarted' ? now() : now() + LIMIT_BACKOFF_MS;
         if (limited && providerId) {
           await tx.updateTable('providers').set({ limited_until: until, status_detail: `Usage limit reached; resumes ${new Date(until).toISOString()}` }).where('id', '=', providerId).execute();
           drafts.push({ type: 'provider.limited', actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, turnId, payload: { providerId, until } });
@@ -288,10 +303,26 @@ export function createTurns(context: Context) {
         }
         await costs.record(tx, { turnId, agentId: turn.agent_id, projectId: turn.project_id, providerId: agent?.provider_id ?? null, billingKind: (agent?.kind as 'metered' | 'subscription' | 'local' | undefined) ?? 'metered', tokensIn: outcome.tokensIn ?? 0, tokensOut: outcome.tokensOut ?? 0, amountMinor: outcome.costMinor ?? 0 });
         if (turn.task_id && outcome.prUrl) await tx.updateTable('tasks').set({ pr_url: outcome.prUrl }).where('id', '=', turn.task_id).execute();
+        // A delivery that comes back later leaves the queue as it found it.
+        if (turn.kind === 'deliver' && turn.task_id && outcome.state === 'deferred') {
+          await tx.updateTable('merge_queue').set({ state: 'queued', reason: outcome.summary?.slice(0, 300) ?? null }).where('task_id', '=', turn.task_id).where('state', '=', 'running').execute();
+          await tx.updateTable('tasks').set({ state: 'approved', updated_at: now() }).where('id', '=', turn.task_id).where('state', '=', 'merging').execute();
+        }
         if (turn.kind === 'deliver' && turn.task_id && outcome.delivery) {
           const merged = outcome.delivery.state === 'merged';
           await tx.updateTable('merge_queue').set({ state: merged ? 'merged' : 'blocked', reason: outcome.delivery.reason, finished_at: now() }).where('task_id', '=', turn.task_id).where('state', 'in', ['queued', 'running']).execute();
-          await tx.updateTable('tasks').set(merged ? { state: 'done', updated_at: now() } : { state: 'blocked', blocked_reason: outcome.delivery.reason.slice(0, 200), updated_at: now() }).where('id', '=', turn.task_id).execute();
+          // Not mergeable as it stands (the base moved under it): that is the author's to put right, not a person's. Once per revision; if the
+          // same revision comes back unmergeable, a person is asked after all.
+          const task = await tx.selectFrom('tasks').select(['assignee_agent_id', 'head_sha']).where('id', '=', turn.task_id).executeTakeFirst();
+          const stale = !merged && /identity, head or mergeability/i.test(outcome.delivery.reason) && task?.assignee_agent_id && task.head_sha;
+          const told = stale ? await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select('messages.id').where('threads.subject_type', '=', 'task').where('threads.subject_id', '=', turn.task_id).where('messages.kind', '=', 'system').where('messages.payload', 'like', `%${task!.head_sha}%`).executeTakeFirst() : null;
+          if (stale && !told) {
+            let thread = await tx.selectFrom('threads').select('id').where('subject_type', '=', 'task').where('subject_id', '=', turn.task_id).executeTakeFirst();
+            if (!thread) { thread = { id: newId(now()) }; await tx.insertInto('threads').values({ id: thread.id, project_id: turn.project_id, kind: 'issue', subject_type: 'task', subject_id: turn.task_id, title: 'Task thread', visibility: 'team', owner_user_id: null, created_at: now() }).execute(); }
+            await tx.insertInto('messages').values({ id: newId(now()), thread_id: thread.id, author_kind: 'system', author_id: null, kind: 'system', body: UPDATE_BRANCH, payload: JSON.stringify({ unmergeableAt: task!.head_sha }), created_at: now() }).execute();
+            await tx.updateTable('tasks').set({ state: 'in_progress', blocked_reason: null, updated_at: now() }).where('id', '=', turn.task_id).execute();
+            requeue = { agentId: task!.assignee_agent_id!, projectId: turn.project_id, taskId: turn.task_id };
+          } else await tx.updateTable('tasks').set(merged ? { state: 'done', updated_at: now() } : { state: 'blocked', blocked_reason: outcome.delivery.reason.slice(0, 200), updated_at: now() }).where('id', '=', turn.task_id).execute();
         }
         if (turn.kind === 'capture' && outcome.state !== 'deferred') {
           // A capture turn that ends without having uploaded its image has failed, whatever it says.
@@ -307,6 +338,8 @@ export function createTurns(context: Context) {
         return events.append(tx, [...drafts, { type: `turn.${outcome.state}`, actorKind: 'worker', projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, turnId, payload: { stopReason: outcome.stopReason ?? null } }]);
       });
       events.published(published);
+      const again = requeue as { agentId: string; projectId: string; taskId: string } | null;
+      if (again) await this.enqueue({ agentId: again.agentId, projectId: again.projectId, kind: 'work', taskId: again.taskId, dedupeKey: `work:${again.taskId}` });
       return { reviewTaskId: reviewTaskId as string | null };
     },
 

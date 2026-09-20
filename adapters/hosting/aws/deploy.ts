@@ -7,12 +7,12 @@ import path from 'node:path';
 // what it finds in the deployment object, and calls `save` so a rerun after any failure continues
 // where it stopped. The `aws` runner is injectable so the whole plan is testable without an account.
 const HERE = import.meta.dirname;
-const PORT = 4310;
-// The two scripts below are read here and run on Linux. A clone made before .gitattributes existed can
-// hold them with CRLF, which would reach cloud-init as `#!/bin/bash\r`, a program that does not exist,
-// so every script this file produces is made LF whatever the checkout looks like.
+// The shell templates run on a Linux host, so they are read with LF endings whatever the checkout
+// did to them: a CRLF `#!/bin/bash` would fail on the instance long after the deploy looked fine.
+// Templates handed in by a caller are made LF too, so nothing this file ships carries a carriage return.
 const lf = (text: string) => text.replace(/\r\n/g, '\n');
-const readScript = (name: string) => readFileSync(path.join(HERE, name), 'utf8');
+const shellTemplate = (name: string) => lf(readFileSync(path.join(HERE, name), 'utf8'));
+const PORT = 4310;
 // The network comes before the roles because the control role is limited to the deployment's subnet.
 export const STEPS = ['secrets', 'network', 'iam', 'controlPlane', 'image', 'verify'] as const;
 export type Step = typeof STEPS[number];
@@ -242,7 +242,7 @@ export async function network(deployment: Deployment, { aws = defaultAws, myIp, 
 }
 
 // User data for the control-plane host: the shared script with this deployment's values exported ahead of it.
-export function controlPlaneUserData(deployment: Deployment, { template = readScript('control-plane-user-data.sh') }: { template?: string } = {}) {
+export function controlPlaneUserData(deployment: Deployment, { template = shellTemplate('control-plane-user-data.sh') }: { template?: string } = {}) {
   const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
   const head = ['#!/bin/bash', `export TOOLKIT_REPO=${quote(deployment.toolkit?.repo ?? TOOLKIT_REPO)} TOOLKIT_REF=${quote(deployment.toolkit?.ref ?? 'main')} SSM_PREFIX=${quote(deployment.ssmPrefix)}`];
   return `${head.join('\n')}\n${lf(template).replace(/^#!.*\n/, '')}`;
@@ -287,7 +287,7 @@ export async function controlPlane(deployment: Deployment, { aws = defaultAws, l
   return deployment;
 }
 
-export function bakeScript(deployment: Deployment, { template = readScript('worker-bake.sh'), toolkitRepo = deployment.toolkit?.repo ?? TOOLKIT_REPO, toolkitRef = deployment.toolkit?.ref ?? 'main' }: { template?: string; toolkitRepo?: string; toolkitRef?: string } = {}) {
+export function bakeScript(deployment: Deployment, { template = shellTemplate('worker-bake.sh'), toolkitRepo = deployment.toolkit?.repo ?? TOOLKIT_REPO, toolkitRef = deployment.toolkit?.ref ?? 'main' }: { template?: string; toolkitRepo?: string; toolkitRef?: string } = {}) {
   const tokenVariable = deployment.secrets.find(secret => secret.adapter === deployment.scm.kind)?.name;
   if (!tokenVariable) throw new DeployError(`No secret holds the ${deployment.scm.kind} token`, `Add a secret with adapter "${deployment.scm.kind}" to the deployment file (agent-team status aws prints its path).`);
   const provisioning = deployment.worker.provisioning ?? { packages: [], setup: [] };

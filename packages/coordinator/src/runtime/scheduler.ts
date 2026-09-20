@@ -47,6 +47,8 @@ export function effectiveClass(item: Pick<TurnDraft, 'priorityClass' | 'createdA
 
 const BLOCKED = ['blocked', 'stopped'], CLOSED = ['canceled', 'done'];
 
+const MODELLESS: readonly TurnKind[] = ['deliver', 'publish', 'capture'];
+
 // Every reason a queued item may not start now, checked in a fixed order so the stored reason is stable.
 export function gate(item: TurnDraft, snapshot: Snapshot): Gate {
   const refuse = (deferReason: DeferReason, notices: Notice[] = []): Gate => ({ ok: false, deferReason, notices });
@@ -62,11 +64,13 @@ export function gate(item: TurnDraft, snapshot: Snapshot): Gate {
   const home = snapshot.projects[item.projectId];
   if (accessOf(item.kind) === 'write' && item.kind !== 'deliver' && (home?.writersRunning ?? 0) >= (home?.maxWriters ?? DEFAULT_MAX_WRITERS)) return refuse('writers-busy');
   if (item.kind === 'deliver' && snapshot.projects[item.projectId]?.deliveryBusy) return refuse('delivery-busy');
-  const verdict = evaluate(item, snapshot);
+  // A merge, a publish and a page capture run no model: they take no slot on a provider, wait for no usage limit and spend no budget,
+  // whoever's seat they are shown under. Holding them behind the team's model turns kept finished work from merging.
+  const verdict = MODELLESS.includes(item.kind) ? { allow: true, route: { providerId: null, model: null }, notices: [] } : evaluate(item, snapshot);
   if (!verdict.allow || !verdict.route) return refuse(verdict.deferReason ?? 'deferred', verdict.notices);
   if (verdict.route.providerId !== null) {
     const provider = snapshot.providers[verdict.route.providerId];
-    if (!provider || provider.status !== 'connected') return refuse('provider-unavailable', verdict.notices);
+    if (provider?.status !== 'connected') return refuse('provider-unavailable', verdict.notices);
     if (provider.limitedUntil !== null && provider.limitedUntil > snapshot.now) return refuse('provider-limited', verdict.notices);
     if (provider.maxConcurrent !== null && provider.running >= provider.maxConcurrent) return refuse('provider-busy', verdict.notices);
     if (provider.windowPct !== null && provider.windowPct >= 100) return refuse('provider-window', verdict.notices);

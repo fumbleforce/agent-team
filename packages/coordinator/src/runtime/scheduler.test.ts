@@ -113,3 +113,23 @@ test('rebalance.suggest is deterministic, levels queued work and never moves sta
   assert.deepEqual(suggest(seats, queued.map(row => ({ ...row, started: true }))), []);
   assert.deepEqual(suggest([{ id: 'a', active: true, running: 0 }], queued), []);
 });
+
+test('gate: a merge runs no model, so a full, limited, switched-off or spent-out provider never holds it back', () => {
+  const deliver = item('a', 'deliver', { taskId: 't' }), review = item('a', 'review', { taskId: 't' });
+  const hostile: Partial<Snapshot>[] = [
+    { providers: { main: provider('main', { running: 2, maxConcurrent: 2 }) } },
+    { providers: { main: provider('main', { limitedUntil: T0 + 60_000 }) } },
+    { providers: { main: provider('main', { status: 'paused' }) } },
+    { providers: { main: provider('main', { windowPct: 100 }) } },
+    { projects: { p: project({ budgetPct: 100 }) } },
+  ];
+  for (const over of hostile) {
+    const verdict = gate(deliver, world({ tasks: { t: task({ state: 'approved' }) }, ...over }));
+    assert.deepEqual([verdict.ok, verdict.ok ? verdict.route : null], [true, { providerId: null, model: null }], JSON.stringify(over));
+  }
+  // The same conditions do hold a turn that runs a model.
+  assert.equal(gate(review, world({ providers: { main: provider('main', { running: 2, maxConcurrent: 2 }) } })).ok, false);
+  // What a merge still waits for is another merge of the same project.
+  const busy = gate(deliver, world({ projects: { p: project({ deliveryBusy: true }) } }));
+  assert.deepEqual([busy.ok, busy.ok ? null : busy.deferReason], [false, 'delivery-busy']);
+});

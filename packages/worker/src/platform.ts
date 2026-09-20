@@ -32,11 +32,32 @@ export function installed(name: string, { env = process.env, platform = process.
   if (name.includes('/')) return existsSync(name);
   return searchPath(env).split(':').some(directory => { try { return directory !== '' && statSync(path.posix.join(directory, name)).isFile(); } catch { return false; } });
 }
-type Listed = { id: string; name: string; note?: string };
-export function readiness(engines: Record<string, { bin: string; models?(env: NodeJS.ProcessEnv): Listed[] }>, variables: readonly string[], host: Host = {}): { engines: string[]; variables: string[]; models: Record<string, Listed[]> } {
+type Listed = { id: string; name: string; note?: string; efforts?: string[] };
+type Engine = { bin: string; defaultModel?(env: NodeJS.ProcessEnv): string | null; discover?(host: { env: NodeJS.ProcessEnv; help(): Promise<string> }): Promise<{ models: Listed[]; efforts: string[] }> };
+export interface Readiness { engines: string[]; variables: string[]; models: Record<string, Listed[]>; efforts: Record<string, string[]>; runs?: { engine: string; model: string | null } }
+export function readiness(engines: Record<string, Engine>, variables: readonly string[], host: Host & { defaultEngine?: string } = {}): Readiness {
   const env = host.env ?? process.env;
-  const models = Object.fromEntries(Object.entries(engines).map(([name, engine]) => [name, engine.models?.(env).slice(0, 100) ?? []] as const).filter(([, list]) => list.length));
-  return { engines: Object.keys(engines).filter(name => installed(engines[name]!.bin, host)), variables: variables.filter(name => Boolean(env[name])), models };
+  const runs = host.defaultEngine && engines[host.defaultEngine] ? { runs: { engine: host.defaultEngine, model: engines[host.defaultEngine]!.defaultModel?.(env)?.slice(0, 120) ?? null } } : {};
+  return { engines: Object.keys(engines).filter(name => installed(engines[name]!.bin, host)), variables: variables.filter(name => Boolean(env[name])), models: {}, efforts: {}, ...runs };
+}
+// What each tool says it offers, asked once when the worker starts: from the tool's own files, and from its help text where it is installed.
+// A tool that does not answer within a few seconds simply says nothing.
+export async function discovered(engines: Record<string, Engine>, ready: Readiness, host: Host = {}): Promise<Readiness> {
+  const env = host.env ?? process.env, models: Record<string, Listed[]> = {}, efforts: Record<string, string[]> = {};
+  await Promise.all(Object.entries(engines).map(async ([name, engine]) => {
+    if (!engine.discover) return;
+    const help = () => (ready.engines.includes(name) ? new Promise<string>(resolve => {
+      const child = spawnCommand(engine.bin, ['--help'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      const timer = setTimeout(() => { killTree(child.pid); resolve(out); }, 8000);
+      child.stdout!.on('data', chunk => { out = (out + String(chunk)).slice(0, 200_000); }); child.stderr!.on('data', chunk => { out = (out + String(chunk)).slice(0, 200_000); });
+      child.on('error', () => { clearTimeout(timer); resolve(''); }); child.on('close', () => { clearTimeout(timer); resolve(out); });
+    }) : Promise.resolve(''));
+    const found = await engine.discover({ env, help }).catch(() => ({ models: [], efforts: [] }));
+    if (found.models.length) models[name] = found.models.slice(0, 100);
+    if (found.efforts.length) efforts[name] = found.efforts.slice(0, 12);
+  }));
+  return { ...ready, models, efforts };
 }
 
 // A `.cmd` launcher written by a package manager runs one script with the host's own runtime, or hands its arguments

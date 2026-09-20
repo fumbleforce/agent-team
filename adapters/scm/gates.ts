@@ -16,8 +16,11 @@ export const github: ScmGate = {
   },
   // `protected` is null when only configured checks are enforced; an unreadable required-check lookup throws, so the gate fails closed.
   async checks(exec, context, { includeProtected }) {
-    const read = async (...flags: string[]) => (JSON.parse(await gh(exec, context)('checks', ...flags, '--json', 'name,bucket,state')) as { name: string; bucket: string }[]).map(check => ({ name: check.name, passed: check.bucket === 'pass' }));
-    return { all: await read(), protected: includeProtected ? await read('--required') : null };
+    // The change's own roll-up answers whether or not checks still run; the listing command fails while they do.
+    const rollup = (JSON.parse(await gh(exec, context)('view', '--json', 'statusCheckRollup')) as { statusCheckRollup?: { name?: string; context?: string; status?: string; conclusion?: string; state?: string }[] }).statusCheckRollup ?? [];
+    const all = rollup.map(check => ({ name: check.name ?? check.context ?? '', passed: (check.conclusion ?? check.state) === 'SUCCESS', pending: check.conclusion ? false : check.status !== undefined ? check.status !== 'COMPLETED' : check.state === 'PENDING' || check.state === 'EXPECTED' }));
+    const required = async () => (JSON.parse(await gh(exec, context)('checks', '--required', '--json', 'name,bucket,state')) as { name: string; bucket: string }[]).map(check => ({ name: check.name, passed: check.bucket === 'pass', pending: check.bucket === 'pending' }));
+    return { all, protected: includeProtected ? await required() : null };
   },
   async ready(exec, context) { await gh(exec, context)('ready'); },
   async merge(exec, context, headSha) { await gh(exec, context)('merge', '--squash', '--match-head-commit', headSha); },

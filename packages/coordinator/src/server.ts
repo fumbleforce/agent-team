@@ -1,4 +1,5 @@
 import { existsSync } from 'node:fs';
+import { createIssues } from './repos/issues.ts';
 import path from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { DEFAULT_PORT, packageRoot } from '@agent-team/protocol';
@@ -54,6 +55,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const webRoot = config.webRoot === undefined ? (existsSync(built) ? built : null) : config.webRoot;
   const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), local: isLoopback(host), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null, ...(config.env ? { env: config.env } : {}), ...(config.fetch ? { fetch: config.fetch } : {}) });
   await context.secrets.load();
+  await createIssues(context, path.join(context.dataDir, 'blobs')).backfillInbox();
   // The shipped role library is seeded once; an owner's edits are never overwritten.
   await createVersionedDocs(context).seed('role', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'roles.json'), 'utf8')) as Record<string, unknown>);
   // So is the agent library, from the seats of the default team; the PM seat belongs to a team, not to the library.

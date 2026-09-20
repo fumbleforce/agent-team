@@ -11,7 +11,7 @@ import path from 'node:path';
 // screenshot (the browser tool leaves an image in the turn directory).
 const scenarios = (process.env.FAKE_SCENARIO ?? 'ok').split(',');
 const has = (name: string) => scenarios.includes(name);
-const valueOf = (name: string) => scenarios.find(item => item.startsWith(`${name}:`))?.slice(name.length + 1);
+const scenarioValue = (name: string) => scenarios.find(item => item.startsWith(`${name}:`))?.slice(name.length + 1);
 const emit = (event: Record<string, unknown>) => process.stdout.write(`${JSON.stringify(event)}\n`);
 // Steps are separated in time as a real engine's are, so the worker sees one before the next begins.
 const pause = (ms = 60) => new Promise(resolve => setTimeout(resolve, ms));
@@ -21,7 +21,7 @@ const PIXEL = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfD
 
 const resumed = flag('--resume');
 if (resumed && has('resume-missing')) { process.stderr.write(`Session not found: ${resumed}\n`); process.exit(2); }
-const pidfile = valueOf('pidfile');
+const pidfile = scenarioValue('pidfile');
 if (pidfile) writeFileSync(pidfile, String(process.pid));
 emit({ type: 'session', session: resumed ?? flag('--session') ?? 'fake-session-1' });
 emit({ type: 'step', kind: 'think', title: `Planning the ${process.argv[2] ?? 'work'} turn`, ...(resumed ? { body: `Resumed ${resumed}` } : {}) });
@@ -29,7 +29,7 @@ if (has('hang')) setInterval(() => {}, 1000);
 else if (has('limit')) { emit({ type: 'limit' }); process.exit(1); }
 else if (has('crash')) process.exit(3);
 else {
-  const file = valueOf('write'), shell = valueOf('shell'), leak = valueOf('leak'), stray = valueOf('stray'), size = Number(valueOf('output') ?? 0), turnDir = flag('--turn-dir');
+  const file = scenarioValue('write'), shell = scenarioValue('shell'), leak = scenarioValue('leak'), stray = scenarioValue('stray'), size = Number(scenarioValue('output') ?? 0), turnDir = flag('--turn-dir');
   const write = (target: string, text: string) => { if (target.includes('/')) mkdirSync(target.slice(0, target.lastIndexOf('/')), { recursive: true }); writeFileSync(target, text); };
   const output = size > 0 ? 'line of test output\n'.repeat(Math.ceil(size / 20)).slice(0, size) : `12 passed${leak ? `\nusing ${leak}` : ''}`;
   const edit = () => emit({ type: 'step', kind: 'edit', title: `Edit ${file ?? 'src/checkout.ts'}`, detail: '+4 -1', ...(file ? { target: file } : {}) });
@@ -43,5 +43,5 @@ else {
   else { edit(); doEdit(); await pause(); run(); doRun(); }
   if (has('screenshot') && turnDir) { mkdirSync(path.join(turnDir, 'browser'), { recursive: true }); writeFileSync(path.join(turnDir, 'browser', 'checkout-page.png'), Buffer.from(PIXEL, 'base64')); }
   await pause();
-  emit({ type: 'result', tokensIn: Number(valueOf('tokens') ?? 1200), tokensOut: 300, costUsd: 0.02, ...(has('silent') ? {} : { summary: `Implemented and tested.${leak ? ` ${leak}` : ''}` }) });
+  emit({ type: 'result', tokensIn: Number(scenarioValue('tokens') ?? 1200), tokensOut: 300, costUsd: 0.02, ...(has('silent') ? {} : { summary: `Implemented and tested.${leak ? ` ${leak}` : ''}` }) });
 }

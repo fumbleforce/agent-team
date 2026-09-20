@@ -56,6 +56,7 @@ export function createApp(context: Context) {
   const turns = createTurns(context);
   const deliberation = createDeliberation(context, turns);
   const reviews = createReviews(context, turns);
+  let chased = 0;
   const retro = createRetro(context, turns);
   // Semantic search is on when an embeddings endpoint is named; otherwise search is lexical.
   const knowledge = createKnowledge(context, process.env.AGENT_TEAM_EMBEDDINGS_URL ? httpEmbedder(process.env.AGENT_TEAM_EMBEDDINGS_URL, process.env.AGENT_TEAM_EMBEDDINGS_MODEL ?? 'nomic-embed-text') : null);
@@ -124,6 +125,15 @@ export function createApp(context: Context) {
     servedBy.set(claim.workerId, reported);
     const seen = { name: claim.workerId, lanes: JSON.stringify(claim.free), projects: JSON.stringify([...reported.keys()]), last_seen_at: context.now(), ...(claim.ready ? { providers: JSON.stringify(claim.ready) } : {}), ...(claim.isolation ? { isolation: claim.isolation } : {}) };
     await context.storage.db.insertInto('workers').values({ id: claim.workerId, isolation: 'isolated', providers: '[]', ...seen }).onConflict(oc => oc.column('id').doUpdateSet(seen)).execute();
+    // Before handing out work: whatever review or merge was lost along the way is asked for again. At most twice a minute.
+    if (context.now() - chased > 30_000) {
+      chased = context.now();
+      await reviews.chase().catch(error => console.error(`Chasing reviews failed: ${(error as Error).message}`));
+      // This worker is here and asking for work, so whatever it was running when it lost contact is over: it ends its own processes when it
+      // cannot confirm a lease, and again when it starts. Work it had in hand then is a known state and continues, without a person.
+      const mine = await context.storage.db.selectFrom('quarantines').innerJoin('turns', 'turns.id', 'quarantines.turn_id').select('quarantines.id').where('quarantines.released_at', 'is', null).where('quarantines.scope', '=', 'task').where('turns.worker_id', '=', claim.workerId).where('turns.kind', '!=', 'deliver').where('quarantines.opened_at', '<', context.now() - 60_000).execute();
+      for (const row of mine) await needsYou.releaseQuarantine(null, row.id, 'continue', 'Its worker is back and has ended what it was running, so the work continues from its worktree.').catch(() => {});
+    }
     const turn = await turns.claim(claim);
     // A key entered in the app travels with the one turn that needs it, over the worker's own authenticated channel.
     return c.json({ turn: turn ? { ...turn, secrets: await providerSetup.turnSecrets(turn.turnId) } : turn });
@@ -163,12 +173,22 @@ export function createApp(context: Context) {
     context.events.published(await context.storage.transaction(async tx => sessions.record(tx, await turns.leased(tx, c.req.param('id'), input.workerId, input.leaseToken), input)));
     return c.json({ ok: true });
   });
-  // A worker that starts and finds a turn of its own still recorded as running gives the lease up; the expiry makes it uncertain and quarantines.
+  // A worker that starts and finds a turn of its own still recorded as running was restarted under it. It has ended that turn's process
+  // itself before saying so, and the worktree is still on its disk: the state is known, so work simply continues there, and a person is not
+  // asked to investigate. A delivery is the exception: whether the merge went through cannot be known from here, so that stays a person's call.
   app.post('/worker/turns/:id/orphaned', async c => {
-    const lease = await body(c, LeaseBody);
-    await context.storage.transaction(async tx => sessions.orphaned(tx, await turns.leased(tx, c.req.param('id'), lease.workerId, lease.leaseToken)));
-    await turns.sweep();
-    return c.json({ ok: true });
+    const lease = await body(c, LeaseBody), turnId = c.req.param('id')!;
+    const turn = await turns.claimedBy(turnId, lease.workerId, lease.leaseToken);
+    if (!turn) throw new HttpError(409, 'lease', 'Lease lost or invalid');
+    const NOTE = 'The worker was restarted while this ran. It ended the process itself and the work so far is still in its worktree, so it continues from there.';
+    if (turn.kind === 'deliver') { if (turn.state === 'running') await context.storage.transaction(async tx => sessions.orphaned(tx, await turns.leased(tx, turnId, lease.workerId, lease.leaseToken))); await turns.sweep(); return c.json({ ok: true, continued: false }); }
+    if (turn.state === 'running' && Number(turn.lease_until) >= context.now()) await turns.finish(turnId, lease.workerId, lease.leaseToken, { state: 'deferred', stopReason: 'worker-restarted', summary: NOTE });
+    else {
+      // The lease ran out before the worker came back, so this was already put in front of a person: that is taken back.
+      await turns.sweep();
+      for (const open of await context.storage.db.selectFrom('quarantines').select('id').where('turn_id', '=', turnId).where('released_at', 'is', null).execute()) await needsYou.releaseQuarantine(null, open.id, 'continue', NOTE);
+    }
+    return c.json({ ok: true, continued: true });
   });
   app.post('/worker/turns/:id/finish', async c => { const input = await body(c, FinishBody); const finished = await turns.finish(c.req.param('id'), input.workerId, input.leaseToken, input.outcome);
     // A work turn that reported ready_for_review hands its head to the reviewers.
@@ -347,6 +367,13 @@ export function createApp(context: Context) {
     return c.json({ desk: agent ?? null });
   });
   app.post('/api/agents/:id/dm', async c => { const projectId = await agentHome(c, 'project.contribute'); const input = await body(c, z.object({ body: z.string().trim().min(1).max(8000) })); return c.json(await controls.say(c.get('viewer').userId, c.req.param('id')!, projectId, input.body)); });
+  app.post('/api/tasks/:id/merge-again', async c => {
+    const task = await context.storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['projects.id', 'projects.parent_id']).where('tasks.id', '=', c.req.param('id')).executeTakeFirst();
+    if (!task) throw new HttpError(404, 'not_found', 'Task not found');
+    allow(c, 'project.operate', task.parent_id ?? task.id);
+    await reviews.deliverAgain(c.req.param('id')!);
+    return c.json({ ok: true });
+  });
   app.post('/api/tasks/:id/stop', async c => {
     const task = await context.storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['projects.id', 'projects.parent_id']).where('tasks.id', '=', c.req.param('id')).executeTakeFirst();
     if (!task) throw new HttpError(404, 'not_found', 'Task not found');
@@ -370,7 +397,7 @@ export function createApp(context: Context) {
     return c.get('viewer').userId;
   };
   app.post('/api/decisions/:id/resolve', async c => { const userId = await deciding(c, 'decision'); const input = await body(c, z.object({ answer: z.string().trim().min(1).max(4000) })); await needsYou.resolveDecision(userId, c.req.param('id')!, input.answer); return c.json({ ok: true }); });
-  app.post('/api/quarantines/:id/release', async c => { const userId = await deciding(c, 'quarantine'); const input = await body(c, z.object({ resolution: z.enum(['continue', 'stop']), note: z.string().trim().min(1).max(1000) })); await needsYou.releaseQuarantine(userId, c.req.param('id')!, input.resolution, input.note); return c.json({ ok: true }); });
+  app.post('/api/quarantines/:id/release', async c => { const userId = await deciding(c, 'quarantine'); const input = await body(c, z.object({ resolution: z.enum(['continue', 'stop']), note: z.string().trim().max(1000).default('') })); await needsYou.releaseQuarantine(userId, c.req.param('id')!, input.resolution, input.note); return c.json({ ok: true }); });
   app.post('/api/deliveries/:id/reconcile', async c => { const userId = await deciding(c, 'delivery'); const input = await body(c, z.object({ merged: z.boolean() })); await needsYou.reconcileDelivery(userId, c.req.param('id')!, input.merged); return c.json({ ok: true }); });
 
   app.get('/api/projects/:slug/checks', async c => { const { project } = await projectFor(c, 'project.read'); return c.json(await checks.matrix(project.id)); });
@@ -379,7 +406,7 @@ export function createApp(context: Context) {
   app.post('/api/projects/:slug/checks/:suite', async c => {
     const { project } = await projectFor(c, 'project.contribute');
     const xml = await c.req.text();
-    let parsed;
+    let parsed: ReturnType<typeof checks.parse>;
     try { parsed = checks.parse(xml); } catch (error) { throw new HttpError(400, 'junit', (error as Error).message); }
     return c.json(await checks.record({ projectId: project.id, suite: c.req.param('suite').slice(0, 60), branch: c.req.query('branch') ?? 'main', sha: c.req.query('sha') ?? null, source: 'upload', report: parsed }));
   });
@@ -534,7 +561,7 @@ export function createApp(context: Context) {
       if (input.model && !(JSON.parse(provider.models) as string[]).includes(input.model)) throw new HttpError(400, 'invalid', 'That provider does not offer this model');
     }
     // A running turn keeps the engine and model it was claimed with; the change applies from the next turn.
-    await context.storage.db.updateTable('agents').set({ provider_id: input.providerId, model: input.providerId ? input.model : null }).where('id', '=', agent.id).execute();
+    await context.storage.db.updateTable('agents').set({ provider_id: input.providerId, model: input.providerId ? input.model : null, ...(input.effort !== undefined ? { effort: input.effort } : {}) }).where('id', '=', agent.id).execute();
     return c.json({ ok: true });
   });
 

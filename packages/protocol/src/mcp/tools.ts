@@ -57,8 +57,8 @@ export const TOOLS = {
     permission: null, turnKinds: ALL, mutating: false, rateClass: 'read',
   }),
   'task.update': tool({
-    description: 'Report on the task of this turn. A summary is required; it is what a later turn resumes from.',
-    input: z.object({ state: z.enum(['checkpoint', 'ready_for_review', 'blocked']), summary: Words(120), blockedReason: z.string().max(200).optional() }),
+    description: 'Report on the task of this turn. A summary is required; it is what a later turn resumes from. not_needed closes the task: use it only when the base branch already contains what the task was for, and say where in the summary.',
+    input: z.object({ state: z.enum(['checkpoint', 'ready_for_review', 'blocked', 'not_needed']), summary: Words(120), blockedReason: z.string().max(200).optional() }),
     output: z.object({ state: z.string() }),
     permission: null, turnKinds: ['work'], mutating: true, rateClass: 'write',
   }),

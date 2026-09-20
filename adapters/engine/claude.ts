@@ -21,6 +21,16 @@ export const claude: EngineAdapter = {
 
   // Subscription billing: no key, token, base URL or cloud switch may select metered billing behind the owner's back.
   environment: env => allowlistedEnvironment(env),
+  // The tool's help names the effort levels it takes and the aliases that always point at its newest models.
+  async discover({ help }) {
+    const text = (await help()).replace(/\s+/g, ' ');
+    const efforts = /--effort <[^>]+>[^()]*\(([^)]+)\)/.exec(text)?.[1]?.split(',').map(word => word.trim()).filter(word => /^[a-z]{2,12}$/.test(word)) ?? [];
+    const aliases = [.../'([a-z][a-z0-9-]{1,20})'/g[Symbol.matchAll](/--model <[^>]+>.*?alias[^()]*\(([^)]*)\)/.exec(text)?.[1] ?? '')].map(match => match[1]!);
+    return { models: aliases.map(id => ({ id, name: id, note: 'always the newest of its family' })), efforts };
+  },
+  defaultModel(env) {
+    try { const model = (JSON.parse(readFileSync(path.join(env.CLAUDE_CONFIG_DIR ?? path.join(env.HOME ?? env.USERPROFILE ?? '', '.claude'), 'settings.json'), 'utf8')) as { model?: unknown }).model; return typeof model === 'string' && model ? model : null; } catch { return null; }
+  },
 
   prepare(spec, turnDir, env) {
     const systemFile = path.join(turnDir, 'system-prompt.md');
@@ -35,7 +45,7 @@ export const claude: EngineAdapter = {
         '--permission-mode', spec.toolProfile === 'write' ? 'acceptEdits' : 'default', '--append-system-prompt-file', systemFile,
         ...tools, '--allowedTools', ...(spec.toolProfile === 'write' || spec.toolProfile === 'verify' ? ['Bash'] : []), ...(spec.platform ? ['mcp__platform'] : []), '--disallowedTools', ...DENIED,
         ...(spec.sessionId ? ['--resume', spec.sessionId] : ['--session-id', spec.turnId]),
-        ...(spec.model ? ['--model', spec.model] : []),
+        ...(spec.model ? ['--model', spec.model] : []), ...(spec.effort && /^[a-z]{2,12}$/.test(spec.effort) ? ['--effort', spec.effort] : []),
       ],
       // The prompt goes on stdin: command lines are short on Windows and visible to other processes everywhere.
       input: spec.prompt,

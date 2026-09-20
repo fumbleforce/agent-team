@@ -237,11 +237,26 @@ export function createOrg(context: Context) {
     },
 
     // The seats of a project's team with the roles each wears, in seat order; retired seats are gone from it.
+    // What agents without a provider of their own run on. The model must be one the provider offers; nothing at all means the worker decides.
+    async setTeamDefault(userId: string, projectId: string, input: { providerId: string | null; model: string | null; effort?: string | null | undefined }) {
+      const published = await storage.transaction(async tx => {
+        const { root, teamId } = await teamOf(tx, projectId);
+        if (!teamId) throw new HttpError(409, 'no_team', 'This project has no team yet');
+        const provider = input.providerId ? await tx.selectFrom('providers').select(['id', 'name', 'models']).where('id', '=', input.providerId).executeTakeFirst() : null;
+        if (input.providerId && !provider) throw new HttpError(400, 'invalid', 'That provider does not exist', { providerId: 'That provider does not exist' });
+        if (provider && (!input.model || !(JSON.parse(provider.models) as string[]).includes(input.model))) throw new HttpError(400, 'invalid', `${provider.name} does not offer ${input.model ?? 'that model'}`, { model: `${provider.name} does not offer ${input.model ?? 'that model'}` });
+        await tx.updateTable('teams').set({ default_provider_id: provider?.id ?? null, default_model: provider ? input.model : null, ...(input.effort !== undefined ? { default_effort: input.effort } : {}) }).where('id', '=', teamId).execute();
+        return events.append(tx, [{ type: 'team.default_changed', category: 'audit', ...user(userId), projectId: root.id, payload: { providerId: provider?.id ?? null, model: provider ? input.model : null } }]);
+      });
+      events.published(published);
+    },
+
     async team(projectId: string) {
       const { root, teamId } = await teamOf(db, projectId);
+      const own = teamId ? await db.selectFrom('teams').select(['default_provider_id', 'default_model', 'default_effort']).where('id', '=', teamId).executeTakeFirst() : null;
       const agents = teamId ? await db.selectFrom('agents').select(['id', 'name', 'initials', 'tint', 'title', 'persona', 'status', 'provider_id', 'model', 'is_pm']).where('team_id', '=', teamId).where('status', '!=', 'retired').orderBy('sort').execute() : [];
       const roles = agents.length ? await db.selectFrom('agent_roles').select(['agent_id', 'role_slug']).where('agent_id', 'in', agents.map(agent => agent.id)).execute() : [];
-      return { rootId: root.id, seats: agents.map(agent => ({ id: agent.id, name: agent.name, initials: agent.initials, tint: agent.tint, title: agent.title, persona: agent.persona, status: agent.status, providerId: agent.provider_id, model: agent.model, isPm: agent.is_pm === true, roles: roles.filter(role => role.agent_id === agent.id).map(role => role.role_slug) })) };
+      return { rootId: root.id, fallback: { providerId: own?.default_provider_id ?? null, model: own?.default_model ?? null, effort: own?.default_effort ?? null }, seats: agents.map(agent => ({ id: agent.id, name: agent.name, initials: agent.initials, tint: agent.tint, title: agent.title, persona: agent.persona, status: agent.status, providerId: agent.provider_id, model: agent.model, isPm: agent.is_pm === true, roles: roles.filter(role => role.agent_id === agent.id).map(role => role.role_slug) })) };
     },
 
     // A seat made by hand. A project without a team gets one, and the first seat of a team is its PM: a team always has exactly one.

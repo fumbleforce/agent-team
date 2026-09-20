@@ -1,5 +1,8 @@
 import type { TraceStepInput, TurnKind } from '@agent-team/protocol';
 
+export interface DiscoveredModel { id: string; name: string; note?: string; efforts?: string[] }
+export interface Discovered { models: DiscoveredModel[]; efforts: string[] }
+
 export interface EngineCapabilities {
   resume: 'id' | 'none';
   mcp: 'http' | 'stdio' | 'none';
@@ -17,6 +20,8 @@ export interface TurnSpec {
   prompt: string;
   systemPrompt: string;
   model: string | null;
+  // How much effort the model is asked to spend, in the tool's own words; ignored by a tool that has no such choice.
+  effort?: string | null;
   sessionId: string | null;
   // 'verify' reads and runs commands but edits nothing: a reviewer or tester in a throwaway checkout of the head under review.
   toolProfile: 'write' | 'verify' | 'read-only' | 'none';
@@ -41,8 +46,12 @@ export interface EngineAdapter {
   bin: string;
   capabilities: EngineCapabilities;
   environment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
-  // The models the tool itself knows on this machine, when it keeps such a list. Read on the worker and reported with its readiness.
-  models?(env: NodeJS.ProcessEnv): { id: string; name: string; note?: string }[];
+  // What the tool itself says it offers on this machine: its models (each with the effort levels it takes, when the tool says so per model)
+  // and the effort levels it takes at all. Nothing of this is written down here: it is read from the tool's own files and help text on the
+  // worker, once at its start, and reported with its readiness. `help` runs the tool with --help and gives its output.
+  discover?(host: { env: NodeJS.ProcessEnv; help(): Promise<string> }): Promise<Discovered>;
+  // The model the tool uses on this machine when a turn names none, as its own settings say. Null when they say nothing.
+  defaultModel?(env: NodeJS.ProcessEnv): string | null;
   prepare(spec: TurnSpec, turnDir: string, env: NodeJS.ProcessEnv): PreparedTurn;
   parse(line: string, state: ParseState): EngineStep[];
   classifyExit(exit: { code: number | null; signal: string | null }, state: ParseState, stderrTail: string): StopReason;
