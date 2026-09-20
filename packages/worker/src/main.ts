@@ -30,7 +30,9 @@ const worker = createWorker({
   // Reviews, replies and triage read and answer; several of them run side by side. Writers are held to the project's own limit by the coordinator.
   lanes: file.lanes ?? { work: 2, bounded: 4, deliver: 1 }, projects: named.projects,
   ...(file.publish ? { publish: { ...file.publish, exec } } : {}), ...(file.isolation ? { isolation: file.isolation } : {}),
-  worktrees: file.worktrees === undefined ? { branchPrefix: 'agents/', base: 'HEAD' } : file.worktrees,
+  // A worker that publishes starts every task from the base branch as the code host has it. Starting from the local checkout's HEAD put
+  // whatever was committed there and not pushed into every change the team opened, where it collided with the base.
+  worktrees: file.worktrees === undefined ? { branchPrefix: 'agents/', base: file.publish ? `origin/${file.publish.base}` : 'HEAD' } : file.worktrees,
   // `--once` is how a launched, disposable host runs: the worker then holds itself to the rule for such hosts.
   ephemeral: process.argv.includes('--once'),
 });

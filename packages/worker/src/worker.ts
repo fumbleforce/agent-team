@@ -164,6 +164,9 @@ export function createWorker(config: WorkerConfig) {
       // other bounded turns read the checkout. A worktree that cannot be made safely fails the turn: nothing was run, so nothing is uncertain.
       let worktree: Worktree | null = null, reviewTree: ReviewWorktree | null = null, grants = turn.grants;
       try {
+        // The base is read fresh from the code host before a task's worktree is made from it; a task already under way keeps its own.
+        const remoteBase = config.worktrees ? /^origin\/(.+)$/.exec(config.worktrees.base)?.[1] : undefined;
+        if (lane === 'work' && remoteBase && config.publish) await config.publish.exec('git', ['-C', checkout, 'fetch', '--quiet', 'origin', remoteBase], { cwd: checkout }).catch((error: Error) => console.error(`Fetching ${remoteBase} failed: ${error.message}`));
         if (lane === 'work' && turn.taskKey && config.worktrees) worktree = await ensureWorktree({ checkout, taskKey: turn.taskKey, ...config.worktrees, admin });
         else if (turn.kind === 'review' && turn.taskKey && turn.review && config.worktrees) reviewTree = await ensureReviewWorktree({ checkout, taskKey: turn.taskKey, reviewer: turn.review.reviewer, headSha: turn.review.headSha, projectId: turn.projectId, admin });
         // The committed ceiling wins even over what the coordinator sent.

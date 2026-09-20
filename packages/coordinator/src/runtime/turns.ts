@@ -13,6 +13,8 @@ import { accessOf, laneOf, maxWritersOf, WORKER_FRESH_MS, type ClaimDraft, type 
 import { effectiveProjects } from '../repos/org.ts';
 export const LEASE_MS = 90_000;
 export { laneOf };
+// What an author is told when its approved change no longer merges. Merging the base in, never rebasing: a published branch is never force-pushed.
+const UPDATE_BRANCH = 'This change was approved, but it no longer merges into the base branch: the base moved on since you started. Bring your branch up to date: fetch the base branch from origin and MERGE it into your branch (do not rebase and do not rewrite history: your branch is published and is never force-pushed). Resolve every conflict by reading both sides, run the tests, commit, and report ready_for_review; it will be reviewed again at the new revision. First check whether the base already contains what this task was for: if it does, change nothing and report not_needed with one line saying where it was done.';
 export const RULES_SCOPE = { type: 'org', id: '' } as const, RULES_SLUG = 'default', LIMIT_BACKOFF_MS = 5 * 60_000;
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const RATE_LIMITED = /rate-limit|usage-limit/;
@@ -272,7 +274,7 @@ export function createTurns(context: Context) {
     },
 
     async finish(turnId: string, workerId: string, leaseToken: string, outcome: Outcome) {
-      let reviewTaskId: string | null = null;
+      let reviewTaskId: string | null = null, requeue: { agentId: string; projectId: string; taskId: string } | null = null;
       const published = await storage.transaction(async tx => {
         const turn = await leased(tx, turnId, workerId, leaseToken);
         if (turn.kind === 'work' && turn.task_id && outcome.state === 'completed' && (await tx.selectFrom('tasks').select('state').where('id', '=', turn.task_id).executeTakeFirst())?.state === 'in_review') reviewTaskId = turn.task_id;
@@ -309,7 +311,18 @@ export function createTurns(context: Context) {
         if (turn.kind === 'deliver' && turn.task_id && outcome.delivery) {
           const merged = outcome.delivery.state === 'merged';
           await tx.updateTable('merge_queue').set({ state: merged ? 'merged' : 'blocked', reason: outcome.delivery.reason, finished_at: now() }).where('task_id', '=', turn.task_id).where('state', 'in', ['queued', 'running']).execute();
-          await tx.updateTable('tasks').set(merged ? { state: 'done', updated_at: now() } : { state: 'blocked', blocked_reason: outcome.delivery.reason.slice(0, 200), updated_at: now() }).where('id', '=', turn.task_id).execute();
+          // Not mergeable as it stands (the base moved under it): that is the author's to put right, not a person's. Once per revision; if the
+          // same revision comes back unmergeable, a person is asked after all.
+          const task = await tx.selectFrom('tasks').select(['assignee_agent_id', 'head_sha']).where('id', '=', turn.task_id).executeTakeFirst();
+          const stale = !merged && /identity, head or mergeability/i.test(outcome.delivery.reason) && task?.assignee_agent_id && task.head_sha;
+          const told = stale ? await tx.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select('messages.id').where('threads.subject_type', '=', 'task').where('threads.subject_id', '=', turn.task_id).where('messages.kind', '=', 'system').where('messages.payload', 'like', `%${task!.head_sha}%`).executeTakeFirst() : null;
+          if (stale && !told) {
+            let thread = await tx.selectFrom('threads').select('id').where('subject_type', '=', 'task').where('subject_id', '=', turn.task_id).executeTakeFirst();
+            if (!thread) { thread = { id: newId(now()) }; await tx.insertInto('threads').values({ id: thread.id, project_id: turn.project_id, kind: 'issue', subject_type: 'task', subject_id: turn.task_id, title: 'Task thread', visibility: 'team', owner_user_id: null, created_at: now() }).execute(); }
+            await tx.insertInto('messages').values({ id: newId(now()), thread_id: thread.id, author_kind: 'system', author_id: null, kind: 'system', body: UPDATE_BRANCH, payload: JSON.stringify({ unmergeableAt: task!.head_sha }), created_at: now() }).execute();
+            await tx.updateTable('tasks').set({ state: 'in_progress', blocked_reason: null, updated_at: now() }).where('id', '=', turn.task_id).execute();
+            requeue = { agentId: task!.assignee_agent_id!, projectId: turn.project_id, taskId: turn.task_id };
+          } else await tx.updateTable('tasks').set(merged ? { state: 'done', updated_at: now() } : { state: 'blocked', blocked_reason: outcome.delivery.reason.slice(0, 200), updated_at: now() }).where('id', '=', turn.task_id).execute();
         }
         if (turn.kind === 'capture' && outcome.state !== 'deferred') {
           // A capture turn that ends without having uploaded its image has failed, whatever it says.
@@ -325,6 +338,8 @@ export function createTurns(context: Context) {
         return events.append(tx, [...drafts, { type: `turn.${outcome.state}`, actorKind: 'worker', projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, turnId, payload: { stopReason: outcome.stopReason ?? null } }]);
       });
       events.published(published);
+      const again = requeue as { agentId: string; projectId: string; taskId: string } | null;
+      if (again) await this.enqueue({ agentId: again.agentId, projectId: again.projectId, kind: 'work', taskId: again.taskId, dedupeKey: `work:${again.taskId}` });
       return { reviewTaskId: reviewTaskId as string | null };
     },
 

@@ -121,10 +121,16 @@ export function createMcp(context: Context, deps: McpDeps) {
     },
     'task.update': async (turn, input) => {
       if (!turn.task_id) throw new ToolError('This turn has no task');
-      const state = input.state === 'ready_for_review' ? 'in_review' : input.state === 'blocked' ? 'blocked' : 'in_progress';
+      const state = input.state === 'ready_for_review' ? 'in_review' : input.state === 'blocked' ? 'blocked' : input.state === 'not_needed' ? 'canceled' : 'in_progress';
       const published = await storage.transaction(async tx => {
         await tx.updateTable('tasks').set({ state, blocked_reason: input.state === 'blocked' ? (input.blockedReason ?? 'blocked') : null, updated_at: now() }).where('id', '=', turn.task_id!).execute();
         await tx.updateTable('turns').set({ summary: input.summary }).where('id', '=', turn.id).execute();
+        // Closed as not needed: nothing of it waits to be merged, and the report it came from is closed with it.
+        if (state === 'canceled') {
+          await tx.updateTable('merge_queue').set({ state: 'blocked', reason: 'The task was closed as not needed', finished_at: now() }).where('task_id', '=', turn.task_id!).where('state', 'in', ['queued', 'uncertain']).execute();
+          const issue = await tx.selectFrom('links').select('from_id').where('from_type', '=', 'issue').where('to_type', '=', 'task').where('to_id', '=', turn.task_id!).executeTakeFirst();
+          if (issue) await tx.updateTable('issues').set({ state: 'closed', closed_at: now() }).where('id', '=', issue.from_id).execute();
+        }
         return events.append(tx, [{ type: 'task.state_changed', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, taskId: turn.task_id, turnId: turn.id, payload: { to: state, summary: input.summary } }]);
       });
       events.published(published);

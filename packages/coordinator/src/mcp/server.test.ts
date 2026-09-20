@@ -255,3 +255,15 @@ test('the PM puts work on the board: a plain answer is not a decision, what is a
   const developer = await boot('reply', { agent: 'Bram' });
   try { assert.match((await developer.call('task.create', { title: 'Something', brief: 'Anything.' })).text, /Only the PM adds tasks/); } finally { await developer.coordinator.close(); }
 });
+
+test('an author who finds the base already does what the task asked closes it as not needed, with where it was done', async () => {
+  const work = await boot('work');
+  try {
+    const { db, call, taskId } = work;
+    await db.insertInto('merge_queue').values({ id: 'waiting', project_id: work.projectId, task_id: taskId, head_sha: 'a'.repeat(40), state: 'queued', reason: null, created_at: 1, finished_at: null }).execute();
+    const closed = await call('task.update', { state: 'not_needed', summary: 'Already done on main by the task page rewrite (TaskPage.tsx).' });
+    assert.deepEqual([closed.error, closed.data.state], [false, 'canceled']);
+    assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'canceled');
+    assert.equal((await db.selectFrom('merge_queue').select('state').where('id', '=', 'waiting').executeTakeFirstOrThrow()).state, 'blocked', 'nothing of it waits to be merged');
+  } finally { await work.coordinator.close(); }
+});
