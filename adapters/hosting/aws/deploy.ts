@@ -8,6 +8,11 @@ import path from 'node:path';
 // where it stopped. The `aws` runner is injectable so the whole plan is testable without an account.
 const HERE = import.meta.dirname;
 const PORT = 4310;
+// The two scripts below are read here and run on Linux. A clone made before .gitattributes existed can
+// hold them with CRLF, which would reach cloud-init as `#!/bin/bash\r`, a program that does not exist,
+// so every script this file produces is made LF whatever the checkout looks like.
+const lf = (text: string) => text.replace(/\r\n/g, '\n');
+const readScript = (name: string) => readFileSync(path.join(HERE, name), 'utf8');
 // The network comes before the roles because the control role is limited to the deployment's subnet.
 export const STEPS = ['secrets', 'network', 'iam', 'controlPlane', 'image', 'verify'] as const;
 export type Step = typeof STEPS[number];
@@ -237,10 +242,10 @@ export async function network(deployment: Deployment, { aws = defaultAws, myIp, 
 }
 
 // User data for the control-plane host: the shared script with this deployment's values exported ahead of it.
-export function controlPlaneUserData(deployment: Deployment, { template = readFileSync(path.join(HERE, 'control-plane-user-data.sh'), 'utf8') }: { template?: string } = {}) {
+export function controlPlaneUserData(deployment: Deployment, { template = readScript('control-plane-user-data.sh') }: { template?: string } = {}) {
   const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
   const head = ['#!/bin/bash', `export TOOLKIT_REPO=${quote(deployment.toolkit?.repo ?? TOOLKIT_REPO)} TOOLKIT_REF=${quote(deployment.toolkit?.ref ?? 'main')} SSM_PREFIX=${quote(deployment.ssmPrefix)}`];
-  return `${head.join('\n')}\n${template.replace(/^#!.*\n/, '')}`;
+  return `${head.join('\n')}\n${lf(template).replace(/^#!.*\n/, '')}`;
 }
 
 interface Instance { State?: { Name?: string }; PublicIpAddress?: string; PrivateIpAddress?: string; BlockDeviceMappings?: { DeviceName?: string; Ebs?: { VolumeId?: string } }[] }
@@ -282,13 +287,13 @@ export async function controlPlane(deployment: Deployment, { aws = defaultAws, l
   return deployment;
 }
 
-export function bakeScript(deployment: Deployment, { template = readFileSync(path.join(HERE, 'worker-bake.sh'), 'utf8'), toolkitRepo = deployment.toolkit?.repo ?? TOOLKIT_REPO, toolkitRef = deployment.toolkit?.ref ?? 'main' }: { template?: string; toolkitRepo?: string; toolkitRef?: string } = {}) {
+export function bakeScript(deployment: Deployment, { template = readScript('worker-bake.sh'), toolkitRepo = deployment.toolkit?.repo ?? TOOLKIT_REPO, toolkitRef = deployment.toolkit?.ref ?? 'main' }: { template?: string; toolkitRepo?: string; toolkitRef?: string } = {}) {
   const tokenVariable = deployment.secrets.find(secret => secret.adapter === deployment.scm.kind)?.name;
   if (!tokenVariable) throw new DeployError(`No secret holds the ${deployment.scm.kind} token`, `Add a secret with adapter "${deployment.scm.kind}" to the deployment file (agent-team status aws prints its path).`);
   const provisioning = deployment.worker.provisioning ?? { packages: [], setup: [] };
   const values: Record<string, string> = { REGION: deployment.aws.region ?? '', SSM_PREFIX: deployment.ssmPrefix, TOOLKIT_REPO: toolkitRepo, TOOLKIT_REF: toolkitRef, PROJECT_HOST: deployment.scm.host, PROJECT_REPO: deployment.scm.repository, TOKEN_VARIABLE: tokenVariable, PROJECT_SETUP: deployment.worker.setup,
     ENVIRONMENT_PACKAGES: provisioning.packages.join(' '), ENVIRONMENT_SETUP: provisioning.setup.length ? provisioning.setup.join(' && ') : 'true' };
-  return template.replace(/__([A-Z_]+)__/g, (_match, key: string) => { const value = values[key]; if (value === undefined) throw new Error(`Bake template has no value for ${key}`); return value; });
+  return lf(template).replace(/__([A-Z_]+)__/g, (_match, key: string) => { const value = values[key]; if (value === undefined) throw new Error(`Bake template has no value for ${key}`); return value; });
 }
 
 interface Image { ImageId: string; CreationDate: string; BlockDeviceMappings?: { Ebs?: { SnapshotId?: string } }[] }

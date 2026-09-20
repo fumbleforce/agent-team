@@ -1,0 +1,8 @@
+# Line endings. Everything in the repository is text, and the repository stores it with LF.
+* text=auto
+
+# These files are read by Linux: cloud-init and the bake run them as shell scripts, docker build reads
+# the Dockerfiles. A CRLF there is not cosmetic - the shebang line becomes "/bin/bash\r", which does not
+# exist. So they are checked out with LF even on a Windows clone with core.autocrlf=true.
+*.sh text eol=lf
+Dockerfile text eol=lf
