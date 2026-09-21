@@ -1,3 +1,4 @@
+import { createTrials, isWayChange, targetOf } from './trials.ts';
 import type { z } from 'zod';
 import { categoryOf, DelegationRules, LibraryAgent, newId, ProposalChange, TeamTemplate, withinBounds, type EventDraft, type ProposalInput, type ProposalVote, type StaffingDecision, type ToolOutput } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
@@ -18,6 +19,7 @@ interface Applied { agentIds: string[]; drafts: EventDraft[]; returned: { key: s
 export function createProposals(context: Context, turns?: Turns) {
   const { storage, events, now } = context;
   const db = storage.db;
+  const trials = createTrials(context);
 
   async function rulesFor(tx: Pick<Tx, 'selectFrom'>, projectId: string): Promise<DelegationRules> {
     const project = await tx.selectFrom('projects').select(['id', 'parent_id']).where('id', '=', projectId).executeTakeFirst();
@@ -41,6 +43,7 @@ export function createProposals(context: Context, turns?: Turns) {
     const team = await roster(tx, projectId);
     const seat = 'agentId' in change ? team.find(item => item.id === change.agentId) : null;
     if ('agentId' in change && !seat) throw refuse('That agent is not a seat of this team');
+    if (isWayChange(change)) await trials.check(tx, projectId, change, (await rulesFor(tx, projectId)).process.maxTrialDays);
     if (change.kind === 'retire_agent' && seat?.is_pm === true) throw refuse(`${seat.name} is the team's PM. Someone else has to be the PM before this seat can be retired, and that is the owner's to change.`);
     if (change.kind === 'hire_agent' && !await doc(tx, 'library_agent', change.library)) throw refuse(`Nobody called ${change.library} is in the agent library`);
     if (change.kind === 'staff_from_template' && !await doc(tx, 'team_template', change.template)) throw refuse(`There is no team template called ${change.template}`);
@@ -54,6 +57,7 @@ export function createProposals(context: Context, turns?: Turns) {
   // Why a staffing decision has to wait for the owner, in words the owner reads; null when it may take effect at once.
   async function beyond(tx: Tx, projectId: string, by: string, change: ProposalChange, team: Awaited<ReturnType<typeof roster>>): Promise<string | null> {
     const rules = await rulesFor(tx, projectId);
+    if (isWayChange(change)) return rules.process.decides ? null : 'The owner decides how this team works; this waits as a proposal, to run as a trial if the owner agrees';
     if (!rules.staffing.decides) return 'The owner decides who is on this team';
     const seat = 'agentId' in change ? team.find(item => item.id === change.agentId)! : null;
     if (seat?.id === by && change.kind !== 'set_daily_cap') return 'A seat does not decide about itself';
@@ -73,6 +77,10 @@ export function createProposals(context: Context, turns?: Turns) {
     const event = (type: string, agentId: string | null, payload: Record<string, unknown>): EventDraft => ({ type, category: 'audit', ...who, ...(agentId ? { agentId } : {}), projectId, payload: { ...payload, proposalId, ...(actor.actorKind === 'agent' ? { by: actor.by } : {}) } });
     const done = (agentIds: string[], drafts: EventDraft[]): Applied => ({ agentIds, drafts, returned: [], retiredName: null });
     await check(tx, projectId, change);
+    if (isWayChange(change)) {
+      const started = await trials.start(tx, projectId, proposalId, change);
+      return done([], [event('team.way_changed', null, { target: targetOf(change), trialId: started.trialId }), started.draft]);
+    }
     if (change.kind === 'set_daily_cap') { await tx.updateTable('agents').set({ daily_cap_minor: change.capMinor }).where('id', '=', change.agentId).execute(); return done([change.agentId], [event('agent.updated', change.agentId, { changed: ['dailyCap'] })]); }
     if (change.kind === 'add_role') { await tx.insertInto('agent_roles').values({ agent_id: change.agentId, role_slug: change.role }).onConflict(oc => oc.columns(['agent_id', 'role_slug']).doNothing()).execute(); return done([change.agentId], [event('agent.updated', change.agentId, { changed: ['roles'] })]); }
     if (change.kind === 'retire_agent') {
@@ -242,6 +250,9 @@ function describe(change: ProposalChange, team: { id: string; name: string }[], 
     case 'set_status': return change.status === 'paused' ? `${name} is paused and takes no new work.` : `${name} works again.`;
     case 'set_daily_cap': return `${name} may spend ${(change.capMinor / 100).toFixed(2)} a day.`;
     case 'add_role': return `${name} also wears ${change.role}.`;
+    case 'change_role_text': return `What the ${change.role} role looks for changes, as a trial of ${change.trial.days} days judged by ${change.trial.measure} going ${change.trial.expect}: "${change.perspective}"`;
+    case 'change_instructions': return `What a ${change.turnKind} turn is told changes, as a trial of ${change.trial.days} days judged by ${change.trial.measure} going ${change.trial.expect}.`;
+    case 'change_process': return `${change.knob} becomes ${change.value}, as a trial of ${change.trial.days} days judged by ${change.trial.measure} going ${change.trial.expect}.`;
     case 'staff_from_template': return `The seats of the ${change.template} template join the team.`;
     default: return '';
   }

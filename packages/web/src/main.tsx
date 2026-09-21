@@ -22,7 +22,7 @@ import { CommandPalette } from './patterns';
 import './tokens.css';
 
 const SCREENS = [{ href: '/welcome', label: 'Get started' }, { href: '/needs-you', label: 'Needs you' }, { href: '/org', label: 'Organization' }, { href: '/roles', label: 'Roles' }, { href: '/proposals', label: 'Team proposals' }, { href: '/costs', label: 'Costs' }, { href: '/settings/members', label: 'Members', note: 'settings' }, { href: '/settings/auth', label: 'Sign-in', note: 'settings' }, { href: '/audit', label: 'Audit log' }];
-const PROJECT_TABS = ['Tasks', 'Issues', 'Product', 'Tests', 'Workload', 'Knowledge', 'Team', 'Integrations'];
+const PROJECT_TABS = ['Tasks', 'Issues', 'Product', 'Tests', 'Workload', 'Scorecard', 'Knowledge', 'Team', 'Integrations'];
 
 // Ctrl or Cmd + K. Pages and project screens are those of the project in the address bar.
 function Palette({ projects, agents }: { projects: ProjectNode[]; agents: Agent[] }) {

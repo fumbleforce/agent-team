@@ -2,11 +2,17 @@ import type { z } from 'zod';
 import { newId, type FinishBody, type SessionBody } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import type { Context } from '../context.ts';
+import { wayOfWorking } from './wayOfWorking.ts';
 import { buildResumeDelta, buildResumePacket, type Packet } from './packet.ts';
 
 // A session's input grows with every resumed turn; past this many tokens the next turn starts a new one from a packet.
 export const ROTATE_AT_TOKENS = 120_000;
-const CONTINUE = 'continue:', REQUEUE = 'resume:';
+const CONTINUE = 'continue:', REQUEUE = 'resume:', CARRY = 'carry:';
+// An owner carries on with its own task turn after turn. After this many turns in a row that changed nothing, the PM is brought in instead.
+export const STALLED_AFTER = 3;
+// However busy the turns look, a task that has taken this many of them is looked at by the PM before it takes more: carrying on is
+// the owner's right, not an endless one. The count is per owner and task, and every further CHECK_IN_EVERY turns asks again.
+export const CHECK_IN_EVERY = 12;
 
 export interface Resume { sessionId: string; prompt: string; baseSha: string | null }
 interface TurnRow { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; summary: string | null; session_id: string | null; context_mode: string | null }
@@ -20,6 +26,27 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
     const id = newId(now());
     await tx.insertInto('work_items').values({ id, agent_id: turn.agent_id, project_id: turn.project_id, kind: 'work', lane: 'work', task_id: turn.task_id, thread_id: null, priority_class: 4, state: 'queued', defer_reason: null, not_before: null, dedupe_key: dedupeKey, cause_event_id: null, created_at: now() }).execute();
     return { type: 'work_item.queued', actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, payload: { workItemId: id, kind: 'work', cause: dedupeKey.split(':')[0] } };
+  }
+
+  // The owner continues: a work turn that ended with a report on a task still in progress, with nothing blocking it and nothing
+  // queued for it, is followed at once by the same agent's next turn. Progress is a turn that edited something; after
+  // STALLED_AFTER turns in a row without any, nothing is queued and the caller brings the PM in.
+  async function carryOn(tx: Tx, turn: TurnRow): Promise<{ requeued: boolean; stalled?: boolean; drafts: Parameters<typeof events.append>[1] }> {
+    const task = await tx.selectFrom('tasks').select(['state', 'blocked_reason', 'assignee_agent_id']).where('id', '=', turn.task_id!).executeTakeFirst();
+    if (task?.state !== 'in_progress' || task.blocked_reason !== null || task.assignee_agent_id !== turn.agent_id) return { requeued: false, drafts: [] };
+    const held = await tx.selectFrom('quarantines').select('id').where('scope', '=', 'task').where('ref_id', '=', turn.task_id!).where('released_at', 'is', null).executeTakeFirst();
+    const waiting = await tx.selectFrom('work_items').select('id').where('agent_id', '=', turn.agent_id).where('task_id', '=', turn.task_id!).where('kind', '=', 'work').where('state', '=', 'queued').executeTakeFirst();
+    if (held || waiting) return { requeued: false, drafts: [] };
+    // Both numbers are the team's own to change, inside their limits, as a trial.
+    const { knobs } = await wayOfWorking(tx, turn.project_id);
+    const taken = await tx.selectFrom('turns').select(eb => eb.fn.countAll<number>().as('n')).where('task_id', '=', turn.task_id!).where('agent_id', '=', turn.agent_id).where('kind', '=', 'work').executeTakeFirstOrThrow();
+    if (Number(taken.n) > 0 && Number(taken.n) % knobs.checkInEvery === 0) return { requeued: false, stalled: true, drafts: [{ actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, turnId: turn.id, type: 'task.stalled', payload: { turns: Number(taken.n), reason: 'many-turns' } }] };
+    const recent = await tx.selectFrom('turns').select('id').where('task_id', '=', turn.task_id!).where('agent_id', '=', turn.agent_id).where('kind', '=', 'work').orderBy('started_at', 'desc').limit(knobs.stalledAfter).execute();
+    if (recent.length === knobs.stalledAfter) {
+      const edited = await tx.selectFrom('trace_steps').select('turn_id').where('turn_id', 'in', recent.map(row => row.id)).where('kind', '=', 'edit').executeTakeFirst();
+      if (!edited) return { requeued: false, stalled: true, drafts: [{ actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, turnId: turn.id, type: 'task.stalled', payload: { turns: knobs.stalledAfter, reason: 'no-change' } }] };
+    }
+    return { requeued: true, drafts: [await queueWork(tx, turn, `${CARRY}${turn.id}`)] };
   }
 
   return {
@@ -65,7 +92,7 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
 
     // Called inside finish, before the generic effects. The two failures that continue on their own, each exactly once:
     // a resume that found no session before any output is requeued in packet mode, and a work turn that reported nothing gets one continuation.
-    async afterFinish(tx: Tx, turn: TurnRow, outcome: Outcome): Promise<{ requeued: boolean; drafts: Parameters<typeof events.append>[1] }> {
+    async afterFinish(tx: Tx, turn: TurnRow, outcome: Outcome): Promise<{ requeued: boolean; stalled?: boolean; drafts: Parameters<typeof events.append>[1] }> {
       if (turn.kind !== 'work' || !turn.task_id) return { requeued: false, drafts: [] };
       if (turn.session_id) {
         const session = await tx.selectFrom('agent_sessions').select('turn_count').where('id', '=', turn.session_id).executeTakeFirst();
@@ -80,8 +107,16 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
         if (turn.context_mode !== 'resume' || output) return { requeued: false, drafts: [lost] };
         return { requeued: true, drafts: [lost, await queueWork(tx, turn, `${REQUEUE}${turn.id}`)] };
       }
+      // Running out of time is not a failure: the process is known to be gone and the worktree holds the work, so the owner carries on
+      // from its journal. Twice in a row without a report in between is a task too big for its turns, and that is a person's to see.
+      if (outcome.state === 'timed_out') {
+        const item = await tx.selectFrom('work_items').select('dedupe_key').where('id', '=', turn.work_item_id).executeTakeFirst();
+        if (item?.dedupe_key?.startsWith(`${CARRY}timeout:`)) return { requeued: false, drafts: [] };
+        return { requeued: true, drafts: [await queueWork(tx, turn, `${CARRY}timeout:${turn.id}`)] };
+      }
       // task.update writes the turn's summary; an engine without platform tools reports through its final summary.
-      if (outcome.state !== 'completed' || turn.summary?.trim() || outcome.summary?.trim()) return { requeued: false, drafts: [] };
+      if (outcome.state === 'completed' && (turn.summary?.trim() || outcome.summary?.trim())) return carryOn(tx, turn);
+      if (outcome.state !== 'completed') return { requeued: false, drafts: [] };
       const item = await tx.selectFrom('work_items').select('dedupe_key').where('id', '=', turn.work_item_id).executeTakeFirst();
       if (item?.dedupe_key?.startsWith(CONTINUE)) {
         await tx.updateTable('tasks').set({ state: 'blocked', blocked_reason: 'no-report', updated_at: now() }).where('id', '=', turn.task_id).execute();

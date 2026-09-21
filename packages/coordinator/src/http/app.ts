@@ -25,6 +25,9 @@ import { mountProviderRoutes } from './providerSetupRoutes.ts';
 import { mountTaskRoutes } from './taskRoutes.ts';
 import { deskOf } from '../runtime/desk.ts';
 import { createWorkload } from '../runtime/workload.ts';
+import { createScorecard } from '../runtime/scorecard.ts';
+import { createDuties } from '../runtime/duties.ts';
+import { isOpenWeight, modelFamily } from '../../../../adapters/engine/providers.ts';
 import { SCM_KINDS, scmAdapter } from '../../../../adapters/scm/index.ts';
 import { TRACKER_KINDS } from '../../../../adapters/tracker/index.ts';
 import { createWorkspace } from '../repos/workspace.ts';
@@ -57,6 +60,8 @@ export function createApp(context: Context) {
   const turns = createTurns(context);
   const deliberation = createDeliberation(context, turns);
   const reviews = createReviews(context, turns), workload = createWorkload(context, turns);
+  const scorecard = createScorecard(context, { openWeight: isOpenWeight, modelFamily });
+  const duties = createDuties(context, turns);
   let chased = 0;
   const retro = createRetro(context, turns);
   // Semantic search is on when an embeddings endpoint is named; otherwise search is lexical.
@@ -109,6 +114,12 @@ export function createApp(context: Context) {
     await retro.ensureSchedule(id);
     await setup.adoptManifest(id, null);
     return c.json({ id });
+  });
+  app.get('/machine/projects/:slug/scorecard', async c => {
+    await machine(c);
+    const row = await context.storage.db.selectFrom('projects').select('id').where('slug', '=', c.req.param('slug')).executeTakeFirst();
+    if (!row) throw new HttpError(404, 'not_found', 'No such project');
+    return c.json(await scorecardFor(row.id, c.req.query('days')));
   });
   app.post('/machine/setup-link', async c => { await machine(c); return c.json({ path: await accounts.setupLink() }); });
 
@@ -194,7 +205,9 @@ export function createApp(context: Context) {
   });
   app.post('/worker/turns/:id/finish', async c => { const input = await body(c, FinishBody); const finished = await turns.finish(c.req.param('id'), input.workerId, input.leaseToken, input.outcome);
     // A work turn that reported ready_for_review hands its head to the reviewers.
-    if (finished.reviewTaskId && input.outcome.headSha) await reviews.request(finished.reviewTaskId, input.outcome.headSha);
+    // A task that ends in a document is reviewed at the document's revision, which its owner handed in; there is no commit to review.
+    const endsInChange = finished.reviewTaskId ? (await context.storage.db.selectFrom('tasks').select('result_kind').where('id', '=', finished.reviewTaskId).executeTakeFirst())?.result_kind !== 'document' : false;
+    if (finished.reviewTaskId && endsInChange && input.outcome.headSha) await reviews.request(finished.reviewTaskId, input.outcome.headSha);
     // A verdict recorded in this turn counts only now, and only if the head the worker verified is the task's head.
     await reviews.verify(c.req.param('id'), { start: input.outcome.headShaStart, end: input.outcome.headShaEnd });
     return c.json({ ok: true });
@@ -363,6 +376,19 @@ export function createApp(context: Context) {
   app.post('/api/agents/:id/stop', async c => { await agentHome(c, 'project.operate'); return c.json(await controls.stopAgent(c.get('viewer').userId, c.req.param('id')!)); });
   app.get('/api/agents/:id/dm', async c => { const projectId = await agentHome(c, 'project.contribute'); return c.json(await controls.direct(c.get('viewer').userId, c.req.param('id')!, projectId)); });
   // One stream of what the whole team is doing and just did.
+  // The scorecard of docs/ROADMAP.md for one project, over the last `days` days (30 when not said).
+  const scorecardFor = (projectId: string, days: string | undefined) => {
+    const span = Math.min(365, Math.max(1, Number(days) || 30));
+    return scorecard.compute(projectId, { from: context.now() - span * 24 * 3600_000 });
+  };
+  // Standing duties of the project's team: read by anyone who may read the project, set by whoever may manage it.
+  app.get('/api/projects/:slug/duties', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ items: await duties.list(project.id) }); });
+  app.post('/api/projects/:slug/duties', async c => {
+    const { project } = await projectFor(c, 'project.configure');
+    const input = z.object({ title: z.string().trim().min(3).max(120), brief: z.string().trim().min(1).max(2000), ownerAgentId: z.string(), everyHours: z.number().int().min(0).max(24 * 31), result: z.enum(['change', 'document']).default('document') }).parse(await c.req.json());
+    return c.json(await duties.set(project.id, input));
+  });
+  app.get('/api/projects/:slug/scorecard', async c => { const { project } = await projectFor(c, 'project.read'); return c.json(await scorecardFor(project.id, c.req.query('days'))); });
   app.get('/api/projects/:slug/feed', async c => { const { project } = await projectFor(c, 'project.read'); return c.json(await workload.feed(project.id)); });
   // Who answers the owner for this project: its front desk when it has one. The app offers to talk to them, by voice too.
   app.get('/api/projects/:slug/desk', async c => {

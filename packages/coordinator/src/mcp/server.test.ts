@@ -42,7 +42,7 @@ test('a work turn lists its tools, posts to discussion and reports on its task; 
   try {
     const list = await rpc('tools/list');
     // Without a role nothing graded is granted, so the issue and handoff tools are not even listed.
-    assert.deepEqual(list.json.result.tools.map((tool: any) => tool.name).sort(), ['agent.mention', 'cost.status', 'deliberation.propose', 'discussion.post', 'knowledge.propose_memory', 'knowledge.read', 'knowledge.search', 'knowledge.write', 'proposal.create', 'proposal.vote', 'task.claim', 'task.handoff', 'task.list', 'task.update', 'test.report', 'thread.read']);
+    assert.deepEqual(list.json.result.tools.map((tool: any) => tool.name).sort(), ['agent.mention', 'cost.status', 'deliberation.propose', 'discussion.post', 'knowledge.propose_memory', 'knowledge.read', 'knowledge.search', 'knowledge.write', 'notebook.write', 'proposal.create', 'proposal.vote', 'task.claim', 'task.handoff', 'task.list', 'task.update', 'test.report', 'thread.read']);
     assert.equal(list.json.result.tools[0].inputSchema.type, 'object');
     const post = await rpc('tools/call', { name: 'discussion.post', arguments: { threadId, body: 'Taking CK-31.', kind: 'claim' } });
     assert.equal(post.json.result.isError, undefined);
@@ -300,5 +300,26 @@ test('only the seat whose role staffs the team is offered the staffing tools, an
     const hired = await call('staffing.decide', { title: 'A second developer', why: 'Two tasks wait behind the only developer.', change: { kind: 'hire_agent', library: 'gandalf', name: 'Gandalf' } });
     assert.equal(hired.data.state, 'applied');
     assert.equal((await db.selectFrom('agents').select('name').where('id', '=', hired.data.agentIds[0]).executeTakeFirstOrThrow()).name, 'Gandalf');
+  } finally { await coordinator.close(); }
+});
+
+test('what an owner reports becomes the task\'s journal and its next turn starts from it on another worker; a seat\'s notebook goes with every turn of the seat', async () => {
+  const { coordinator, db, call, turns, claimed, agentId, projectId, taskId } = await boot('work');
+  try {
+    await db.updateTable('tasks').set({ state: 'in_progress', assignee_agent_id: agentId, blocked_reason: null }).where('id', '=', taskId).execute();
+    assert.equal((await call('notebook.write', { text: 'Tests here run with `npm test`; the owner wants small commits.' })).error, false);
+    assert.equal((await call('notebook.write', { text: 'x'.repeat(2401) })).error, true, 'a notebook is kept short');
+    const reported = await call('task.update', { state: 'checkpoint', summary: 'The handler is written.', next: 'Write the tests for the retry path.', open: 'Should a 429 be retried?' });
+    assert.equal(reported.error, false);
+    const journal = JSON.parse((await db.selectFrom('tasks').select('journal').where('id', '=', taskId).executeTakeFirstOrThrow()).journal!);
+    assert.deepEqual([journal.standing, journal.next, journal.open, journal.turnId], ['The handler is written.', 'Write the tests for the retry path.', 'Should a 429 be retried?', claimed.turnId]);
+
+    // The turn ends; the owner's next one is queued at once and claimed by a different worker, which has no engine session to resume.
+    await turns.finish(claimed.turnId, 'w1', claimed.leaseToken, { state: 'completed', summary: 'The handler is written.' });
+    const next = (await turns.claim({ workerId: 'another-worker', free: { work: 1, bounded: 1 }, projects: [projectId] }))!;
+    assert.equal(next.taskId, taskId);
+    assert.equal(next.resume, null);
+    assert.match(next.packet.prompt, /# Your journal of this task\n- Where it stands: The handler is written\.\n- What you said comes next: Write the tests for the retry path\.\n- Still open: Should a 429 be retried\?/);
+    assert.match(next.packet.system, /# Your notebook\nTests here run with `npm test`; the owner wants small commits\./);
   } finally { await coordinator.close(); }
 });

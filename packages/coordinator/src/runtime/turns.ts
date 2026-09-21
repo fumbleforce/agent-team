@@ -5,7 +5,7 @@ import { hashToken, newToken, sameSecret } from '../auth/secrets.ts';
 import { HttpError, type Context } from '../context.ts';
 import { createCosts } from '../costs/costs.ts';
 import { buildPacket, type Packet } from './packet.ts';
-import { createSessions, type Resume } from './sessions.ts';
+import { createSessions, STALLED_AFTER, type Resume } from './sessions.ts';
 import { DEFAULT_RULES, type Notice } from './rules.ts';
 import * as scheduler from './scheduler.ts';
 import { accessOf, laneOf, maxWritersOf, WORKER_FRESH_MS, type ClaimDraft, type Snapshot } from './scheduler.ts';
@@ -274,13 +274,14 @@ export function createTurns(context: Context) {
     },
 
     async finish(turnId: string, workerId: string, leaseToken: string, outcome: Outcome) {
-      let reviewTaskId: string | null = null, requeue: { agentId: string; projectId: string; taskId: string } | null = null;
+      let reviewTaskId: string | null = null, requeue: { agentId: string; projectId: string; taskId: string } | null = null, stalledTask: { projectId: string; taskId: string; agentId: string; reason?: string } | null = null;
       const published = await storage.transaction(async tx => {
         const turn = await leased(tx, turnId, workerId, leaseToken);
         if (turn.kind === 'work' && turn.task_id && outcome.state === 'completed' && (await tx.selectFrom('tasks').select('state').where('id', '=', turn.task_id).executeTakeFirst())?.state === 'in_review') reviewTaskId = turn.task_id;
         await tx.updateTable('turns').set({ state: outcome.state, stop_reason: outcome.stopReason ?? null, summary: outcome.summary?.slice(0, 2000) ?? null, tokens_in: outcome.tokensIn ?? 0, tokens_out: outcome.tokensOut ?? 0, cost_minor: outcome.costMinor ?? 0, finished_at: now() }).where('id', '=', turnId).execute();
         // Sessions decide the two continuations that happen on their own: a lost resume and a turn without a report.
         const after = await sessions.afterFinish(tx, turn, outcome);
+        if (after.stalled && turn.task_id) stalledTask = { projectId: turn.project_id, taskId: turn.task_id, agentId: turn.agent_id, reason: String((after.drafts.find(draft => draft.type === 'task.stalled')?.payload as { reason?: string } | undefined)?.reason ?? '') };
         const drafts = [...after.drafts];
         const seat = await tx.selectFrom('agents').select(['provider_id', 'idle_at']).where('id', '=', turn.agent_id).executeTakeFirst();
         const providerId = turn.provider_id ?? seat?.provider_id ?? null;
@@ -340,9 +341,35 @@ export function createTurns(context: Context) {
         return events.append(tx, [...drafts, { type: `turn.${outcome.state}`, actorKind: 'worker', projectId: turn.project_id, agentId: turn.agent_id, taskId: turn.task_id, turnId, payload: { stopReason: outcome.stopReason ?? null } }]);
       });
       events.published(published);
+      // Turn after turn that changed nothing: the PM is told at once, in the task's own thread, rather than the task waiting to be noticed.
+      const stalled = stalledTask as { projectId: string; taskId: string; agentId: string; reason?: string } | null;
+      if (stalled) await this.bringInPm(stalled);
       const again = requeue as { agentId: string; projectId: string; taskId: string } | null;
       if (again) await this.enqueue({ agentId: again.agentId, projectId: again.projectId, kind: 'work', taskId: again.taskId, dedupeKey: `work:${again.taskId}` });
       return { reviewTaskId: reviewTaskId as string | null };
+    },
+
+    // Puts a task its owner is not moving in front of the PM, as a triage turn on the project's discussion with the facts in it.
+    async bringInPm(input: { projectId: string; taskId: string; agentId: string; reason?: string }) {
+      const db = storage.db;
+      const project = await db.selectFrom('projects').select(['id', 'team_id', 'parent_id']).where('id', '=', input.projectId).executeTakeFirst();
+      const root = project?.parent_id ? await db.selectFrom('projects').select(['id', 'team_id']).where('id', '=', project.parent_id).executeTakeFirst() : project;
+      const pm = root?.team_id ? await db.selectFrom('agents').select(['id', 'name']).where('team_id', '=', root.team_id).where('is_pm', '=', true).where('status', '=', 'active').executeTakeFirst() : undefined;
+      const thread = await db.selectFrom('threads').select('id').where('project_id', '=', input.projectId).where('kind', '=', 'discussion').executeTakeFirst();
+      const task = await db.selectFrom('tasks').select(['key', 'title']).where('id', '=', input.taskId).executeTakeFirst();
+      const owner = await db.selectFrom('agents').select('name').where('id', '=', input.agentId).executeTakeFirst();
+      if (!pm || !thread || !task || pm.id === input.agentId) return false;
+      const taken = await db.selectFrom('turns').select(eb => eb.fn.countAll<number>().as('n')).where('task_id', '=', input.taskId).where('agent_id', '=', input.agentId).where('kind', '=', 'work').executeTakeFirstOrThrow();
+      const what = input.reason === 'many-turns' ? `has taken ${Number(taken.n)} turns on ${task.key} (${task.title}) and says there is more to do` : `has taken ${STALLED_AFTER} turns in a row on ${task.key} (${task.title}) without changing anything`;
+      const body = `${owner?.name ?? 'Its owner'} ${what}. ${pm.name}: read the task's journal and thread, then decide: answer what it is stuck on, split the task, give it to someone else with task.assign, tell its owner to carry on, or raise it to the owner.`;
+      const published = await storage.transaction(async tx => {
+        const id = newId(now());
+        await tx.insertInto('messages').values({ id, thread_id: thread.id, author_kind: 'system', author_id: null, kind: 'system', body, payload: JSON.stringify({ stalled: input.taskId }), created_at: now() }).execute();
+        return events.append(tx, [{ type: 'message.posted', actorKind: 'system', projectId: input.projectId, threadId: thread.id, taskId: input.taskId, payload: { messageId: id, kind: 'system' } }]);
+      });
+      events.published(published);
+      await this.enqueue({ agentId: pm.id, projectId: input.projectId, kind: 'triage', threadId: thread.id, dedupeKey: `stalled:${input.taskId}` });
+      return true;
     },
 
     // For worker routes that carry more than a lease body: the caller's transaction, the same validation.

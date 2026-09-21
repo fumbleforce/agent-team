@@ -108,7 +108,7 @@ export function createActions(context: Context, turns: Turns) {
         const owner = input.ownerAgentId ? await teammate(tx, turn.project_id, input.ownerAgentId) : null;
         const same = await tx.selectFrom('tasks').select('key').where('project_id', '=', turn.project_id).where('title', '=', input.title).where('state', 'not in', ['done', 'canceled']).executeTakeFirst();
         if (same) throw refuse('task', `${same.key} already has that title. Update it instead of adding it again.`);
-        const made = await newTask(tx, { projectId: turn.project_id, title: input.title, brief: input.brief, tag: input.tag ?? null, ownerId: owner?.id ?? null, authorAgentId: turn.agent_id, actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, now: now() });
+        const made = await newTask(tx, { projectId: turn.project_id, title: input.title, brief: input.brief, tag: input.tag ?? null, resultKind: input.result ?? 'change', ownerId: owner?.id ?? null, authorAgentId: turn.agent_id, actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, now: now() });
         return { ...made, ownerId: owner?.id ?? null, published: await events.append(tx, made.events) };
       });
       events.published(result.published);

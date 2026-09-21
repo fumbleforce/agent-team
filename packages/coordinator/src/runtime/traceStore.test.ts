@@ -32,6 +32,8 @@ async function boot(options: { traceRetentionDays?: number } = {}) {
     await traceStore.put(leased, claimed.turnId, { seq: 1, kind: 'output', bytes: new Uint8Array(40_000).fill(97), mime: 'text/plain', truncated: false });
     clock += 1000;
     await turns.finish(claimed.turnId, 'w1', claimed.leaseToken, { state: 'completed', summary: 'Done.', tokensIn: 10, tokensOut: 5, costMinor: 3 });
+    // This test is about one turn per task; the turn its owner would carry on with is not wanted here.
+    await db.updateTable('work_items').set({ state: 'done' }).where('task_id', '=', taskId).where('state', '=', 'queued').execute();
     const key = (await db.selectFrom('step_artifacts').select('storage_key').where('turn_id', '=', claimed.turnId).where('seq', '=', 1).executeTakeFirstOrThrow()).storage_key!;
     return { turnId: claimed.turnId, file: path.join(context.dataDir, 'artifacts', ...key.split('/')) };
   };

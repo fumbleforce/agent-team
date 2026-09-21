@@ -1,0 +1,22 @@
+{
+  "at": "2026-09-21T14:22:35.293Z",
+  "arm": "solo",
+  "engine": "claude",
+  "model": null,
+  "results": [
+    {
+      "task": "iso-week-wrong-example",
+      "arm": "solo",
+      "engine": "claude",
+      "model": null,
+      "score": 1,
+      "notes": [],
+      "state": "in_review",
+      "turns": 1,
+      "costUsd": 0.52,
+      "tokens": 148059,
+      "ms": 52643,
+      "questioned": true
+    }
+  ]
+}

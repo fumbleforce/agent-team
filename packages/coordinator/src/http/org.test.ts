@@ -261,7 +261,7 @@ test('team templates: save the team, export, import, create a team from one; hir
     // Import is a save of the exported document under a slug.
     assert.equal((await call('/api/templates/imported', { cookie, body: { doc: exported.json.doc, note: 'imported' } })).json.version, 1);
     assert.equal((await call('/api/templates/imported', { cookie, body: { doc: { name: 'Broken', seats: [] } } })).status, 400);
-    assert.deepEqual((await call('/api/templates', { cookie })).json.items.map((item: any) => item.slug), ['imported', 'research-desk', 'shop-team', 'the-originals'], 'the two shipped teams sit beside what people saved');
+    assert.deepEqual((await call('/api/templates', { cookie })).json.items.map((item: any) => item.slug), ['imported', 'marketing-desk', 'research-desk', 'shop-team', 'the-originals'], 'the shipped teams sit beside what people saved');
 
     // A project that has a team refuses a second one but can take the seats on top.
     assert.equal((await call('/api/projects/site/team/from-template', { cookie, body: { template: 'imported' } })).status, 409);

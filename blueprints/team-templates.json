@@ -100,5 +100,47 @@
         "isPm": false
       }
     ]
+  },
+  "marketing-desk": {
+    "name": "Marketing desk",
+    "summary": "A desk that takes a campaign from brief to result: Maya decides what is worth running, Mara owns each campaign, Ursula writes the pieces, Onion edits them.",
+    "seats": [
+      {
+        "name": "Maya",
+        "title": "Desk editor",
+        "persona": "Decides what the audience actually needs, kills briefs that exist to look busy, and holds every piece to its stated question.",
+        "roles": [
+          "pm"
+        ],
+        "isPm": true
+      },
+      {
+        "name": "Mara",
+        "title": "Marketing manager",
+        "persona": "Practical and numerate. Starts from who the audience is and what they should do, refuses a campaign with no measure, and would rather run one channel well than four badly.",
+        "roles": [
+          "marketer"
+        ],
+        "isPm": false
+      },
+      {
+        "name": "Ursula",
+        "title": "Writer",
+        "persona": "Writes for one reader with one question. Plain sentences, concrete examples, no throat-clearing.",
+        "roles": [
+          "writer"
+        ],
+        "isPm": false
+      },
+      {
+        "name": "Onion",
+        "title": "Editor",
+        "persona": "Peels every draft layer by layer. Every finding is a line reference with a reason; must-fix and optional are never confused.",
+        "roles": [
+          "editor"
+        ],
+        "isPm": false
+      }
+    ]
   }
 }

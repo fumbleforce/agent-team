@@ -10,7 +10,9 @@ const Recorded = z.object({ recorded: z.literal(true) });
 
 // One idea for the backlog, in the shape the owner reads it in the tracker.
 export const IdeaProposal = z.object({ title: z.string().trim().min(1).max(160), problem: z.string().trim().min(1).max(800), benefit: z.string().trim().min(1).max(600), scope: z.string().trim().min(1).max(1200),
-  successCriteria: z.array(z.string().trim().min(1).max(400)).min(1).max(6), effort: z.enum(['S', 'M', 'L']), evidence: z.array(z.string().trim().min(1).max(400)).min(1).max(6), whyNow: z.string().trim().min(1).max(600) });
+  successCriteria: z.array(z.string().trim().min(1).max(400)).min(1).max(6), effort: z.enum(['S', 'M', 'L']), evidence: z.array(z.string().trim().min(1).max(400)).min(1).max(6), whyNow: z.string().trim().min(1).max(600),
+  // The figure of the scorecard this should move, and which way: what the team looks at afterwards to say whether the idea was worth it.
+  measure: z.object({ figure: z.string().regex(/^[A-Z]\d{1,2}$/), expect: z.enum(['up', 'down']) }).optional() });
 export type IdeaProposal = z.infer<typeof IdeaProposal>;
 
 // Who a mention is for, and whether it asks for the one reply it may get or only informs.
@@ -57,10 +59,22 @@ export const TOOLS = {
     permission: null, turnKinds: ALL, mutating: false, rateClass: 'read',
   }),
   'task.update': tool({
-    description: 'Report on the task of this turn. A summary is required; it is what a later turn resumes from. not_needed closes the task: use it only when the base branch already contains what the task was for, and say where in the summary.',
-    input: z.object({ state: z.enum(['checkpoint', 'ready_for_review', 'blocked', 'not_needed']), summary: Words(120), blockedReason: z.string().max(200).optional() }),
+    description: 'Report on the task of this turn. A summary is required; it is what a later turn resumes from. When the result of the task is a document, ready_for_review takes `document`: the path of the knowledge page you wrote, which is then reviewed as it reads at that moment. With checkpoint, say in `next` what you will do in your next turn, which then starts at once, and in `open` what is still undecided: together they are the task\'s journal, the only thing your next turn is sure to have. not_needed closes the task: use it only when the base branch already contains what the task was for, and say where in the summary.',
+    input: z.object({ state: z.enum(['checkpoint', 'ready_for_review', 'blocked', 'not_needed']), summary: Words(120), blockedReason: z.string().max(200).optional(), next: z.string().max(600).optional(), open: z.string().max(600).optional(), document: z.string().min(4).max(200).optional() }),
     output: z.object({ state: z.string() }),
     permission: null, turnKinds: ['work'], mutating: true, rateClass: 'write',
+  }),
+  'document.review': tool({
+    description: 'Record your verdict on the document under review, as it reads in your packet. pass means you would stand behind it going out as it is; changes means it must change first, and each finding says what and why. Judge whether it does what the task is for.',
+    input: z.object({ verdict: z.enum(['pass', 'changes']), summary: Words(80), findings: z.array(z.object({ severity: z.enum(['must', 'should']), note: z.string().min(1).max(400) })).max(8).default([]) }),
+    output: z.object({ recorded: z.boolean(), state: z.string() }),
+    permission: null, turnKinds: ['review'], mutating: true, rateClass: 'once',
+  }),
+  'notebook.write': tool({
+    description: 'Replace your notebook: what you, in this seat, have learned that your later turns on any task should know (how this project is built and tested, what the owner cares about, mistakes not to repeat). It is given to every turn of yours, so keep it short and current: rewrite it, do not append to it. Not for the state of a task; that goes in task.update.',
+    input: z.object({ text: z.string().max(2400) }),
+    output: z.object({ saved: z.boolean() }),
+    permission: null, turnKinds: ['work', 'review', 'feedback', 'revise', 'conclude', 'triage', 'reply', 'retro', 'ideate'], mutating: true, rateClass: 'few',
   }),
   'knowledge.search': tool({
     description: 'Search the knowledge pages, memories, discussion messages and issues of this project before asking a teammate or guessing. Every word must match; a word matches from its start. A message or issue hit carries its thread in `ref`.',
@@ -123,7 +137,7 @@ export const TOOLS = {
     permission: null, turnKinds: ['review'], mutating: true, rateClass: 'once',
   }),
   'deliberation.propose': tool({
-    description: 'Ask the team to weigh in on a decision you cannot make alone. Think it through first; you get one block of feedback per reviewer and at most one revision. With urgency blocking, end your turn afterwards.',
+    description: 'Ask colleagues to weigh in. With decides "me" it is advice on your own work: up to two colleagues each give one block of feedback without seeing the other\'s, it reaches you in your next turn, and the decision stays yours; use it as a senior colleague would, when a second view is worth a few minutes, not for what you can settle yourself. With decides "team" (the default) it is a decision you cannot make alone: the project manager decides after feedback and at most one revision. With urgency blocking, end your turn afterwards.',
     input: Proposal.extend({ threadId: z.string() }),
     output: z.object({ deliberationId: z.string(), reviewers: z.array(z.string()), endTurn: z.boolean() }),
     permission: null, turnKinds: ['work', 'triage'], mutating: true, rateClass: 'once',
@@ -170,8 +184,14 @@ export const TOOLS = {
     output: z.object({ messageId: z.string() }),
     permission: null, turnKinds: ['retro'], mutating: true, rateClass: 'once',
   }),
+  'duty.set': tool({
+    description: 'PM only. Give a teammate a standing duty: something that comes round (every morning, every Monday) and that they own without being asked, such as watching the checks, reading what users reported, or reviewing a campaign\'s figures. Each time it comes round it opens a task for them, unless the last one is still open. Say what done looks like each time in the brief. everyHours 0 ends the duty.',
+    input: z.object({ title: z.string().trim().min(3).max(120), brief: z.string().trim().min(1).max(2000), ownerAgentId: z.string(), everyHours: z.number().int().min(0).max(24 * 31), result: z.enum(['change', 'document']).default('document') }),
+    output: z.object({ dutyId: z.string().nullable(), state: z.string() }),
+    permission: null, turnKinds: ['triage', 'reply', 'conclude', 'retro'], mutating: true, rateClass: 'few',
+  }),
   'ideas.propose': tool({
-    description: 'Your ideas for what the team should build next, once per ideation turn. Each becomes an issue in the tracker that waits for the owner: nothing is built before the owner approves it.',
+    description: 'Your ideas for what the team should build next, once per ideation turn. Each becomes an issue in the tracker that waits for the owner: nothing is built before the owner approves it. Ground each in what you observed (a failing check, a figure of the scorecard, a report from a user), and where a figure of the scorecard should move, name it in `measure`: that is how the team says afterwards whether the idea was worth it.',
     input: z.object({ proposals: z.array(IdeaProposal).min(1).max(10) }),
     output: z.object({ recorded: z.number().int() }),
     permission: null, turnKinds: ['ideate'], mutating: true, rateClass: 'rare',
@@ -183,8 +203,8 @@ export const TOOLS = {
     permission: null, turnKinds: ['reply'], mutating: true, rateClass: 'once',
   }),
   'task.create': tool({
-    description: 'PM only. Put a new task on the board: a title, a brief that says what done looks like, and optionally the teammate who takes it (they are started on it at once; without one it waits in the backlog). One call per task. Check task.list first so nothing is added twice.',
-    input: z.object({ title: z.string().trim().min(3).max(140), brief: z.string().trim().min(1).max(4000), ownerAgentId: z.string().optional(), tag: z.string().trim().max(40).optional() }),
+    description: 'PM only. Put a new task on the board: a title, a brief that says what done looks like, and optionally the teammate who takes it (they are started on it at once; without one it waits in the backlog). Say `result: "document"` when what is wanted is a piece of writing (a brief, a plan, a report) rather than a change to the repository: it is then written as a knowledge page, reviewed as it reads, and done when accepted, with no branch or merge. One call per task. Check task.list first so nothing is added twice.',
+    input: z.object({ title: z.string().trim().min(3).max(140), brief: z.string().trim().min(1).max(4000), ownerAgentId: z.string().optional(), tag: z.string().trim().max(40).optional(), result: z.enum(['change', 'document']).default('change') }),
     output: z.object({ taskId: z.string(), key: z.string(), state: z.string() }),
     permission: null, turnKinds: ['triage', 'reply', 'conclude', 'retro'], mutating: true, rateClass: 'few',
   }),

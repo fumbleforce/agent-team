@@ -5,6 +5,7 @@ import { createStorage } from '@agent-team/storage';
 import { createContext } from '../context.ts';
 import { seedDemo } from '../demo/seed.ts';
 import { createDeliberation } from './deliberation.ts';
+import { buildPacket } from './packet.ts';
 import { createTurns } from './turns.ts';
 
 async function boot() {
@@ -95,4 +96,51 @@ test('escalation lands with the owner instead of releasing the task', async () =
   assert.equal((await db.selectFrom('decisions').select('needs_human').where('deliberation_id', '=', opened.deliberationId).executeTakeFirstOrThrow()).needs_human, true);
   assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'awaiting_decision');
   await storage.close();
+});
+
+test('advice: the owner asks two colleagues at most, nobody else spends a turn, and the feedback reaches the owner\'s next work turn for it to decide', async () => {
+  const { storage, db, deliberation, threadId, taskId, agents, turn, queued } = await boot();
+  try {
+    await db.updateTable('tasks').set({ state: 'in_progress', assignee_agent_id: agents.Bram!, blocked_reason: null }).where('id', '=', taskId).execute();
+    const asked = await deliberation.propose(turn('Bram'), threadId, { ...proposal, decides: 'me', reviewers: ['Cleo', 'Maren'] });
+    // Two advisers, and the PM may be one of them: nobody is held back as the decider, because the asker decides.
+    assert.deepEqual([...asked.reviewers].sort(), [agents.Cleo, agents.Maren].sort());
+    const row = await db.selectFrom('deliberations').select(['kind', 'decider_agent_id', 'feedback_deadline', 'created_at']).where('id', '=', asked.deliberationId).executeTakeFirstOrThrow();
+    assert.deepEqual([row.kind, row.decider_agent_id, Number(row.feedback_deadline) - Number(row.created_at)], ['advice', agents.Bram, 5 * 60_000]);
+    assert.deepEqual(await queued(), ['Cleo:feedback', 'Maren:feedback']);
+
+    await deliberation.feedback(turn('Cleo'), asked.deliberationId, block('against', { conditions: ['Re-enable after 8 s with a message.'] }));
+    await deliberation.feedback(turn('Maren'), asked.deliberationId, block('for'));
+    // Against, with a condition: a team decision would go to revision and then to the PM. Advice is simply done.
+    assert.equal((await db.selectFrom('deliberations').select('state').where('id', '=', asked.deliberationId).executeTakeFirstOrThrow()).state, 'decided');
+    assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'in_progress');
+    const after = (await queued()).filter(item => !item.endsWith(':feedback'));
+    assert.deepEqual(after, ['Bram:work'], 'no revise turn, no conclude turn: only the owner carries on');
+    assert.equal((await db.selectFrom('decisions').select('id').where('deliberation_id', '=', asked.deliberationId).execute()).length, 0, 'nothing was decided for the owner');
+
+    const packet = await storage.transaction(tx => buildPacket(tx, { kind: 'work', agentId: agents.Bram!, projectId: (turn('Bram')).project_id, taskId, threadId: null }));
+    assert.match(packet.prompt, /# The advice you asked for: Disable the pay button on tap\?\nYou asked, so you decide\./);
+    assert.match(packet.prompt, /## Cleo \([^)]+\), against\n[\s\S]*Re-enable after 8 s with a message\./);
+    assert.match(packet.prompt, /## Maren \([^)]+\), for/);
+    // A reviewer of the task does not get the owner's advice or journal.
+    const reviewer = await storage.transaction(tx => buildPacket(tx, { kind: 'review', agentId: agents.Cleo!, projectId: (turn('Bram')).project_id, taskId, threadId: null }));
+    assert.doesNotMatch(reviewer.prompt, /The advice you asked for/);
+  } finally { await storage.close(); }
+});
+
+test('advice is asked on a task of one\'s own, and an adviser who stays silent is said to have been', async () => {
+  const { storage, db, deliberation, threadId, taskId, agents, turn, tick } = await boot();
+  try {
+    await assert.rejects(deliberation.propose({ ...turn('Bram'), task_id: null }, threadId, { ...proposal, decides: 'me' }), /task of your own/);
+    await db.updateTable('tasks').set({ state: 'in_progress', assignee_agent_id: agents.Bram! }).where('id', '=', taskId).execute();
+    const asked = await deliberation.propose(turn('Bram'), threadId, { ...proposal, decides: 'me', reviewers: ['Cleo'] });
+    await deliberation.feedback(turn(Object.keys(agents).find(name => agents[name] === asked.reviewers[0])!), asked.deliberationId, block('for'));
+    tick(5 * 60_000 + 1);
+    await deliberation.sweep();
+    tick(5 * 60_000);
+    await deliberation.sweep();
+    assert.equal((await db.selectFrom('deliberations').select('state').where('id', '=', asked.deliberationId).executeTakeFirstOrThrow()).state, 'decided');
+    const packet = await storage.transaction(tx => buildPacket(tx, { kind: 'work', agentId: agents.Bram!, projectId: turn('Bram').project_id, taskId, threadId: null }));
+    assert.match(packet.prompt, /did not answer in time/);
+  } finally { await storage.close(); }
 });

@@ -1,3 +1,5 @@
+import { createDuties } from '../runtime/duties.ts';
+import { createDocuments } from '../runtime/documents.ts';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { isToolName, MAX_TOOL_CALLS_PER_TURN, PermissionGrant, permits, RATE_LIMITS, TOOLS, type ToolInput, type ToolName, type ToolOutput, type TurnKind } from '@agent-team/protocol';
@@ -41,6 +43,8 @@ export function createMcp(context: Context, deps: McpDeps) {
   const proposals = createProposals(context, turns);
   const costs = createCosts(context);
   const actions = createActions(context, turns);
+  const documents = createDocuments(context, turns);
+  const duties = createDuties(context, turns);
 
   async function authenticate(header: string | undefined): Promise<Turn | null> {
     const match = /^Bearer (turn\.([0-9a-f-]{36})\.[\w-]+)$/.exec(header ?? '');
@@ -121,9 +125,14 @@ export function createMcp(context: Context, deps: McpDeps) {
     },
     'task.update': async (turn, input) => {
       if (!turn.task_id) throw new ToolError('This turn has no task');
-      const state = input.state === 'ready_for_review' ? 'in_review' : input.state === 'blocked' ? 'blocked' : input.state === 'not_needed' ? 'canceled' : 'in_progress';
+      const kind = (await db.selectFrom('tasks').select('result_kind').where('id', '=', turn.task_id).executeTakeFirst())?.result_kind;
+      if (kind === 'document' && input.state === 'ready_for_review' && !input.document) throw new ToolError('The result of this task is a document: write it with knowledge.write, then pass its path as `document`.');
+      if (kind !== 'document' && input.document) throw new ToolError('This task ends in a change, not a document; leave `document` out.');
+      const state = input.state === 'ready_for_review' ? (input.document ? 'in_progress' : 'in_review') : input.state === 'blocked' ? 'blocked' : input.state === 'not_needed' ? 'canceled' : 'in_progress';
       const published = await storage.transaction(async tx => {
-        await tx.updateTable('tasks').set({ state, blocked_reason: input.state === 'blocked' ? (input.blockedReason ?? 'blocked') : null, updated_at: now() }).where('id', '=', turn.task_id!).execute();
+        // The journal is the owner's own record of where the task stands; the next turn starts from it on whatever worker runs it.
+        const journal = JSON.stringify({ standing: input.summary, next: input.next ?? null, open: input.open ?? null, turnId: turn.id, at: now() });
+        await tx.updateTable('tasks').set({ state, journal, blocked_reason: input.state === 'blocked' ? (input.blockedReason ?? 'blocked') : null, updated_at: now() }).where('id', '=', turn.task_id!).execute();
         await tx.updateTable('turns').set({ summary: input.summary }).where('id', '=', turn.id).execute();
         // Closed as not needed: nothing of it waits to be merged, and the report it came from is closed with it.
         if (state === 'canceled') {
@@ -134,7 +143,14 @@ export function createMcp(context: Context, deps: McpDeps) {
         return events.append(tx, [{ type: 'task.state_changed', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, taskId: turn.task_id, turnId: turn.id, payload: { to: state, summary: input.summary } }]);
       });
       events.published(published);
+      // A task that ends in a document hands in the page it wrote; from here it is reviewed at that revision.
+      if (input.state === 'ready_for_review' && input.document) return { state: (await documents.submit(turn, input.document)).state };
       return { state };
+    },
+    'document.review': async (turn, input) => documents.review(turn, input),
+    'notebook.write': async (turn, input) => {
+      await db.updateTable('agents').set({ notebook: input.text.trim() || null }).where('id', '=', turn.agent_id).execute();
+      return { saved: true };
     },
     'knowledge.search': async (turn, input) => knowledge.search(await scopesOf(turn), input.query, 10, { countHits: true }),
     'knowledge.read': async (turn, input) => {
@@ -161,6 +177,11 @@ export function createMcp(context: Context, deps: McpDeps) {
     'deliberation.revise': async (turn, input) => { await deliberation.revise(turn, input.deliberationId, input.revision); return RECORDED; },
     'deliberation.conclude': async (turn, input) => { await deliberation.conclude(turn, input.deliberationId, input.conclusion); return RECORDED; },
     'task.create': (turn, input) => actions.createTask(turn, input),
+    'duty.set': async (turn, input) => {
+      const me = await db.selectFrom('agents').select('is_pm').where('id', '=', turn.agent_id).executeTakeFirstOrThrow();
+      if (!me.is_pm) throw new ToolError('Only the PM gives out standing duties.');
+      return duties.set(turn.project_id, input);
+    },
     'desk.handover': async (turn, input) => { await threadInProject(turn, input.threadId); return actions.handover(turn, input); },
     'triage.decide': async (turn, input) => { await threadInProject(turn, input.threadId); return actions.triage(turn, input); },
     'retro.submit': async (turn, input) => {

@@ -9,12 +9,12 @@ export async function teamIdOf(tx: Tx, projectId: string): Promise<string | null
 }
 
 // A task that starts on the platform rather than in a tracker or an issue. Its key counts up within the project.
-export async function newTask(tx: Tx, input: { projectId: string; title: string; brief: string; tag?: string | null; ownerId: string | null; authorAgentId: string | null; actor: Pick<EventDraft, 'actorKind' | 'agentId' | 'userId' | 'turnId'>; now: number }): Promise<{ taskId: string; key: string; events: EventDraft[] }> {
+export async function newTask(tx: Tx, input: { projectId: string; title: string; brief: string; tag?: string | null; resultKind?: 'change' | 'document'; ownerId: string | null; authorAgentId: string | null; actor: Pick<EventDraft, 'actorKind' | 'agentId' | 'userId' | 'turnId'>; now: number }): Promise<{ taskId: string; key: string; events: EventDraft[] }> {
   const taskId = newId(input.now);
   const made = await tx.selectFrom('tasks').select(eb => eb.fn.countAll<number>().as('n')).where('project_id', '=', input.projectId).where('key', 'like', 'TASK-%').executeTakeFirstOrThrow();
   const lowest = await tx.selectFrom('tasks').select(eb => eb.fn.max('priority').as('n')).where('project_id', '=', input.projectId).executeTakeFirst();
   const key = `TASK-${Number(made.n) + 1}`;
-  await tx.insertInto('tasks').values({ id: taskId, project_id: input.projectId, key, source: 'internal', title: input.title, brief: input.brief, tag: input.tag ?? null, priority: Number(lowest?.n ?? -1) + 1, milestone_id: null, state: input.ownerId ? 'assigned' : 'backlog', assignee_agent_id: input.ownerId, author_agent_id: input.authorAgentId, branch: null, head_sha: null, pr_url: null, blocked_reason: null, created_at: input.now, updated_at: input.now }).execute();
+  await tx.insertInto('tasks').values({ id: taskId, project_id: input.projectId, key, source: 'internal', title: input.title, brief: input.brief, tag: input.tag ?? null, priority: Number(lowest?.n ?? -1) + 1, milestone_id: null, state: input.ownerId ? 'assigned' : 'backlog', assignee_agent_id: input.ownerId, author_agent_id: input.authorAgentId, branch: null, head_sha: null, pr_url: null, blocked_reason: null, result_kind: input.resultKind ?? 'change', created_at: input.now, updated_at: input.now }).execute();
   return { taskId, key, events: [{ ...input.actor, type: input.ownerId ? 'task.assigned' : 'task.created', ...(input.ownerId ? { agentId: input.ownerId } : {}), projectId: input.projectId, taskId, payload: { key, title: input.title } }] };
 }
 

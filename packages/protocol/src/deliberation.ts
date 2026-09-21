@@ -11,7 +11,13 @@ export const Proposal = z.object({
   rationale: z.string().max(1600).optional(),
   reviewers: z.array(z.string()).max(3).default([]),
   urgency: z.enum(['blocking', 'normal']).default('normal'),
+  // Who decides once feedback is in. `team`: the project manager does, and may escalate. `me`: the owner of the work asks for
+  // advice and decides; the feedback arrives in its next work turn and nobody else spends a turn on it.
+  decides: z.enum(['team', 'me']).default('team'),
 });
+// Advice is asked of few and answered fast: it must be cheaper than getting it wrong.
+export const MAX_ADVISERS = 2;
+export const ADVICE_WINDOW_MS = 5 * 60_000;
 export type Proposal = z.infer<typeof Proposal>;
 
 // One block per reviewer: a stance and a few points, never a conversation.

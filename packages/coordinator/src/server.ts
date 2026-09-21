@@ -1,3 +1,6 @@
+import { createDuties } from './runtime/duties.ts';
+import { createTrials } from './runtime/trials.ts';
+import { isOpenWeight, modelFamily } from '../../../adapters/engine/providers.ts';
 import { existsSync } from 'node:fs';
 import { createIssues } from './repos/issues.ts';
 import path from 'node:path';
@@ -68,7 +71,11 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   // Lease expiry and feedback windows are time-driven; everything else reacts to requests.
   const turns = createTurns(context), deliberation = createDeliberation(context, turns), retro = createRetro(context, turns), traceStore = createTraceStore(context), checkWake = createCheckWake(context, turns);
   const memory = createKnowledge(context);
-  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).then(() => checkWake.sweep()).then(() => memory.sweepStale()).catch(error => console.error(error)); }, 15_000);
+  // Changes the team made to how it works are judged when their trial ends.
+  const trials = createTrials(context, { openWeight: isOpenWeight, modelFamily });
+  // Standing duties open their task when they come round.
+  const duties = createDuties(context, turns);
+  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).then(() => checkWake.sweep()).then(() => memory.sweepStale()).then(() => trials.sweep()).then(() => duties.sweep()).catch(error => console.error(error)); }, 15_000);
   timer.unref();
 
   const sync = createTrackerSync(context, turns), trackers = config.trackers === undefined ? adapterTrackers : config.trackers;

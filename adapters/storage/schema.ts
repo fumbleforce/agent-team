@@ -18,14 +18,14 @@ export interface ProjectsTable { id: string; slug: string; name: string; kind: s
 export interface MilestonesTable { id: string; project_id: string; label: string; due_at: Ms | null; state: string }
 
 export interface TeamsTable { id: string; scope: string; project_id: string | null; name: string; template_slug: string | null; template_version: number | null; default_provider_id: Generated<string | null>; default_model: Generated<string | null>; default_effort: Generated<string | null> }
-export interface AgentsTable { id: string; team_id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; provider_id: string | null; model: string | null; daily_cap_minor: number | null; is_pm: boolean; doing: string | null; sort: number; created_at: Ms; idle_at: Ms | null; fallback_noticed_day: string | null; effort: Generated<string | null> }
+export interface AgentsTable { id: string; team_id: string; name: string; initials: string; tint: string; title: string; persona: string; status: string; provider_id: string | null; model: string | null; daily_cap_minor: number | null; is_pm: boolean; doing: string | null; sort: number; created_at: Ms; idle_at: Ms | null; fallback_noticed_day: string | null; effort: Generated<string | null>; notebook: Generated<string | null> }
 export interface AgentRolesTable { agent_id: string; role_slug: string }
 export interface ProvidersTable { id: string; name: string; kind: string; engine: string; billing: string; engine_config: Json; models: Json; limits: Json; status: string; status_detail: string | null; limited_until: Ms | null }
 
 export interface VersionedDocsTable { kind: string; slug: string; scope_type: string; scope_id: string; version: number; doc: Json; author: string; updated_at: Ms }
 export interface VersionedDocHistoryTable { id: Generated<number>; kind: string; slug: string; scope_type: string; scope_id: string; version: number; doc: Json; author: string; note: string | null; created_at: Ms }
 
-export interface TasksTable { id: string; project_id: string; key: string; source: string; title: string; brief: string; tag: string | null; priority: number; milestone_id: string | null; state: string; assignee_agent_id: string | null; author_agent_id: string | null; branch: string | null; head_sha: string | null; pr_url: string | null; blocked_reason: string | null; created_at: Ms; updated_at: Ms }
+export interface TasksTable { id: string; project_id: string; key: string; source: string; title: string; brief: string; tag: string | null; priority: number; milestone_id: string | null; state: string; assignee_agent_id: string | null; author_agent_id: string | null; branch: string | null; head_sha: string | null; pr_url: string | null; blocked_reason: string | null; created_at: Ms; updated_at: Ms; journal: Generated<string | null>; result_kind: Generated<string>; result_ref: Generated<string | null> }
 
 export interface ThreadsTable { id: string; project_id: string | null; kind: string; subject_type: string | null; subject_id: string | null; title: string; visibility: string; owner_user_id: string | null; created_at: Ms }
 export interface MessagesTable { id: string; thread_id: string; seq: Generated<number>; author_kind: string; author_id: string | null; kind: string; body: string; payload: Json; created_at: Ms }
@@ -87,7 +87,9 @@ export interface ChecksSchema { check_runs: CheckRunsTable; check_cases: CheckCa
 export interface ProposalsTable { id: string; project_id: string; category: string; title: string; why: string; what_changes: string; change: Json; evidence: Json; proposer_agent_id: string; state: string; resolved_by_user: string | null; resolution_note: string | null; created_at: Ms; resolved_at: Ms | null }
 export interface ProposalVotesTable { proposal_id: string; agent_id: string; stance: string; note: string }
 
-export interface ProposalsSchema { proposals: ProposalsTable; proposal_votes: ProposalVotesTable }
+export interface TrialsTable { id: string; project_id: string; proposal_id: string | null; kind: string; target: string; before: string; after: string; measure: string; expect: string; baseline: number | null; started_at: Ms; ends_at: Ms; state: string; result: number | null; verdict: string | null; judged_at: Ms | null }
+export interface DutiesTable { id: string; project_id: string; agent_id: string; title: string; brief: string; result_kind: Generated<string>; every_ms: Ms; next_at: Ms; last_task_id: string | null; active: Generated<boolean>; created_at: Ms }
+export interface ProposalsSchema { proposals: ProposalsTable; proposal_votes: ProposalVotesTable; trials: TrialsTable; duties: DutiesTable }
 
 export interface IssuesTable { id: string; project_id: string; number: number; title: string; body: string; state: string; priority: string; source: string; owner_agent_id: string | null; author_user_id: string | null; thread_id: string; attachment_id: string | null; created_at: Ms; closed_at: Ms | null }
 

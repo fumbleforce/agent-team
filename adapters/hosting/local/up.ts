@@ -48,6 +48,33 @@ export function writeLocalConfigs(options: LocalOptions) {
   };
 }
 
+// What `up` has set up on this machine, one entry per project folder it was run for.
+export interface LocalProject { slug: string; coordinator: string; url: string | null; machineToken: string | null }
+export function localProjects(env: NodeJS.ProcessEnv = process.env): LocalProject[] {
+  const home = path.join(configDir(env), 'local');
+  if (!existsSync(home)) return [];
+  return readdirSync(home).filter(slug => existsSync(path.join(home, slug, 'coordinator.json'))).map(slug => {
+    const envFile = path.join(home, slug, 'service.env');
+    const service = existsSync(envFile) ? readFileSync(envFile, 'utf8') : '';
+    return { slug, coordinator: path.join(home, slug, 'coordinator.json'), url: /^AGENT_TEAM_URL=(.+)$/m.exec(service)?.[1] ?? null, machineToken: /^AGENT_TEAM_TOKEN=(.+)$/m.exec(service)?.[1] ?? null };
+  });
+}
+
+// The project a command means when it was not told: the one `up` ran for in this folder, else the only one, else the one picked.
+export async function chooseLocal(folder: string, ask: ((question: string, options?: { fallback?: string }) => Promise<string>) | null, env: NodeJS.ProcessEnv = process.env): Promise<LocalProject | null> {
+  const projects = localProjects(env);
+  const here = projects.find(project => project.slug === slugFor(folder));
+  if (here || projects.length <= 1 || !ask) return here ?? (projects.length === 1 ? projects[0]! : null);
+  const picked = await ask(`Which project? (${projects.map(project => project.slug).join(', ')})`, { fallback: projects[0]!.slug });
+  return projects.find(project => project.slug === picked) ?? null;
+}
+
+export function slugFor(checkout: string): string {
+  let manifest: { queueProjectId?: string } = {};
+  try { manifest = JSON.parse(readFileSync(path.join(checkout, '.agent-team.json'), 'utf8')) as { queueProjectId?: string }; } catch { /* a folder without a manifest goes by its name */ }
+  return (manifest.queueProjectId ?? path.basename(checkout)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
+}
+
 // Two processes on one port. If either exits, the other is stopped.
 export function startLocal(configs: ReturnType<typeof writeLocalConfigs>, env: NodeJS.ProcessEnv = process.env) {
   const children: ChildProcess[] = [];

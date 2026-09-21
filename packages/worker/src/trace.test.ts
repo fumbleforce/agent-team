@@ -148,7 +148,8 @@ test('a missing session is requeued once in packet mode and the task carries on'
     const turns = await db.selectFrom('turns').select(['state', 'stop_reason', 'context_mode']).orderBy('started_at').execute();
     assert.deepEqual(turns.map(turn => [turn.state, turn.stop_reason, turn.context_mode]), [['completed', 'completed', 'packet'], ['failed', 'resume-missing', 'resume'], ['completed', 'completed', 'packet']]);
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'in_progress');
-    assert.equal(await worker.tick(), false);
+    // Still in progress, so exactly one next turn of its owner waits to be claimed: the lost session was requeued once and no more.
+    assert.equal((await db.selectFrom('work_items').select('id').where('task_id', '=', taskId).where('kind', '=', 'work').where('state', '=', 'queued').execute()).length, 1);
   } finally { await coordinator.close(); }
 });
 
