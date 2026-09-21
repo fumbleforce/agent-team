@@ -26,6 +26,123 @@ You can also create a project in the app (the button under the project list) and
 
 `up` starts the coordinator and one worker on this machine, registers the checkout as a project with the default team, and prints a one-time link for creating the owner account. Everything is served from `http://127.0.0.1:4310`.
 
+### Using it from another repository on this machine
+
+The package is not published, so until it is, link this checkout instead of installing it. Once, in this checkout:
+
+```sh
+npm ci
+npm run build:web
+npm link               # puts `agent-team` on your PATH, pointing at this checkout
+```
+
+Then in any other repository:
+
+```sh
+cd /path/to/other-repo
+agent-team up          # the current folder is the checkout; add --engine or --port as needed
+```
+
+If you would rather have it as a dependency of that repository than as a global command, link it there as well and run it through `npx`:
+
+```sh
+cd /path/to/other-repo
+npm link @fumbleforce/agent-team
+npx --no-install agent-team up
+```
+
+`--no-install` matters: without the link in place, a bare `npx agent-team` downloads and runs an unrelated package of that name from the public registry.
+
+Things to know:
+
+- A link runs the sources in this checkout as they are, so a `git pull` or an edit here takes effect the next time `agent-team` starts. `up` rebuilds the web app by itself when its sources are newer than the build.
+- `npm link @fumbleforce/agent-team` does not touch the other repository's `package.json`, and a later `npm install` or `npm ci` there removes the link; run it again afterwards.
+- With nvm, global links belong to one Node version. If `npm link @fumbleforce/agent-team` answers `404 Not Found`, or `agent-team` is not found, the shell is on a different Node version than the one `npm link` ran under: check with `node -v`, then either switch (`nvm use 24`, or `nvm alias default 24` to make it the default for new shells) or run `npm link` in this checkout under that version too. Linking by path works from any version: `npm link /path/to/agent-team`.
+- Each checkout keeps its own database and settings under `~/.config/agent-team/local/<folder name>`, so two repositories do not share anything. To run two at once, give the second its own port: `agent-team up --port 4311`.
+- To remove the link: `npm unlink -g @fumbleforce/agent-team`.
+
+## Command line
+
+`agent-team` below is `node bin/agent-team.ts` in this checkout, or the linked command from the section above. `agent-team --help` prints the list.
+
+| Command | What it does |
+| --- | --- |
+| `up [checkout] [--engine NAME] [--port N]` | Starts the coordinator and one worker on this machine for a checkout (default: the current folder) and registers it as a project. The engine defaults to the manifest's, then `claude`; the port to 4310. State lives in `~/.config/agent-team/local/<folder name>`. Ctrl+C stops both; a second Ctrl+C ends them without waiting for a running turn. |
+| `connect <link> [checkout] [--engine NAME]` | Pairs this machine with a project made in the app, using the single-use link from its Get started page, then works for it. The machine's token is stored under `~/.config/agent-team/workers/<project>`, never typed. |
+| `work [checkout]` | Works again for the project this checkout was connected to. |
+| `demo` | Serves a sample organization on an in-memory database with a fake engine. Nothing is kept. |
+| `setup-link [--url URL]` | Prints a one-time link for creating the owner account on a coordinator that has none (default `http://127.0.0.1:4310`). Needs the machine token in `AGENT_TEAM_TOKEN`. |
+| `migrate --config FILE` | Brings the database named in a coordinator config up to date. |
+| `backup --config FILE --out FILE` | Copies that database into one file while it is in use. Never overwrites; SQLite only, a Postgres server is backed up with its own tools. |
+| `deploy aws [--plan\|--apply] [--only STEP] [--skip STEP] [--permissions-boundary ARN]` | Plans (the default, changes nothing) or applies the AWS deployment. See below. |
+| `status aws` | Shows what the AWS deployment has recorded and the control plane's state. |
+| `destroy aws [--yes] [--roles] [--data] [--secrets]` | Lists what would be deleted; deletes only with `--yes`. |
+| `call <tool> [json]` | Calls a platform tool from inside a turn, for engines that cannot mount the tool endpoint. Not for people. |
+
+The config directory is `AGENT_TEAM_CONFIG_DIR` when set, else `~/.config/agent-team`.
+
+### Deploying to AWS
+
+This puts the coordinator on one small EC2 host and bakes an image that disposable workers start from. [adapters/hosting/aws/README.md](adapters/hosting/aws/README.md) has the detail: every step, the IAM boundaries, and the by-hand and Fargate routes.
+
+You need the AWS CLI signed in to the target account, and its [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) to reach the host afterwards. The commands use the AWS CLI's own credentials, so choose the account the usual way (`export AWS_PROFILE=...`).
+
+1. **Push first.** The hosts do not get this checkout: they clone the toolkit from its repository at the `main` branch, so commits that are not pushed are not deployed. Set `"toolkit": { "repo": "...", "ref": "<commit>" }` in the file below to pin a commit or use a fork.
+
+2. **Describe the deployment** in `~/.config/agent-team/aws-deployment.json`. It never holds a secret value, only the names:
+
+   ```json
+   {
+     "projectId": "example",
+     "name": "Example",
+     "checkout": null,
+     "region": "eu-central-1",
+     "scm": { "kind": "github", "repository": "owner/name", "host": "github.com" },
+     "worker": { "launcher": "ec2", "instanceType": "c6i.2xlarge", "setup": "npm ci", "amiParameter": "/agent-team/example/worker-ami" },
+     "ssmPrefix": "/agent-team/example",
+     "secrets": [
+       { "name": "AGENT_TEAM_TOKEN", "generated": true, "scope": "control", "purpose": "machine token" },
+       { "name": "GH_TOKEN", "generated": false, "purpose": "source host token", "adapter": "github" }
+     ]
+   }
+   ```
+
+3. **Plan.** This only reads (who you are, and the default network if you chose it) and prints what each step would create:
+
+   ```sh
+   agent-team deploy aws
+   ```
+
+4. **Apply.** Secrets that are not generated are read from environment variables of the same name and stored in Parameter Store; a value already stored is left alone.
+
+   ```sh
+   export GH_TOKEN=...
+   agent-team deploy aws --apply
+   ```
+
+   The steps are `secrets`, `network`, `iam`, `controlPlane`, `image`, `verify`. The file is saved after each, so after a failure run the same command again and it continues. `--only iam,controlPlane` or `--skip image` run a part; the image bake is the slow step. In an account that only allows roles with a permissions boundary, add `--permissions-boundary arn:aws:iam::<account>:policy/<name>`.
+
+5. **Open it.** The host has no public port. Forward 4310 with the command `deploy` prints at the end:
+
+   ```sh
+   aws ssm start-session --region <region> --target <instance id> \
+     --document-name AWS-StartPortForwardingSession --parameters portNumber=4310,localPortNumber=4310
+   ```
+
+   Then open `http://127.0.0.1:4310`. The first visit needs the one-time setup link, which the control plane wrote to its log on first start: `aws ssm start-session --target <instance id>`, then `sudo journalctl -u agent-team.service | grep setup`. Stop a local `up` first, or forward to another `localPortNumber`, since both use 4310.
+
+6. **Check and remove.**
+
+   ```sh
+   agent-team status aws
+   agent-team destroy aws            # lists what would go, deletes nothing
+   agent-team destroy aws --yes      # instances, images, security group, the dedicated network
+   ```
+
+   The data volume (the database), the secrets and the roles stay unless you add `--data`, `--secrets` and `--roles`.
+
+A test deploy costs money while it exists: a `t3.small` and its volume all the time, a larger instance during the image bake, and each worker while it runs.
+
 ## Architecture
 
 ```text
