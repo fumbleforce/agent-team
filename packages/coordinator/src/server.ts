@@ -107,5 +107,22 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const server = await new Promise<ServerType>(resolve => { const s = serve({ fetch: app.fetch, hostname: host, port: config.port ?? DEFAULT_PORT }, () => resolve(s)); });
   const address = server.address();
   const port = typeof address === 'object' && address ? address.port : (config.port ?? DEFAULT_PORT);
-  return { context, server, url: `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`, poll, close: async () => { clearInterval(timer); clearInterval(pollTimer); clearTimeout(firstPoll); clearInterval(mirrorTimer); clearInterval(launchTimer); await launches?.close(); closeInbound?.(); await new Promise(resolve => server.close(resolve)); await storage.close(); } };
+  const shutDown = async () => {
+    clearInterval(timer);
+    clearInterval(pollTimer);
+    clearTimeout(firstPoll);
+    clearInterval(mirrorTimer);
+    clearInterval(launchTimer);
+    await launches?.close();
+    closeInbound?.();
+    const closed = new Promise(resolve => server.close(resolve));
+    // A live feed never ends by itself, and a server waits for every open connection: they are dropped.
+    if ('closeAllConnections' in server) server.closeAllConnections();
+    await closed;
+    await storage.close();
+  };
+  // A second signal while the first is still closing joins it instead of closing again.
+  let closing: Promise<void> | null = null;
+  const close = () => closing ??= shutDown();
+  return { context, server, url: `http://${host === '0.0.0.0' ? '127.0.0.1' : host}:${port}`, poll, close };
 }

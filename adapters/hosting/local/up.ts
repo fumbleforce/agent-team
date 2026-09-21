@@ -53,13 +53,21 @@ export function startLocal(configs: ReturnType<typeof writeLocalConfigs>, env: N
   const children: ChildProcess[] = [];
   const start = (entry: string, config: string) => {
     const child = spawn(process.execPath, [path.join(packageRoot(), entry), '--config', config], { env: { ...env, AGENT_TEAM_TOKEN: configs.machineToken, AGENT_TEAM_URL: configs.url }, stdio: ['ignore', 'inherit', 'inherit'], windowsHide: true });
-    child.on('exit', () => stop());
+    child.on('exit', () => end('SIGTERM'));
     children.push(child);
   };
-  const stop = () => { for (const child of children) if (child.exitCode === null) child.kill('SIGTERM'); };
+  // The first stop asks; a stop after that one ends what is still running, and the worker's next start sweeps what it left.
+  let asked = false;
+  // A child ended by a signal has no exit code, only the signal's name.
+  const over = (child: ChildProcess) => child.exitCode !== null || child.signalCode !== null;
+  const end = (signal: NodeJS.Signals) => { for (const child of children) if (!over(child)) child.kill(signal); };
+  const stop = () => {
+    end(asked ? 'SIGKILL' : 'SIGTERM');
+    asked = true;
+  };
   start(ENTRYPOINTS.coordinator, configs.coordinator);
   const workerTimer = setTimeout(() => start(ENTRYPOINTS.worker, configs.worker), 1500);
-  return { stop: () => { clearTimeout(workerTimer); stop(); }, finished: new Promise<void>(resolve => { const check = setInterval(() => { if (children.length && children.every(child => child.exitCode !== null)) { clearInterval(check); resolve(); } }, 250); }) };
+  return { stop: () => { clearTimeout(workerTimer); stop(); }, finished: new Promise<void>(resolve => { const check = setInterval(() => { if (children.length && children.every(over)) { clearInterval(check); resolve(); } }, 250); }) };
 }
 
 export async function setupLink(url: string, machineToken: string): Promise<string | null> {
