@@ -66,7 +66,7 @@ export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me;
   const incoming = view.data?.handoffs.filter(handoff => handoff.direction !== 'out') ?? [], outgoing = view.data?.handoffs.filter(handoff => handoff.direction === 'out') ?? [];
   const groups = Object.keys(CATEGORY).map(key => ({ key, items: view.data?.connections.filter(item => item.category === key) ?? [] })).filter(group => group.items.length);
   return (
-    <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={slug} roster={[]} teamName={null} links={[]} />}>
+    <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={slug} roster={[]} links={[]} />}>
       <PageHeader title="Integrations" crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }, { label: projects.flatMap(project => [project, ...project.subprojects]).find(project => project.slug === slug)?.name ?? slug, href: `/p/${slug}` }]}>
         <div className="flex items-center gap-3 pb-3"><span className="grow" /><ConnectFlow slug={slug} connectedKinds={view.data?.connections.map(item => item.kind) ?? []} onDone={view.reload} /></div>
       </PageHeader>

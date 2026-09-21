@@ -42,7 +42,7 @@ export function AgentPage({ id, me, projects }: { id: string; me: Me; projects: 
   useStream(event => event.type.startsWith('turn.') && (event as { agentId?: string }).agentId === id, () => { view.reload(); trace.reload(); });
   const steps = trace.data?.steps ?? (latest === data?.turns[0]?.id ? data?.steps : undefined) ?? [];
   return (
-    <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} teamName={null} links={[]} />}>
+    <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} links={[]} />}>
       <PageHeader title={data?.agent.name ?? 'Agent'} crumbs={[{ label: 'Teams', href: '/org' }]} />
       {!data ? <div className="p-5"><Text tone="muted">{view.error?.message ?? 'Loading…'}</Text></div> : (
         <div className="grid min-h-0 grow grid-cols-1 gap-3 overflow-y-auto px-5 pt-4 pb-5 xl:grid-cols-3">

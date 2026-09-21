@@ -33,7 +33,7 @@ export function WelcomePage({ me, projects }: { me: Me; projects: ProjectNode[] 
   };
 
   return (
-    <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} teamName={null} links={[]} />}>
+    <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} links={[]} />}>
       <PageHeader title={data?.complete ? 'Your team is set up' : `Welcome, ${me.user.name.split(' ')[0]}`} crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }]}>
         <div className="flex items-center gap-3 pb-3">
           <Text size="small" tone="muted" className="grow">{data?.complete ? 'Everything a team needs is connected.' : `Four steps to a team that picks up work on its own. ${data ? `${data.done} of ${data.total} done.` : ''}`}</Text>

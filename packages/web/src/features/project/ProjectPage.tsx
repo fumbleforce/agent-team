@@ -56,9 +56,8 @@ export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: 
   const [raising, setRaising] = useState(false);
   useStream(event => (event.type.startsWith('task.') || event.type.startsWith('issue.')) && event.projectId === view.data?.project.id, view.reload);
   const data = view.data;
-  const root = projects.find(project => project.slug === slug || project.subprojects.some(sub => sub.slug === slug));
 
-  const sidebar = <Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={slug} roster={data?.roster ?? []} teamName={root?.team?.name ?? null} links={links(slug)} />;
+  const sidebar = <Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={slug} roster={data?.roster ?? []} links={links(slug)} />;
   if (!data) return <AppShell sidebar={sidebar}><div className="p-5"><Text tone="muted">{view.error ? view.error.message : 'Loading…'}</Text></div></AppShell>;
 
   // Either address of the checks page lights the tab this project shows.

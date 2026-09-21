@@ -42,7 +42,7 @@ function ProjectLink({ project, active, activeSub }: { project: ProjectNode; act
   );
 }
 
-export interface SidebarProps { orgName: string; projects: ProjectNode[]; activeSlug: string | null; roster: Agent[]; teamName: string | null; links: { href: string; label: string; aside?: ReactNode }[] }
+export interface SidebarProps { orgName: string; projects: ProjectNode[]; activeSlug: string | null; roster: Agent[]; links: { href: string; label: string; aside?: ReactNode }[] }
 
 // Until the organization is set up (or the guide is hidden), the way back to it and how far along it is.
 function GuideLink() {
@@ -74,7 +74,7 @@ function NeedsYouLink() {
   );
 }
 
-export function Sidebar({ orgName, projects, activeSlug, roster, teamName, links }: SidebarProps) {
+export function Sidebar({ orgName, projects, activeSlug, roster, links }: SidebarProps) {
   return (
     <nav aria-label="Projects and team" className="flex w-54 shrink-0 flex-col gap-5 overflow-y-auto border-r border-line bg-rail px-3 py-4">
       <div className="flex items-center gap-2 px-1.5">
@@ -93,7 +93,8 @@ export function Sidebar({ orgName, projects, activeSlug, roster, teamName, links
       </div>
       {roster.length > 0 && (
         <div className="flex flex-col gap-0.5">
-          <div className="px-1.5 pb-1.5"><SectionLabel aside={<Link href="/org" className="shrink-0 whitespace-nowrap"><Text size="caption" tone="accent">All teams</Text></Link>}>{teamName ?? 'Team'} · {roster.length}</SectionLabel></div>
+          {/* Whose team it is stands right above, in the project the rail has lit; the label says only what this is and how many. */}
+          <div className="px-1.5 pb-1.5"><SectionLabel aside={<Link href="/org" className="shrink-0 whitespace-nowrap"><Text size="caption" tone="accent">All teams</Text></Link>}>Team · {roster.length}</SectionLabel></div>
           {roster.map(agent => <AgentLine key={agent.id} agent={agent} />)}
         </div>
       )}

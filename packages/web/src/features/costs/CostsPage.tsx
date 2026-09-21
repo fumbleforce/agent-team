@@ -139,7 +139,7 @@ export function CostsPage({ me, projects, agents }: { me: Me; projects: ProjectN
   const spentBy = (project: ProjectNode) => { const ids = [project.id, ...project.subprojects.map(sub => sub.id)]; return data?.byProject.filter(row => ids.includes(row.id)).reduce((sum, row) => sum + row.amountMinor, 0) ?? 0; };
 
   return (
-    <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} teamName={null} links={[]} />}>
+    <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} links={[]} />}>
       <PageHeader title="Costs" crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }]} />
       {!data ? <div className="p-5"><Text tone="muted">Loading…</Text></div> : (
         <div className="flex min-h-0 grow flex-col gap-3.5 overflow-y-auto px-5 pt-4 pb-5">

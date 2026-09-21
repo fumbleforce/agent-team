@@ -9,7 +9,7 @@ export const orgLinks = (me: Me) => SECTIONS.filter(section => !section.admin ||
 
 // The frame of every organization-level page: the sidebar, the title and the tabs between those pages.
 export function OrgShell({ me, projects, title, active, crumbs, children }: { me: Me; projects: ProjectNode[]; title: string; active: string | null; crumbs?: Crumb[]; children: ReactNode }) {
-  const sidebar = <Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} teamName={null} links={[{ href: '/proposals', label: 'Team proposals' }, { href: '/costs', label: 'Costs' }]} />;
+  const sidebar = <Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} links={[{ href: '/proposals', label: 'Team proposals' }, { href: '/costs', label: 'Costs' }]} />;
   return (
     <AppShell sidebar={sidebar}>
       <PageHeader title={title} crumbs={crumbs ?? [{ label: me.org?.name ?? 'Organization', href: '/org' }]}>
