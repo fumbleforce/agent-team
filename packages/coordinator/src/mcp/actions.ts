@@ -1,10 +1,11 @@
-import { newId, type ToolInput } from '@agent-team/protocol';
+import { newId, type EventDraft, type TaskState, type ToolInput } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import { HttpError, type Context } from '../context.ts';
 import type { Turns } from '../runtime/turns.ts';
 import { indexMessage } from '../knowledge/indexing.ts';
 import { newTask, taskFromIssue, teamIdOf } from '../repos/issueTasks.ts';
 import { wearsDesk } from '../runtime/desk.ts';
+import { moveTask } from '../runtime/taskMoves.ts';
 
 interface Actor { id: string; agent_id: string; project_id: string; task_id: string | null }
 const refuse = (code: string, message: string) => new HttpError(409, code, message);
@@ -40,9 +41,9 @@ export function createActions(context: Context, turns: Turns) {
         const needsHuman = input.outcome === 'escalate', decisionId = plain ? null : newId(now());
         const messageId = await post(tx, input.threadId, turn.agent_id, plain ? 'note' : 'decision', input.decision, { triage: true, outcome: input.outcome, ownerAgentId: owner?.id ?? null, priority: input.priority ?? null });
         if (decisionId) await tx.insertInto('decisions').values({ id: decisionId, project_id: turn.project_id, thread_id: input.threadId, message_id: messageId, deliberation_id: null, kind: 'triage', outcome: input.outcome, summary: input.decision, needs_human: needsHuman, resolved_by_user: null, resolved_at: null, created_at: now() }).execute();
-        const closes = input.outcome === 'decline' || input.outcome === 'duplicate';
+        const closes = input.outcome === 'decline' || input.outcome === 'duplicate', declined: EventDraft[] = [];
         // Declined or a duplicate: it leaves the inbox.
-        if (issue && closes) { const waiting = await tx.selectFrom('links').innerJoin('tasks', 'tasks.id', 'links.to_id').select('tasks.id').where('links.from_type', '=', 'issue').where('links.from_id', '=', issue.id).where('tasks.state', '=', 'inbox').executeTakeFirst(); if (waiting) await tx.updateTable('tasks').set({ state: 'canceled', updated_at: now() }).where('id', '=', waiting.id).execute(); }
+        if (issue && closes) { const waiting = await tx.selectFrom('links').innerJoin('tasks', 'tasks.id', 'links.to_id').select('tasks.id').where('links.from_type', '=', 'issue').where('links.from_id', '=', issue.id).where('tasks.state', '=', 'inbox').executeTakeFirst(); if (waiting) declined.push(...await moveTask(tx, waiting.id, 'canceled', { now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, payload: { reason: input.outcome } })); }
         if (issue) await tx.updateTable('issues').set({ ...(owner ? { owner_agent_id: owner.id } : {}), ...(input.priority ? { priority: input.priority } : {}), ...(closes && issue.state === 'open' ? { state: 'closed', closed_at: now() } : {}) }).where('id', '=', issue.id).execute();
         // Accepted outside an issue (in the discussion, say): what was raised becomes a task all the same, from the last thing a person wrote there.
         const raised = !issue && owner && input.outcome === 'accept' ? await tx.selectFrom('messages').select('body').where('thread_id', '=', input.threadId).where('author_kind', '=', 'user').orderBy('seq', 'desc').executeTakeFirst() : null;
@@ -51,7 +52,7 @@ export function createActions(context: Context, turns: Turns) {
         const taskId = made.taskId;
         const drafts = [...(decisionId ? [{ type: 'decision.recorded', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, turnId: turn.id, payload: { decisionId, outcome: input.outcome, needsHuman, issueId: issue?.id ?? null } }] : []), { type: 'message.posted', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, payload: { messageId, kind: plain ? 'note' : 'decision' } }];
         const more = [...(issue && closes && issue.state === 'open' ? [{ type: 'issue.closed', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: turn.project_id, threadId: input.threadId, payload: { issueId: issue.id } }] : []), ...made.events];
-        return { decisionId, messageId, taskId, ownerId: owner?.id ?? null, projectId: issue?.project_id ?? turn.project_id, published: await events.append(tx, [...drafts, ...more]) };
+        return { decisionId, messageId, taskId, ownerId: owner?.id ?? null, projectId: issue?.project_id ?? turn.project_id, published: await events.append(tx, [...drafts, ...more, ...declined]) };
       });
       events.published(result.published);
       // The owner starts on it like on any assigned task.
@@ -74,8 +75,8 @@ export function createActions(context: Context, turns: Turns) {
         const docs = roles.length ? await tx.selectFrom('versioned_docs').select('doc').where('kind', '=', 'role').where('slug', 'in', roles).execute() : [];
         if (!docs.some(row => { const write = (JSON.parse(row.doc) as { permissions?: { codeWrite?: unknown } }).permissions?.codeWrite; return write !== undefined && write !== 'none'; })) throw refuse('task', `${owner.name} has no role that may change the code. If nobody free can take it, propose a hire with proposal.create.`);
         await tx.updateTable('work_items').set({ state: 'expired' }).where('task_id', '=', task.id).where('kind', '=', 'work').where('state', '=', 'queued').execute();
-        await tx.updateTable('tasks').set({ assignee_agent_id: owner.id, state: task.state === 'backlog' ? 'assigned' : task.state, updated_at: now() }).where('id', '=', task.id).execute();
-        return { key: task.key, ownerId: owner.id, published: await events.append(tx, [{ type: 'task.assigned', actorKind: 'agent', agentId: owner.id, projectId: turn.project_id, taskId: task.id, turnId: turn.id, payload: { by: turn.agent_id, from: task.assignee_agent_id, why: input.why } }]) };
+        const moved = await moveTask(tx, task.id, task.state === 'backlog' ? 'assigned' : task.state as TaskState, { set: { assignee_agent_id: owner.id }, now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id } });
+        return { key: task.key, ownerId: owner.id, published: await events.append(tx, [{ type: 'task.assigned', actorKind: 'agent', agentId: owner.id, projectId: turn.project_id, taskId: task.id, turnId: turn.id, payload: { by: turn.agent_id, from: task.assignee_agent_id, why: input.why } }, ...moved]) };
       });
       events.published(result.published);
       await turns.enqueue({ agentId: result.ownerId, projectId: turn.project_id, kind: 'work', taskId: input.taskId, dedupeKey: `work:${input.taskId}` });
@@ -134,7 +135,7 @@ export function createActions(context: Context, turns: Turns) {
         if (!task) throw refuse('task', 'Task not found in this project');
         const claimed = await tx.updateTable('tasks').set({ assignee_agent_id: turn.agent_id, state: 'assigned', updated_at: now() }).where('id', '=', taskId).where('assignee_agent_id', 'is', null).where('state', '=', 'backlog').executeTakeFirst();
         if (Number(claimed.numUpdatedRows) !== 1) throw refuse('task', `${task.key} is already taken or no longer in the backlog`);
-        return { key: task.key, published: await events.append(tx, [{ type: 'task.assigned', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, taskId, turnId: turn.id, payload: { claimed: true } }]) };
+        return { key: task.key, published: await events.append(tx, [{ type: 'task.assigned', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, taskId, turnId: turn.id, payload: { claimed: true } }, { type: 'task.state_changed', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, taskId, turnId: turn.id, payload: { from: 'backlog', to: 'assigned' } }]) };
       });
       events.published(result.published);
       await turns.enqueue({ agentId: turn.agent_id, projectId: turn.project_id, kind: 'work', taskId, dedupeKey: `work:${taskId}` });

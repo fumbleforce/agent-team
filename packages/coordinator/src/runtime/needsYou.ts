@@ -1,6 +1,7 @@
 import { newId } from '@agent-team/protocol';
 import { HttpError, type Context } from '../context.ts';
 import { indexMessage } from '../knowledge/indexing.ts';
+import { moveTask, moveTasksOf } from './taskMoves.ts';
 import type { Turns } from './turns.ts';
 
 export type NeedsYouKind = 'decision' | 'quarantine' | 'delivery' | 'proposal' | 'blocked';
@@ -74,8 +75,8 @@ export function createNeedsYou(context: Context, turns: Turns) {
         await indexMessage(storage, tx, { id: messageId, threadId: decision.thread_id, body: answer });
         await tx.updateTable('decisions').set({ resolved_by_user: userId, resolved_at: now() }).where('id', '=', decisionId).execute();
         // Work that was waiting on the decision can go on.
-        await tx.updateTable('tasks').set({ state: 'in_progress', updated_at: now() }).where('project_id', '=', decision.project_id).where('state', '=', 'awaiting_decision').execute();
-        return events.append(tx, [{ type: 'message.posted', actorKind: 'user', userId, projectId: decision.project_id, threadId: decision.thread_id, payload: { messageId, kind: 'decision' } }, { type: 'decision.resolved', actorKind: 'user', userId, projectId: decision.project_id, threadId: decision.thread_id, payload: { decisionId } }]);
+        const moved = await moveTasksOf(tx, decision.project_id, 'awaiting_decision', 'in_progress', { now: now(), actor: { actorKind: 'user', userId }, payload: { decisionId } });
+        return events.append(tx, [...moved, { type: 'message.posted', actorKind: 'user', userId, projectId: decision.project_id, threadId: decision.thread_id, payload: { messageId, kind: 'decision' } }, { type: 'decision.resolved', actorKind: 'user', userId, projectId: decision.project_id, threadId: decision.thread_id, payload: { decisionId } }]);
       });
       events.published(published);
     },
@@ -87,9 +88,9 @@ export function createNeedsYou(context: Context, turns: Turns) {
         if (!row) throw new HttpError(404, 'not_found', 'That is already released');
         await tx.updateTable('quarantines').set({ released_by: userId, released_at: now() }).where('id', '=', quarantineId).execute();
         const task = row.scope === 'task' ? await tx.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id']).where('id', '=', row.ref_id).executeTakeFirst() : undefined;
-        if (task) await tx.updateTable('tasks').set({ state: resolution === 'continue' ? 'in_progress' : 'stopped', blocked_reason: null, updated_at: now() }).where('id', '=', task.id).execute();
+        const moved = task ? await moveTask(tx, task.id, resolution === 'continue' ? 'in_progress' : 'stopped', { set: { blocked_reason: null }, now: now(), actor: userId ? { actorKind: 'user', userId } : { actorKind: 'system' }, payload: { quarantineId, resolution } }) : [];
         const turn = await tx.selectFrom('turns').select('project_id').where('id', '=', row.turn_id).executeTakeFirst();
-        const published = await events.append(tx, [{ type: 'quarantine.released', category: 'audit', ...(userId ? { actorKind: 'user' as const, userId } : { actorKind: 'system' as const }), projectId: task?.project_id ?? turn?.project_id ?? null, taskId: task?.id ?? null, payload: { quarantineId, scope: row.scope, resolution, note } }]);
+        const published = await events.append(tx, [...moved, { type: 'quarantine.released', category: 'audit', ...(userId ? { actorKind: 'user' as const, userId } : { actorKind: 'system' as const }), projectId: task?.project_id ?? turn?.project_id ?? null, taskId: task?.id ?? null, payload: { quarantineId, scope: row.scope, resolution, note } }]);
         return { published, task };
       });
       events.published(released.published);
@@ -102,8 +103,8 @@ export function createNeedsYou(context: Context, turns: Turns) {
         const entry = await tx.selectFrom('merge_queue').selectAll().where('id', '=', entryId).where('state', '=', 'uncertain').executeTakeFirst();
         if (!entry) throw new HttpError(404, 'not_found', 'That delivery is already settled');
         await tx.updateTable('merge_queue').set({ state: merged ? 'merged' : 'queued', reason: merged ? 'Confirmed merged by a person' : 'Confirmed not merged; queued again', finished_at: merged ? now() : null }).where('id', '=', entryId).execute();
-        if (merged) await tx.updateTable('tasks').set({ state: 'done', updated_at: now() }).where('id', '=', entry.task_id).execute();
-        return events.append(tx, [{ type: 'delivery.reconciled', category: 'audit', actorKind: 'user', userId, projectId: entry.project_id, taskId: entry.task_id, payload: { entryId, merged } }]);
+        const moved = merged ? await moveTask(tx, entry.task_id, 'done', { now: now(), actor: { actorKind: 'user', userId }, payload: { reason: 'merged', entryId } }) : [];
+        return events.append(tx, [...moved, { type: 'delivery.reconciled', category: 'audit', actorKind: 'user', userId, projectId: entry.project_id, taskId: entry.task_id, payload: { entryId, merged } }]);
       });
       events.published(published);
     },

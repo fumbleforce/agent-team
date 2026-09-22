@@ -37,7 +37,8 @@
     "head": {
       "ref": "feature/pay",
       "sha": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
-    }
+    },
+    "mergeable": false
   },
   "/repos/o/r/actions/runs?branch=feature%2Fpay&status=completed&per_page=20": {
     "total_count": 2,

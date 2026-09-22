@@ -3,6 +3,7 @@ import type { z } from 'zod';
 import type { Revision } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import { HttpError, type Context } from '../context.ts';
+import { moveTask } from './taskMoves.ts';
 import type { Turns } from './turns.ts';
 import { indexMessage } from '../knowledge/indexing.ts';
 
@@ -53,8 +54,8 @@ export function createDeliberation(context: Context, turns: Turns) {
     // Advice has no revision and no separate decision turn: its owner reads the feedback in its next work turn and decides by what it does.
     if (row.kind === 'advice') {
       await tx.updateTable('deliberations').set({ state: 'decided' }).where('id', '=', deliberationId).execute();
-      if (row.task_id) await tx.updateTable('tasks').set({ state: 'in_progress', updated_at: now() }).where('id', '=', row.task_id).where('state', '=', 'awaiting_decision').execute();
-      return events.append(tx, [{ type: 'deliberation.advised', actorKind: 'system', projectId: row.project_id, threadId: row.thread_id, taskId: row.task_id, agentId: row.proposer_agent_id, payload: { deliberationId, answered: answered.length, asked: participants.length } }]);
+      const moved = row.task_id ? await moveTask(tx, row.task_id, 'in_progress', { from: ['awaiting_decision'], now: now(), actor: { actorKind: 'system', agentId: row.proposer_agent_id }, payload: { reason: 'advice-in' } }) : [];
+      return events.append(tx, [...moved, { type: 'deliberation.advised', actorKind: 'system', projectId: row.project_id, threadId: row.thread_id, taskId: row.task_id, agentId: row.proposer_agent_id, payload: { deliberationId, answered: answered.length, asked: participants.length } }]);
     }
     const revise = !row.revised && needsRevision(blocks);
     await tx.updateTable('deliberations').set({ state: revise ? 'revising' : 'deciding' }).where('id', '=', deliberationId).execute();
@@ -88,8 +89,8 @@ export function createDeliberation(context: Context, turns: Turns) {
         await tx.insertInto('deliberations').values({ id, project_id: turn.project_id, thread_id: threadId, kind: advice ? 'advice' : 'design', task_id: turn.task_id, question: input.question, proposer_agent_id: turn.agent_id, decider_agent_id: advice ? turn.agent_id : pm?.id ?? null, state: reviewers.length ? 'open' : 'deciding', revised: false, blocking: input.urgency === 'blocking', feedback_deadline: now() + (advice ? ADVICE_WINDOW_MS : FEEDBACK_WINDOW_MS[input.urgency]), extended: false, created_at: now() }).execute();
         for (const agentId of reviewers) await tx.insertInto('deliberation_participants').values({ deliberation_id: id, agent_id: agentId, state: 'pending', stance: null, is_blocking: false, message_id: null }).execute();
         await post(tx, threadId, turn.agent_id, 'proposal', `${input.question}\n\n${input.summary}`, { deliberationId: id, ...input });
-        if (input.urgency === 'blocking' && turn.task_id) await tx.updateTable('tasks').set({ state: 'awaiting_decision', updated_at: now() }).where('id', '=', turn.task_id).execute();
-        const published = await events.append(tx, [{ type: 'deliberation.opened', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, threadId, taskId: turn.task_id, payload: { deliberationId: id, reviewers } }, { type: 'message.posted', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, threadId, payload: { kind: 'proposal' } }]);
+        const moved = input.urgency === 'blocking' && turn.task_id ? await moveTask(tx, turn.task_id, 'awaiting_decision', { now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id }, payload: { deliberationId: id } }) : [];
+        const published = await events.append(tx, [...moved, { type: 'deliberation.opened', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, threadId, taskId: turn.task_id, payload: { deliberationId: id, reviewers } }, { type: 'message.posted', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, threadId, payload: { kind: 'proposal' } }]);
         return { id, reviewers, published };
       });
       events.published(result.published);
@@ -156,8 +157,8 @@ export function createDeliberation(context: Context, turns: Turns) {
         const decisionId = newId(now());
         await tx.insertInto('decisions').values({ id: decisionId, project_id: row.project_id, thread_id: row.thread_id, message_id: messageId, deliberation_id: deliberationId, kind: row.kind, outcome: input.outcome, summary: input.decision, needs_human: needsHuman, resolved_by_user: null, resolved_at: null, created_at: now() }).execute();
         await tx.updateTable('deliberations').set({ state: needsHuman ? 'escalated' : 'decided' }).where('id', '=', deliberationId).execute();
-        if (row.task_id && !needsHuman) await tx.updateTable('tasks').set({ state: 'in_progress', updated_at: now() }).where('id', '=', row.task_id).where('state', '=', 'awaiting_decision').execute();
-        return events.append(tx, [{ type: 'decision.recorded', actorKind: 'agent', agentId: turn.agent_id, projectId: row.project_id, threadId: row.thread_id, taskId: row.task_id, payload: { decisionId, outcome: input.outcome, needsHuman } }, { type: 'message.posted', actorKind: 'agent', agentId: turn.agent_id, projectId: row.project_id, threadId: row.thread_id, payload: { kind: 'decision' } }]);
+        const moved = row.task_id && !needsHuman ? await moveTask(tx, row.task_id, 'in_progress', { from: ['awaiting_decision'], now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id }, payload: { decisionId } }) : [];
+        return events.append(tx, [...moved, { type: 'decision.recorded', actorKind: 'agent', agentId: turn.agent_id, projectId: row.project_id, threadId: row.thread_id, taskId: row.task_id, payload: { decisionId, outcome: input.outcome, needsHuman } }, { type: 'message.posted', actorKind: 'agent', agentId: turn.agent_id, projectId: row.project_id, threadId: row.thread_id, payload: { kind: 'decision' } }]);
       });
       events.published(published);
     },

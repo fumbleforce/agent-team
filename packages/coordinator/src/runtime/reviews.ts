@@ -1,6 +1,7 @@
-import { newId } from '@agent-team/protocol';
+import { newId, type EventDraft } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import { HttpError, type Context } from '../context.ts';
+import { moveTask } from './taskMoves.ts';
 import type { Turns } from './turns.ts';
 
 export const APPROVAL_KINDS = ['tester', 'reviewer', 'pm'] as const;
@@ -38,11 +39,11 @@ export function createReviews(context: Context, turns: Turns) {
     const reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id), required = reviewers.map(reviewer => reviewer.kind);
     const approved = required.length > 0 && required.every(kind => valid.some(row => row.kind === kind && row.verdict === PASSING[kind]));
     const pm = reviewers.find(reviewer => reviewer.kind === 'pm')?.agentId ?? null;
-    if (!approved) return { approved, pm, drafts: [] };
-    await tx.updateTable('tasks').set({ state: 'approved', updated_at: now() }).where('id', '=', taskId).execute();
+    if (!approved) return { approved, pm, drafts: [] as EventDraft[] };
+    const moved = await moveTask(tx, taskId, 'approved', { now: now(), actor: { actorKind: 'agent', agentId: by.agentId, turnId: by.turnId }, payload: { headSha } });
     if (!await tx.selectFrom('merge_queue').select('id').where('task_id', '=', taskId).where('head_sha', '=', headSha).where('state', 'in', ['queued', 'running']).executeTakeFirst())
       await tx.insertInto('merge_queue').values({ id: newId(now()), project_id: task.project_id, task_id: taskId, head_sha: headSha, state: 'queued', reason: null, created_at: now(), finished_at: null }).execute();
-    return { approved, pm, drafts: [{ type: 'task.approved', actorKind: 'agent' as const, agentId: by.agentId, projectId: task.project_id, taskId, turnId: by.turnId, payload: { kind: by.kind, verdict: by.verdict, headSha } }] };
+    return { approved, pm, drafts: [{ type: 'task.approved', actorKind: 'agent' as const, agentId: by.agentId, projectId: task.project_id, taskId, turnId: by.turnId, payload: { kind: by.kind, verdict: by.verdict, headSha } }, ...moved] as EventDraft[] };
   }
 
   return {
@@ -53,9 +54,9 @@ export function createReviews(context: Context, turns: Turns) {
         const task = await tx.selectFrom('tasks').select(['project_id', 'assignee_agent_id', 'head_sha']).where('id', '=', taskId).executeTakeFirstOrThrow();
         // Any earlier verdict, counted or still waiting for its verification, was about another revision.
         if (task.head_sha !== headSha) await tx.updateTable('approvals').set({ state: 'stale' }).where('task_id', '=', taskId).where('state', 'in', LIVE).execute();
-        await tx.updateTable('tasks').set({ head_sha: headSha, state: 'in_review', updated_at: now() }).where('id', '=', taskId).execute();
+        const moved = await moveTask(tx, taskId, 'in_review', { set: { head_sha: headSha }, now: now(), actor: { actorKind: 'system', agentId: task.assignee_agent_id }, payload: { headSha } });
         const reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id);
-        const published = await events.append(tx, [{ type: 'review.requested', actorKind: 'system', projectId: task.project_id, taskId, payload: { headSha, reviewers } }]);
+        const published = await events.append(tx, [...moved, { type: 'review.requested', actorKind: 'system', projectId: task.project_id, taskId, payload: { headSha, reviewers } }]);
         return { projectId: task.project_id, reviewers, published };
       });
       events.published(result.published);
@@ -68,7 +69,7 @@ export function createReviews(context: Context, turns: Turns) {
       const task = await storage.db.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state']).where('id', '=', taskId).executeTakeFirst();
       if (task?.state !== 'blocked') throw refuse('Only a task that was set aside can carry on');
       const reviewed = task.head_sha ? await storage.db.selectFrom('turns').select('id').where('task_id', '=', taskId).where('kind', '=', 'review').executeTakeFirst() : null;
-      await storage.db.updateTable('tasks').set({ state: reviewed ? 'in_review' : 'in_progress', blocked_reason: null, updated_at: now() }).where('id', '=', taskId).execute();
+      events.published(await storage.transaction(async tx => events.append(tx, await moveTask(tx, taskId, reviewed ? 'in_review' : 'in_progress', { from: ['blocked'], set: { blocked_reason: null }, now: now(), actor: { actorKind: 'system', agentId: task.assignee_agent_id }, payload: { reason: 'carried-on' } }))));
       if (reviewed) await this.chase();
       else if (task.assignee_agent_id) await turns.enqueue({ agentId: task.assignee_agent_id, projectId: task.project_id, kind: 'work', taskId, dedupeKey: `work:${taskId}` });
     },
@@ -81,11 +82,12 @@ export function createReviews(context: Context, turns: Turns) {
         const valid = await tx.selectFrom('approvals').select('kind').where('task_id', '=', taskId).where('state', '=', 'valid').where('head_sha', '=', task.head_sha).where('verdict', '=', 'pass').execute();
         const reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id), pm = reviewers.find(reviewer => reviewer.kind === 'pm')?.agentId;
         if (!pm || !reviewers.every(reviewer => valid.some(row => row.kind === reviewer.kind))) throw refuse('This revision does not have every approval any more; it has to be reviewed again first');
-        await tx.updateTable('tasks').set({ state: 'approved', blocked_reason: null, updated_at: now() }).where('id', '=', taskId).execute();
+        const moved = await moveTask(tx, taskId, 'approved', { set: { blocked_reason: null }, now: now(), actor: { actorKind: 'system', agentId: pm }, payload: { reason: 'deliver-again' } });
         if (!await tx.selectFrom('merge_queue').select('id').where('task_id', '=', taskId).where('state', 'in', ['queued', 'running']).executeTakeFirst())
           await tx.insertInto('merge_queue').values({ id: newId(now()), project_id: task.project_id, task_id: taskId, head_sha: task.head_sha, state: 'queued', reason: null, created_at: now(), finished_at: null }).execute();
-        return { pm, projectId: task.project_id, headSha: task.head_sha };
+        return { pm, projectId: task.project_id, headSha: task.head_sha, published: moved.length ? await events.append(tx, moved) : [] };
       });
+      events.published(result.published);
       await turns.enqueue({ agentId: result.pm, projectId: result.projectId, kind: 'deliver', taskId, dedupeKey: `deliver:${taskId}:${result.headSha}` });
     },
 
@@ -94,14 +96,15 @@ export function createReviews(context: Context, turns: Turns) {
     // The same goes for an approved task whose merge is queued with nobody about to run it.
     async chase() {
       const asked: { agentId: string; projectId: string; taskId: string; kind: string; headSha: string }[] = [], merges: { agentId: string; projectId: string; taskId: string; headSha: string }[] = [];
-      await storage.transaction(async tx => {
+      const published = await storage.transaction(async tx => {
+        const drafts: EventDraft[] = [];
         // A merge that was cut off is not a question for a person: the gate asks the host whether it went through, so it is simply run again.
         // Whatever put the task aside because of that cut-off delivery is lifted with it.
         for (const entry of await tx.selectFrom('merge_queue').select(['id', 'task_id']).where('state', '=', 'uncertain').execute()) {
           const held = await tx.selectFrom('quarantines').innerJoin('turns', 'turns.id', 'quarantines.turn_id').select('quarantines.id').where('quarantines.scope', '=', 'task').where('quarantines.ref_id', '=', entry.task_id).where('quarantines.released_at', 'is', null).where('turns.kind', '=', 'deliver').execute();
           if (held.length) await tx.updateTable('quarantines').set({ released_at: now(), released_by: null }).where('id', 'in', held.map(row => row.id)).execute();
           await tx.updateTable('merge_queue').set({ state: 'queued', reason: 'Cut off; run again to see whether it merged', finished_at: null }).where('id', '=', entry.id).execute();
-          await tx.updateTable('tasks').set({ state: 'approved', updated_at: now() }).where('id', '=', entry.task_id).where('state', 'in', ['merging', 'quarantined', 'approved']).execute();
+          drafts.push(...await moveTask(tx, entry.task_id, 'approved', { from: ['merging', 'quarantined', 'approved'], now: now(), actor: { actorKind: 'system' }, payload: { reason: 'delivery-cut-off' } }));
         }
         // The same task queued more than once (an earlier version did that): only the newest entry stays.
         const queued = await tx.selectFrom('merge_queue').select(['id', 'task_id']).where('state', '=', 'queued').orderBy('created_at', 'desc').execute(), kept = new Set<string>();
@@ -123,11 +126,14 @@ export function createReviews(context: Context, turns: Turns) {
             if (Number(tries.n) < 4) asked.push({ agentId: reviewer.agentId, projectId: task.project_id, taskId: task.id, kind: reviewer.kind, headSha });
             else {
               const who = await tx.selectFrom('agents').select('name').where('id', '=', reviewer.agentId).executeTakeFirst();
-              await tx.updateTable('tasks').set({ state: 'blocked', blocked_reason: `${who?.name ?? 'A reviewer'} did not record a ${reviewer.kind} verdict in ${tries.n} tries`, updated_at: now() }).where('id', '=', task.id).execute();
+              const reason = `${who?.name ?? 'A reviewer'} did not record a ${reviewer.kind} verdict in ${tries.n} tries`;
+              drafts.push(...await moveTask(tx, task.id, 'blocked', { set: { blocked_reason: reason }, now: now(), actor: { actorKind: 'system' }, payload: { reason } }));
             }
           }
         }
+        return drafts.length ? events.append(tx, drafts) : [];
       });
+      events.published(published);
       for (const item of asked) await turns.enqueue({ agentId: item.agentId, projectId: item.projectId, kind: 'review', taskId: item.taskId, dedupeKey: `review:${item.taskId}:${item.kind}:${item.headSha}` });
       for (const item of merges) await turns.enqueue({ agentId: item.agentId, projectId: item.projectId, kind: 'deliver', taskId: item.taskId, dedupeKey: `deliver:${item.taskId}:${item.headSha}` });
       return { reviews: asked.length, merges: merges.length };
@@ -149,9 +155,9 @@ export function createReviews(context: Context, turns: Turns) {
 
         const rejected = input.verdict !== 'pass';
         const settled = await settle(tx, task, taskId, input.headSha, { agentId: turn.agent_id, turnId: turn.id, kind: input.kind, verdict: input.verdict });
-        const drafts = [{ type: 'review.recorded', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: task.project_id, taskId, turnId: turn.id, payload: { kind: input.kind, verdict: input.verdict, headSha: input.headSha, state } }, ...settled.drafts];
+        const drafts: EventDraft[] = [{ type: 'review.recorded', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: task.project_id, taskId, turnId: turn.id, payload: { kind: input.kind, verdict: input.verdict, headSha: input.headSha, state } }, ...settled.drafts];
         // Findings go back at once; an approval waits for its verification.
-        if (!settled.approved && rejected) await tx.updateTable('tasks').set({ state: 'in_progress', updated_at: now() }).where('id', '=', taskId).execute();
+        if (!settled.approved && rejected) drafts.push(...await moveTask(tx, taskId, 'in_progress', { now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, payload: { reason: 'changes-requested', kind: input.kind } }));
         return { approved: settled.approved, rejected, pm: settled.pm, projectId: task.project_id, author: task.assignee_agent_id, published: await events.append(tx, drafts) };
       });
       events.published(result.published);

@@ -85,7 +85,7 @@ export function createProposals(context: Context, turns?: Turns) {
     if (change.kind === 'add_role') { await tx.insertInto('agent_roles').values({ agent_id: change.agentId, role_slug: change.role }).onConflict(oc => oc.columns(['agent_id', 'role_slug']).doNothing()).execute(); return done([change.agentId], [event('agent.updated', change.agentId, { changed: ['roles'] })]); }
     if (change.kind === 'retire_agent') {
       const gone = await retireSeat(tx, now, change.agentId);
-      return { agentIds: [change.agentId], drafts: [event('agent.retired', change.agentId, { name: gone.name, returned: gone.returned.map(task => task.key) })], returned: gone.returned, retiredName: gone.name };
+      return { agentIds: [change.agentId], drafts: [event('agent.retired', change.agentId, { name: gone.name, returned: gone.returned.map(task => task.key) }), ...gone.drafts], returned: gone.returned, retiredName: gone.name };
     }
     if (change.kind === 'hire_agent') {
       const library = (await doc(tx, 'library_agent', change.library))!, seat = LibraryAgent.parse(JSON.parse(library.doc));

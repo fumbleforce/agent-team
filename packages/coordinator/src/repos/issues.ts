@@ -6,6 +6,7 @@ import { newId, type CreateIssueBody } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 import { indexIssue } from '../knowledge/indexing.ts';
+import { moveTask } from '../runtime/taskMoves.ts';
 import { inboxTask, taskFromIssue, teamIdOf } from './issueTasks.ts';
 
 const IMAGE = /^image\/(png|jpeg|webp|gif)$/;
@@ -105,8 +106,8 @@ export function createIssues(context: Context, blobDir: string) {
         await tx.updateTable('issues').set({ state: 'closed', closed_at: now() }).where('id', '=', issue.id).execute();
         // Closed while still in the inbox: it leaves the board with it.
         const waiting = await tx.selectFrom('links').innerJoin('tasks', 'tasks.id', 'links.to_id').select('tasks.id').where('links.from_type', '=', 'issue').where('links.from_id', '=', issue.id).where('tasks.state', '=', 'inbox').executeTakeFirst();
-        if (waiting) await tx.updateTable('tasks').set({ state: 'canceled', updated_at: now() }).where('id', '=', waiting.id).execute();
-        return events.append(tx, [{ type: 'issue.closed', actorKind: 'user', userId, projectId, threadId: issue.thread_id, payload: { issueId: issue.id } }]);
+        const moved = waiting ? await moveTask(tx, waiting.id, 'canceled', { now: now(), actor: { actorKind: 'user', userId }, payload: { reason: 'issue-closed', issueId: issue.id } }) : [];
+        return events.append(tx, [{ type: 'issue.closed', actorKind: 'user', userId, projectId, threadId: issue.thread_id, payload: { issueId: issue.id } }, ...moved]);
       });
       events.published(published);
     },

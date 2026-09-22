@@ -74,21 +74,23 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
   const db = storage.db;
   const cursors = createCursors(context);
 
-  // Local changes since the last poll go out first: card moves and platform state changes, thread messages, and the PM's ideas.
-  // An event is tried once. A write the tracker refuses is reported on the cursor and not repeated; for state, the remote then wins.
-  async function pushOut(projectId: string, system: string, client: TrackerClient, manifest: Record<string, unknown>, config: Ideation | null, issues: TrackerIssue[]) {
+  // Local changes go out first: thread messages and the PM's ideas since the last poll, and the column of every task the platform
+  // moved. A message or an idea is tried once; a write the tracker refuses is reported on the cursor and not repeated. State is
+  // not read from events: a task whose tracker issue still shows the column both last agreed on, while the task has left it, was
+  // moved here, whichever code moved it and whether or not it said so. It is told to the tracker, and told again next poll if
+  // the tracker refused.
+  async function pushOut(projectId: string, system: string, client: TrackerClient, manifest: Record<string, unknown>, config: Ideation | null, issues: TrackerIssue[], tasks: Iterable<{ id: string; key: string; state: string }>, refs: Map<string, { synced_state: string | null }>) {
     const stored = await cursors.cursor(projectId, OUTBOUND);
     // The first poll starts from the head of the log, so connecting a tracker never replays history into it.
     if (stored === null) { const head = await events.head(); await cursors.ok(projectId, OUTBOUND, String(head)); return { pushed: new Set<string>(), cursor: head }; }
     const rows = await db.selectFrom('events').select(['seq', 'type', 'task_id', 'thread_id', 'turn_id', 'payload']).where('project_id', '=', projectId).where('type', 'in', ['task.state_changed', 'message.posted', 'ideation.proposed']).where('seq', '>', Number(stored)).orderBy('seq').limit(200).execute();
-    const pushed = new Set<string>(), moved = new Map<string, string>();
+    const pushed = new Set<string>();
     let failure: unknown = null;
     const attempt = async (work: () => Promise<unknown>) => { try { await work(); return true; } catch (error) { failure = error; return false; } };
     const byKey = new Map(issues.map(issue => [issue.identifier, issue]));
 
     for (const row of rows) {
-      const payload = JSON.parse(row.payload) as { source?: string; origin?: string; from?: string; messageId?: string; proposals?: unknown };
-      if (row.type === 'task.state_changed' && row.task_id && payload.source !== 'tracker' && payload.from && !moved.has(row.task_id)) moved.set(row.task_id, payload.from);
+      const payload = JSON.parse(row.payload) as { origin?: string; messageId?: string; proposals?: unknown };
 
       if (row.type === 'message.posted' && payload.origin !== 'tracker' && payload.messageId && row.thread_id && client.comment) {
         const thread = await db.selectFrom('threads').select(['subject_type', 'subject_id', 'visibility']).where('id', '=', row.thread_id).executeTakeFirst();
@@ -123,14 +125,13 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
       }
     }
 
-    // A card that moved here moves there, unless the issue moved there too since we last looked: then the remote wins.
-    if (client.setState) for (const [taskId, from] of moved) {
-      const task = await db.selectFrom('tasks').select(['key', 'state', 'source']).where('id', '=', taskId).executeTakeFirst();
-      const issue = task?.source === 'tracker' ? byKey.get(task.key) : undefined;
-      if (!task || !issue) continue;
-      const wanted = bucketOf(task.state), remote = taskStateOf(issue);
-      if (wanted === remote || bucketOf(from) !== remote) continue;
-      if (await attempt(() => client.setState!(manifest, task.key, REMOTE[wanted]))) pushed.add(taskId);
+    // Only the platform moved: the issue still shows the column both last agreed on. If the issue moved too, the remote wins below.
+    if (client.setState) for (const task of tasks) {
+      const agreed = refs.get(task.id)?.synced_state ?? null, issue = byKey.get(task.key);
+      if (agreed === null || !issue) continue;
+      const local = bucketOf(task.state), remote = taskStateOf(issue);
+      if (local === remote || remote !== agreed) continue;
+      if (await attempt(() => client.setState!(manifest, task.key, REMOTE[local]))) pushed.add(task.id);
     }
     const cursor = rows.length ? Number(rows.at(-1)!.seq) : Number(stored);
     if (failure) await cursors.fail(projectId, OUTBOUND, failure, String(cursor)); else await cursors.ok(projectId, OUTBOUND, String(cursor));
@@ -169,10 +170,9 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
     const manifest = { ...(full.tracker ?? {}), ...(config ? { ideation: config } : {}) };
     const readyLabel = typeof full.tracker?.readyLabel === 'string' && full.tracker.readyLabel.trim() ? full.tracker.readyLabel : null;
     const { allIssues } = await client.snapshot(manifest);
-    const out = await pushOut(projectId, system, client, manifest, config, allIssues);
-
     const before = new Map((await db.selectFrom('tasks').select(['id', 'key', 'state', 'blocked_reason']).where('project_id', '=', projectId).where('source', '=', 'tracker').execute()).map(task => [task.key, task]));
     const refs = new Map((before.size ? await db.selectFrom('external_refs').selectAll().where('entity_type', '=', 'task').where('system', '=', system).where('entity_id', 'in', [...before.values()].map(task => task.id)).execute() : []).map(ref => [ref.entity_id, ref]));
+    const out = await pushOut(projectId, system, client, manifest, config, allIssues, before.values(), refs);
     // Network first, the transaction after. An approved idea is prepared for the team by marking it ready; one that cannot be marked waits for the next poll.
     const unprepared = new Set<string>(), incoming = new Map<string, TrackerComment[]>();
     for (const issue of allIssues) {
@@ -191,6 +191,7 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
       const pending = new Set([...out.pushed, ...(await tx.selectFrom('events').select('task_id').where('project_id', '=', projectId).where('type', '=', 'task.state_changed').where('seq', '>', out.cursor).execute()).map(row => row.task_id ?? '')]);
       const drafts: EventDraft[] = [];
       let created = 0, updated = 0, canceled = 0, comments = 0, approved = 0;
+      const agree = (taskId: string, column: string) => tx.updateTable('external_refs').set({ synced_state: column }).where('entity_type', '=', 'task').where('entity_id', '=', taskId).where('system', '=', system).execute();
       const remember = async (taskId: string, issue: TrackerIssue, known: boolean) => {
         const values = { external_id: issue.identifier, url: issue.url ?? null, synced_at: now(), remote_version: issue.updatedAt ?? null };
         if (known) await tx.updateTable('external_refs').set(values).where('entity_type', '=', 'task').where('entity_id', '=', taskId).where('system', '=', system).execute();
@@ -208,6 +209,7 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
           const id = newId(now());
           await tx.insertInto('tasks').values({ id, project_id: projectId, key: issue.identifier, source: 'tracker', title: issue.title, brief: issue.description ?? '', tag, priority: index, milestone_id: null, state: heldBecause ? 'backlog' : state, assignee_agent_id: null, author_agent_id: null, branch: null, head_sha: null, pr_url: null, blocked_reason: heldBecause, created_at: now(), updated_at: now() }).execute();
           await remember(id, issue, false);
+          await agree(id, bucketOf(heldBecause ? 'backlog' : state));
           drafts.push({ type: 'task.synced', actorKind: 'system', projectId, taskId: id, payload: { key: issue.identifier, state, ...(approval?.allowed ? { approved: true } : {}) } });
           created++;
           if (approval?.allowed) approved++;
@@ -228,6 +230,7 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
         // queue, and work already under way is the team's to finish or the owner's to stop. Approval clears the hold again.
         const hold = approval && !terminal(issue) && !approval.allowed ? approval.reason : null;
         if (hold && bucketOf(task.state) === 'backlog') {
+          if (state === 'backlog') await agree(task.id, state);
           if (task.blocked_reason !== hold || task.state === 'canceled') {
             await tx.updateTable('tasks').set({ state: 'backlog', blocked_reason: hold, title: issue.title, brief: issue.description ?? '', tag, updated_at: now() }).where('id', '=', task.id).execute();
             await tx.updateTable('work_items').set({ state: 'canceled' }).where('task_id', '=', task.id).where('state', '=', 'queued').execute();
@@ -237,8 +240,17 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
           continue;
         }
         if (!hold && task.blocked_reason && bucketOf(task.state) === 'backlog') await tx.updateTable('tasks').set({ blocked_reason: null, updated_at: now() }).where('id', '=', task.id).execute();
-        // Remote wins where the two disagree about the column; the finer local states within a column are the platform's.
-        const nextState = pending.has(task.id) || bucketOf(task.state) === state || (LOCAL.includes(task.state) && state !== 'done' && state !== 'canceled') ? task.state : state;
+        // Which side moved is the one that left the column both last agreed on. Only the platform moved (told the tracker just now,
+        // or the tracker refused and is told again next poll, or it moved after this poll's outbound pass): its state stands.
+        // Otherwise the remote wins where the two disagree about the column, but a poll never pulls a task out of a state the
+        // platform owns while it works; the finer local states within a column are the platform's.
+        const agreed = refs.get(task.id)?.synced_state ?? null, local = bucketOf(task.state);
+        const platformMoved = out.pushed.has(task.id) || pending.has(task.id) || (agreed !== null && state === agreed && local !== agreed);
+        const nextState = local === state || platformMoved || (LOCAL.includes(task.state) && state !== 'done' && state !== 'canceled') ? task.state : state;
+        // What both sides now agree on: the remote's column when the task is in it, the platform's when it was just told, else
+        // what they agreed on before (the first poll takes the remote's column as where both started).
+        const settled = bucketOf(nextState) === state ? state : out.pushed.has(task.id) ? local : agreed ?? state;
+        if (settled !== agreed) await agree(task.id, settled);
         if (task.title === issue.title && task.tag === tag && task.state === nextState && task.brief === (issue.description ?? '')) continue;
         await tx.updateTable('tasks').set({ title: issue.title, brief: issue.description ?? '', tag, state: nextState, updated_at: now() }).where('id', '=', task.id).execute();
         if (task.state !== nextState) drafts.push({ type: 'task.state_changed', actorKind: 'system', projectId, taskId: task.id, payload: { from: task.state, to: nextState, source: 'tracker' } });

@@ -1,5 +1,6 @@
 import { newId } from '@agent-team/protocol';
 import { HttpError, type Context } from '../context.ts';
+import { moveTask } from './taskMoves.ts';
 import type { Turns } from './turns.ts';
 
 // What a person can do to an agent directly: stop what it is doing right now, stop a task, and talk to it in private.
@@ -40,9 +41,9 @@ export function createControls(context: Context, turns: Turns) {
         const task = await tx.selectFrom('tasks').select(['id', 'project_id', 'state']).where('id', '=', taskId).executeTakeFirst();
         if (!task) throw new HttpError(404, 'not_found', 'Task not found');
         if (['done', 'canceled'].includes(task.state)) throw new HttpError(409, 'conflict', 'That task is already finished');
-        await tx.updateTable('tasks').set({ state: 'stopped', updated_at: now() }).where('id', '=', taskId).execute();
+        const moved = await moveTask(tx, taskId, 'stopped', { now: now(), actor: { actorKind: 'user', userId } });
         await tx.updateTable('work_items').set({ state: 'canceled', defer_reason: 'task-closed' }).where('task_id', '=', taskId).where('state', '=', 'queued').execute();
-        return events.append(tx, [...await interrupt(tx, { taskId }, userId), { type: 'task.stopped', actorKind: 'user', userId, projectId: task.project_id, taskId, payload: {} }]);
+        return events.append(tx, [...await interrupt(tx, { taskId }, userId), { type: 'task.stopped', actorKind: 'user', userId, projectId: task.project_id, taskId, payload: {} }, ...moved]);
       });
       events.published(published);
     },

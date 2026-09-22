@@ -35,6 +35,10 @@ test('claim is ordered by class, one running turn per agent and lane, one writer
   // Ada's work on the same task waits for Bram's write turn.
   assert.equal(await turns.claim(worker(projectId)), null);
   assert.equal((await storage.db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'in_progress');
+  // Starting work is a move like any other, and is said, with where the task came from.
+  const started = await storage.db.selectFrom('events').select(['payload', 'agent_id']).where('task_id', '=', taskId).where('type', '=', 'task.state_changed').execute();
+  assert.deepEqual(started.map(row => JSON.parse(row.payload).to), ['in_progress']);
+  assert.ok(['backlog', 'assigned'].includes(JSON.parse(started[0]!.payload).from) && [agent('Bram'), agent('Ada')].includes(started[0]!.agent_id!));
   await storage.close();
 });
 

@@ -99,15 +99,47 @@ test('moving a card writes to the tracker; when the issue moved there too, the r
     assert.equal(remote.writes.length, 1, 'the conflicting move is not pushed');
     assert.equal((await task('GH-2'))!.state, 'done');
 
-    // A refused write is reported and not repeated; the next poll lets the remote win.
+    // A refused write is reported and the move stands: the tracker refusing is no reason to undo the team's work. It is told again
+    // on the next poll, which the tracker accepts.
     remote.refuse = true;
     await workspace.moveTask(VIEWER, one.id, 'in_review');
     await sync.syncProject(projectId, client);
     assert.match((await sync.status(projectId)).find(row => row.resource === 'tracker.outbound')!.error ?? '', /403/);
+    assert.equal((await task('GH-1'))!.state, 'in_review');
     remote.refuse = false;
     await sync.syncProject(projectId, client);
-    assert.equal((await task('GH-1'))!.state, 'in_progress');
-    assert.equal(remote.writes.length, 1);
+    assert.equal((await task('GH-1'))!.state, 'in_review');
+    assert.deepEqual(remote.writes.slice(1), [['state', 'GH-1', 'in_review']]);
+  } finally { await storage.close(); }
+});
+
+test('a move the platform made without announcing it still reaches the tracker, and the tracker\'s older column never undoes it', async () => {
+  const { storage, projectId, sync, task } = await setup();
+  try {
+    const { remote, client } = fakeTracker([issue('GH-1', 'Pay button hangs', 'unstarted')]);
+    await sync.syncProject(projectId, client);
+    const one = (await task('GH-1'))!;
+
+    // Moved the way a claimed work turn used to move it: the row changed and no event said so.
+    await storage.db.updateTable('tasks').set({ state: 'in_progress' }).where('id', '=', one.id).execute();
+    await sync.syncProject(projectId, client);
+    assert.deepEqual(remote.writes, [['state', 'GH-1', 'started']]);
+    assert.equal((await task('GH-1'))!.state, 'in_progress', 'the issue, still unstarted in this poll, does not pull it back');
+
+    // Merged here: the issue is closed there.
+    remote.issues = [issue('GH-1', 'Pay button hangs', 'started')];
+    await storage.db.updateTable('tasks').set({ state: 'done' }).where('id', '=', one.id).execute();
+    await sync.syncProject(projectId, client);
+    assert.deepEqual(remote.writes.at(-1), ['state', 'GH-1', 'completed']);
+    assert.equal((await task('GH-1'))!.state, 'done');
+
+    // Reopened over there after both agreed it was done: that side moved, so it wins, and nothing is pushed back over it.
+    remote.issues = [issue('GH-1', 'Pay button hangs', 'completed')];
+    await sync.syncProject(projectId, client);
+    remote.issues = [issue('GH-1', 'Pay button hangs', 'unstarted')];
+    await sync.syncProject(projectId, client);
+    assert.equal((await task('GH-1'))!.state, 'backlog');
+    assert.equal(remote.writes.length, 2);
   } finally { await storage.close(); }
 });
 

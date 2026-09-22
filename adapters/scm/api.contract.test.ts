@@ -64,6 +64,9 @@ for (const [name, host] of Object.entries(HOSTS) as [keyof typeof HOSTS, (typeof
     const { api, seen } = recorded(name);
     assert.deepEqual(await api.reviewState(host.repository, host.change), host.review);
     await assert.rejects(api.reviewState(host.repository, host.foreign), /Not a change of this repository/);
+    // The recorded change collides with its base.
+    assert.deepEqual(await api.changeState(host.repository, host.change), { open: true, headSha: SHA, conflicting: true });
+    await assert.rejects(api.changeState(host.repository, host.foreign), /Not a change of this repository/);
 
     const expected = [{ suite: host.suite, branch: 'feature/pay', sha: SHA, counts: [1, 1, 1, 3, 1500], failing: [{ name: 'checkout.spec › pays with card', status: 'failed', message: 'Expected 200, got 500' }] }];
     for (const ref of [{ change: host.change }, { branch: 'feature/pay' }]) {
@@ -79,7 +82,7 @@ for (const [name, host] of Object.entries(HOSTS) as [keyof typeof HOSTS, (typeof
 
   test(`${name}: a failing host never leaks the response body or the token`, async () => {
     const api = scmApi(name, { env: host.env, fetch: (async () => new Response('host-token rejected: secret-body', { status: 500 })) as typeof fetch })!;
-    for (const attempt of [api.reviewState(host.repository, host.change), api.testReports(host.repository, { branch: 'main' }), api.environments(host.repository)]) await assert.rejects(attempt, error => /\(500\)/.test((error as Error).message) && !/host-token|secret-body/.test((error as Error).message));
+    for (const attempt of [api.reviewState(host.repository, host.change), api.changeState(host.repository, host.change), api.testReports(host.repository, { branch: 'main' }), api.environments(host.repository)]) await assert.rejects(attempt, error => /\(500\)/.test((error as Error).message) && !/host-token|secret-body/.test((error as Error).message));
     const offline = scmApi(name, { env: host.env, fetch: (async () => { throw new Error('connect ECONNREFUSED host-token'); }) as typeof fetch })!;
     await assert.rejects(offline.environments(host.repository), error => /network request failed/.test((error as Error).message) && !/host-token/.test((error as Error).message));
   });

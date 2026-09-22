@@ -27,13 +27,14 @@ test('environments of the code host feed the product view, and its test reports 
     const host = { environments: [{ name: 'preview', url: 'https://preview.example.com', branch: 'feature/pay' as string | null }, { name: 'staging', url: 'https://staging.example.com', branch: null }, { name: 'odd', url: 'javascript:alert(1)', branch: null }], reports: new Map<string, ScmTestReport[]>([['trunk', [report('unit', 'trunk', 'a'.repeat(40), [])]]]) };
     const api: ScmApi = {
       reviewState: async () => ({ state: 'pending', approvals: 0, reviewers: [] }),
+      changeState: async () => ({ open: true, headSha: null, conflicting: null }),
       environments: async () => host.environments,
       testReports: async (_repository, ref) => { const branch = 'branch' in ref ? ref.branch : ''; asked.push(branch); if (branch === 'gone') throw new Error('Host HTTP request failed (404)'); return host.reports.get(branch) ?? []; },
     };
     await storage.db.insertInto('product_envs').values({ id: 'manual-1', project_id: projectId, name: 'staging', branch: null, url: 'https://hand-made.example.com', source: 'manual', created_at: 1 }).execute();
     const sync = createScmSync(context);
-    assert.deepEqual(await sync.syncProject(projectId, api), { environments: 1, runs: 1 });
-    assert.deepEqual(await sync.syncProject(projectId, api), { environments: 0, runs: 0 }, 'the same commit is not recorded twice');
+    assert.deepEqual(await sync.syncProject(projectId, api), { environments: 1, runs: 1, sentBack: 0 });
+    assert.deepEqual(await sync.syncProject(projectId, api), { environments: 0, runs: 0, sentBack: 0 }, 'the same commit is not recorded twice');
     const envs = await storage.db.selectFrom('product_envs').select(['name', 'url', 'branch', 'source']).where('project_id', '=', projectId).orderBy('name').execute();
     assert.deepEqual(envs.map(row => [row.name, row.url, row.branch, row.source]), [['preview', 'https://preview.example.com', 'feature/pay', 'scm'], ['staging', 'https://hand-made.example.com', null, 'manual']]);
     host.environments[0]!.url = 'https://preview-2.example.com';
@@ -74,5 +75,48 @@ test('a failing run on a task’s branch emits check.failed and wakes whoever wo
     assert.match((await failingChecks(storage.db, 't1'))!, /# Failing checks on feature\/pay\n- e2e: 1 failing at bbbbbbbbbb\n {2}- checkout\.spec › pays with card: Expected 200, got 500$/);
     await checks.record({ projectId, suite: 'e2e', branch: 'feature/pay', sha: 'c'.repeat(40), source: 'scm', report: report('e2e', 'feature/pay', 'c'.repeat(40), []).report });
     assert.equal(await failingChecks(storage.db, 't1'), null);
+  } finally { await storage.close(); }
+});
+
+test('a change in review that no longer merges goes back to its author at once, to merge the base in, once per revision', async () => {
+  const { storage, context, projectId } = await setup();
+  try {
+    const db = storage.db, turns = createTurns(context), sync = createScmSync(context, turns);
+    const author = await db.selectFrom('agents').select('id').where('is_pm', '=', false).executeTakeFirstOrThrow(), pm = await db.selectFrom('agents').select('id').where('is_pm', '=', true).executeTakeFirstOrThrow();
+    const head = 'c'.repeat(40), url = 'https://host.example/acme/shop/pull/3';
+    await db.insertInto('tasks').values({ id: 't1', project_id: projectId, key: 'T-1', source: 'internal', title: 'Pay', brief: '', tag: null, priority: 0, milestone_id: null, state: 'in_review', assignee_agent_id: author.id, author_agent_id: null, branch: null, head_sha: head, pr_url: url, blocked_reason: null, created_at: 1, updated_at: 1 }).execute();
+    await turns.enqueue({ agentId: pm.id, projectId, kind: 'review', taskId: 't1', dedupeKey: `review:t1:pm:${head}` });
+    const answer: { open: boolean; headSha: string | null; conflicting: boolean | null } = { open: true, headSha: head, conflicting: null };
+    const asked: string[] = [];
+    const api: ScmApi = {
+      reviewState: async () => ({ state: 'pending', approvals: 0, reviewers: [] }),
+      changeState: async (_repository, change) => { asked.push(change); return { ...answer }; },
+      environments: async () => [], testReports: async () => [],
+    };
+
+    // The host has not worked it out yet: that is no answer, and nothing is sent.
+    assert.equal((await sync.syncProject(projectId, api)).sentBack, 0);
+    assert.deepEqual(asked, [url]);
+    // It collides, but at another head than the one in review: that says nothing about this revision.
+    Object.assign(answer, { conflicting: true, headSha: 'd'.repeat(40) });
+    assert.equal((await sync.syncProject(projectId, api)).sentBack, 0);
+
+    // It collides at the revision in review: back to its author with what to do, the review still waiting is dropped, the author is started.
+    answer.headSha = head;
+    assert.equal((await sync.syncProject(projectId, api)).sentBack, 1);
+    assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', 't1').executeTakeFirstOrThrow()).state, 'in_progress');
+    const moves = (await db.selectFrom('events').select('payload').where('task_id', '=', 't1').where('type', '=', 'task.state_changed').execute()).map(row => JSON.parse(row.payload));
+    assert.deepEqual(moves.map(move => [move.from, move.to, move.reason]), [['in_review', 'in_progress', 'conflicts-with-base']]);
+    const told = await db.selectFrom('messages').innerJoin('threads', 'threads.id', 'messages.thread_id').select('messages.body').where('threads.subject_id', '=', 't1').execute();
+    assert.equal(told.length, 1);
+    assert.match(told[0]!.body, /^This change no longer merges into the base branch/);
+    assert.match(told[0]!.body, /MERGE it into your branch/);
+    const items = await db.selectFrom('work_items').select(['agent_id', 'kind', 'state']).where('task_id', '=', 't1').execute();
+    assert.deepEqual(items.map(item => [item.kind, item.state, item.agent_id === author.id]).sort(), [['review', 'canceled', false], ['work', 'queued', true]]);
+
+    // Once per revision: in review again at the same head and still colliding, it is not sent back a second time.
+    await db.updateTable('tasks').set({ state: 'in_review' }).where('id', '=', 't1').execute();
+    assert.equal((await sync.syncProject(projectId, api)).sentBack, 0);
+    assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', 't1').executeTakeFirstOrThrow()).state, 'in_review');
   } finally { await storage.close(); }
 });

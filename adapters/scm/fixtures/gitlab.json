@@ -19,7 +19,9 @@
     "head_pipeline": {
       "id": 77,
       "status": "failed"
-    }
+    },
+    "has_conflicts": true,
+    "detailed_merge_status": "conflict"
   },
   "/projects/group%2Fsub%2Fproject/pipelines?ref=feature%2Fpay&per_page=20": [
     {

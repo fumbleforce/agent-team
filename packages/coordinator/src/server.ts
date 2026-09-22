@@ -84,7 +84,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
 
   const sync = createTrackerSync(context, turns), trackers = config.trackers === undefined ? adapterTrackers : config.trackers;
   // A deployment that turns outside polling off for trackers has it off for code hosts too, unless it names a factory.
-  const scmSync = createScmSync(context), hosts = config.scm === undefined ? (config.trackers === null ? null : adapterScm) : config.scm;
+  const scmSync = createScmSync(context, turns), hosts = config.scm === undefined ? (config.trackers === null ? null : adapterScm) : config.scm;
   const slack = createSlackMirror(context), drive = createDriveSync(context), gitMirror = config.knowledgeMirror ? createGitMirror(context, config.knowledgeMirror) : null;
   // Outbound mirrors run on a short timer and never stop the coordinator when their other side is down.
   const mirrorTimer = setInterval(() => { void slack.sync().then(() => gitMirror?.sync()).then(() => drive.pull()).then(() => drive.sync()).catch(error => console.error(`Mirror failed: ${(error as Error).message}`)); }, 10_000);

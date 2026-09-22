@@ -2,6 +2,7 @@ import type { z } from 'zod';
 import { newId, type FinishBody, type SessionBody } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import type { Context } from '../context.ts';
+import { moveTask } from './taskMoves.ts';
 import { wayOfWorking } from './wayOfWorking.ts';
 import { buildResumeDelta, buildResumePacket, type Packet } from './packet.ts';
 
@@ -119,8 +120,7 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
       if (outcome.state !== 'completed') return { requeued: false, drafts: [] };
       const item = await tx.selectFrom('work_items').select('dedupe_key').where('id', '=', turn.work_item_id).executeTakeFirst();
       if (item?.dedupe_key?.startsWith(CONTINUE)) {
-        await tx.updateTable('tasks').set({ state: 'blocked', blocked_reason: 'no-report', updated_at: now() }).where('id', '=', turn.task_id).execute();
-        return { requeued: false, drafts: [{ ...base, type: 'task.state_changed', payload: { to: 'blocked', reason: 'no-report' } }] };
+        return { requeued: false, drafts: await moveTask(tx, turn.task_id, 'blocked', { set: { blocked_reason: 'no-report' }, now: now(), actor: { actorKind: 'system', agentId: turn.agent_id, turnId: turn.id }, payload: { reason: 'no-report' } }) };
       }
       const waiting = await tx.selectFrom('work_items').select('id').where('agent_id', '=', turn.agent_id).where('task_id', '=', turn.task_id).where('kind', '=', 'work').where('state', '=', 'queued').executeTakeFirst();
       return { requeued: false, drafts: waiting ? [] : [await queueWork(tx, turn, `${CONTINUE}${turn.id}`)] };

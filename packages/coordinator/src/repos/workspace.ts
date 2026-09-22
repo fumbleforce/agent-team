@@ -4,6 +4,7 @@ import { BOARD_COLUMNS, newId, packageRoot, type BoardColumn, type MessageKind, 
 import { HttpError, notFound, type Context } from '../context.ts';
 import { canSeeProject, type Viewer } from '../auth/rbac.ts';
 import { indexMessage } from '../knowledge/indexing.ts';
+import { moveTask } from '../runtime/taskMoves.ts';
 
 interface Blueprint { slug: string; name: string; seats: { name: string; title: string; isPm?: boolean; roles: string[]; persona: string }[] }
 const defaultTeam = (): Blueprint => JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'default-team.json'), 'utf8'));
@@ -115,8 +116,8 @@ export function createWorkspace(context: Context) {
         if (!task) throw notFound('Task');
         // Held in the backlog means not to be worked on yet; handing it to someone would start exactly that.
         if (task.state === 'backlog' && task.blocked_reason) throw new HttpError(409, 'conflict', `This task is held: ${task.blocked_reason}. Approve it in the tracker (or lift the hold there) first.`);
-        await tx.updateTable('tasks').set({ assignee_agent_id: agentId, state: task.state === 'backlog' || task.state === 'inbox' ? 'assigned' : task.state, updated_at: now() }).where('id', '=', taskId).execute();
-        return { projectId: task.project_id, events: await events.append(tx, [{ type: 'task.assigned', actorKind: 'user', userId: viewer.userId, projectId: task.project_id, taskId, agentId }]) };
+        const moved = await moveTask(tx, taskId, task.state === 'backlog' || task.state === 'inbox' ? 'assigned' : task.state as TaskState, { set: { assignee_agent_id: agentId }, now: now(), actor: { actorKind: 'user', userId: viewer.userId } });
+        return { projectId: task.project_id, events: await events.append(tx, [{ type: 'task.assigned', actorKind: 'user', userId: viewer.userId, projectId: task.project_id, taskId, agentId }, ...moved]) };
       });
       events.published(published.events);
       return published.projectId;

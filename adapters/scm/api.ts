@@ -1,11 +1,12 @@
 import { inflateRawSync } from 'node:zlib';
 import { parseJUnit, type JUnitReport } from '../../packages/coordinator/src/checks/junit.ts';
-import type { ScmApi, ScmEnvironment, ScmReviewState, ScmTestReport } from '../../packages/coordinator/src/sync/scm.ts';
+import type { ScmApi, ScmChangeState, ScmEnvironment, ScmReviewState, ScmTestReport } from '../../packages/coordinator/src/sync/scm.ts';
+import { githubCredential } from '../tracker/githubCredential.ts';
 import { SCM_GATES } from './gates.ts';
 
 // What the coordinator polls from the host over HTTP: review state, test reports and environments. The token comes from the
 // host's usual variable. Response bodies and fetch errors are never surfaced: they may carry the token or private text.
-export type { ScmApi, ScmEnvironment, ScmReviewState, ScmTestReport } from '../../packages/coordinator/src/sync/scm.ts';
+export type { ScmApi, ScmChangeState, ScmEnvironment, ScmReviewState, ScmTestReport } from '../../packages/coordinator/src/sync/scm.ts';
 export interface ScmApiOptions { env?: Record<string, string | undefined>; fetch?: typeof fetch }
 
 const MAX_ARCHIVE = 50_000_000, MAX_ENTRY = 20_000_000;
@@ -53,7 +54,8 @@ const REPORT_ARTIFACT = /junit|test[-_ ]?(report|result)s?/i;
 interface GithubRun { id: number; head_sha: string; head_branch?: string }
 
 function githubApi(options: ScmApiOptions): ScmApi | null {
-  const token = (options.env ?? process.env).GH_TOKEN;
+  // GH_TOKEN when it is set, else the GitHub command-line login of this machine, as the tracker does.
+  const token = githubCredential(options.env ?? process.env, { names: ['GH_TOKEN'] })?.token;
   if (!token) return null;
   const http = client('GitHub', 'https://api.github.com', { authorization: `Bearer ${token}`, accept: 'application/vnd.github+json', 'user-agent': 'agent-team', 'x-github-api-version': '2022-11-28' }, options.fetch ?? fetch);
   const repo = (repository: string) => { if (!/^[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?\/[A-Za-z0-9_.-]+$/.test(repository)) throw new Error('Invalid repository'); return `/repos/${repository}`; };
@@ -73,6 +75,12 @@ function githubApi(options: ScmApiOptions): ScmApi | null {
       }
       const reviewers = [...latest].map(([name, state]) => ({ name, state })), approvals = reviewers.filter(item => item.state === 'approved').length;
       return { state: reviewers.some(item => item.state === 'changes_requested') ? 'changes_requested' : approvals > 0 ? 'approved' : 'pending', approvals, reviewers };
+    },
+
+    // `mergeable` is null while GitHub still computes it; false means the change conflicts with its base.
+    async changeState(repository, url): Promise<ScmChangeState> {
+      const pull = await http.json<{ state?: string; mergeable?: boolean | null; head?: { sha?: string } }>(change(repository, url));
+      return { open: pull.state === 'open', headSha: pull.head?.sha ?? null, conflicting: typeof pull.mergeable === 'boolean' ? !pull.mergeable : null };
     },
 
     // The JUnit artifacts of the finished workflow runs of the branch's newest commit, one suite per artifact.
@@ -128,6 +136,13 @@ function gitlabApi(options: ScmApiOptions): ScmApi | null {
       const approvals = await http.json<{ approvals_left?: number; approved_by?: { user?: { username?: string } }[] }>(`${change(repository, url)}/approvals`);
       const reviewers = (approvals.approved_by ?? []).map(item => ({ name: item.user?.username ?? 'unknown', state: 'approved' as const }));
       return { state: reviewers.length > 0 && (approvals.approvals_left ?? 0) === 0 ? 'approved' : 'pending', approvals: reviewers.length, reviewers };
+    },
+
+    // GitLab checks mergeability in the background; until it has, `has_conflicts` says nothing.
+    async changeState(repository, url): Promise<ScmChangeState> {
+      const found = await http.json<{ state?: string; sha?: string; has_conflicts?: boolean; detailed_merge_status?: string }>(change(repository, url));
+      const checking = ['unchecked', 'checking', 'preparing', 'approvals_syncing'].includes(found.detailed_merge_status ?? '');
+      return { open: found.state === 'opened', headSha: found.sha ?? null, conflicting: checking || typeof found.has_conflicts !== 'boolean' ? null : found.has_conflicts };
     },
 
     // The pipeline test report is already parsed by the host: one suite per job that uploaded a JUnit report.

@@ -2,6 +2,7 @@ import { newId } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
 import type { Context } from '../context.ts';
 import { HttpError } from '../context.ts';
+import { moveTask } from './taskMoves.ts';
 import type { Turns } from './turns.ts';
 import { wayOfWorking } from './wayOfWorking.ts';
 
@@ -59,8 +60,8 @@ export function createDocuments(context: Context, turns: Turns) {
         // A verdict on an earlier revision says nothing about this one.
         const earlier = parseRef(task.result_ref);
         if (earlier && revisionId(earlier) !== revisionId(ref)) await tx.updateTable('approvals').set({ state: 'stale' }).where('task_id', '=', task.id).where('state', '=', 'valid').execute();
-        await tx.updateTable('tasks').set({ state: reviewers.length ? 'in_review' : 'done', result_ref: JSON.stringify(ref), blocked_reason: null, updated_at: now() }).where('id', '=', task.id).execute();
-        const published = await events.append(tx, [{ type: 'review.requested', actorKind: 'agent', agentId: turn.agent_id, projectId: task.project_id, taskId: task.id, turnId: turn.id, payload: { document: ref, reviewers } }]);
+        const moved = await moveTask(tx, task.id, reviewers.length ? 'in_review' : 'done', { set: { result_ref: JSON.stringify(ref), blocked_reason: null }, now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, payload: { document: ref } });
+        const published = await events.append(tx, [...moved, { type: 'review.requested', actorKind: 'agent', agentId: turn.agent_id, projectId: task.project_id, taskId: task.id, turnId: turn.id, payload: { document: ref, reviewers } }]);
         return { ref, reviewers, projectId: task.project_id, taskId: task.id, published };
       });
       events.published(result.published);
@@ -87,10 +88,9 @@ export function createDocuments(context: Context, turns: Turns) {
         const sentBack = given.some(row => row.verdict !== 'pass');
         const accepted = !sentBack && asked.every(agentId => given.some(row => row.agent_id === agentId));
         const state = sentBack ? 'in_progress' : accepted ? 'done' : 'in_review';
-        if (state !== 'in_review') await tx.updateTable('tasks').set({ state, updated_at: now() }).where('id', '=', task.id).execute();
         const drafts = [
           { type: 'review.recorded', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: task.project_id, taskId: task.id, turnId: turn.id, payload: { document: ref, verdict: input.verdict } },
-          ...(state === 'in_review' ? [] : [{ type: 'task.state_changed', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: task.project_id, taskId: task.id, turnId: turn.id, payload: { from: 'in_review', to: state, document: ref } }]),
+          ...(state === 'in_review' ? [] : await moveTask(tx, task.id, state, { now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, payload: { document: ref } })),
         ];
         return { state, ownerId: task.assignee_agent_id, projectId: task.project_id, taskId: task.id, published: await events.append(tx, drafts) };
       });

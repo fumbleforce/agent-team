@@ -1,5 +1,7 @@
-import { newId } from '@agent-team/protocol';
+import { newId, type EventDraft } from '@agent-team/protocol';
 import type { Context } from '../context.ts';
+import { sendBackToMerge } from '../runtime/conflicts.ts';
+import type { Turns } from '../runtime/turns.ts';
 import { createChecks } from '../checks/checks.ts';
 import type { JUnitReport } from '../checks/junit.ts';
 import { createCursors } from './cursors.ts';
@@ -9,8 +11,12 @@ export interface ScmReviewState { state: 'approved' | 'changes_requested' | 'pen
 export interface ScmTestReport { suite: string; branch: string; sha: string | null; report: JUnitReport }
 export interface ScmEnvironment { name: string; url: string; branch: string | null }
 export type ScmRef = { branch: string } | { change: string };
+// Where a change stands: still open, at which head, and whether the host says it collides with the base (null while the host is
+// still working that out, which is not an answer).
+export interface ScmChangeState { open: boolean; headSha: string | null; conflicting: boolean | null }
 export interface ScmApi {
   reviewState(repository: string, change: string): Promise<ScmReviewState>;
+  changeState(repository: string, change: string): Promise<ScmChangeState>;
   // The parsed test reports of the latest finished pipeline or run of a branch, or of a change's head.
   testReports(repository: string, ref: ScmRef): Promise<ScmTestReport[]>;
   environments(repository: string): Promise<ScmEnvironment[]>;
@@ -18,7 +24,7 @@ export interface ScmApi {
 
 const RESOURCE = 'scm', MAX_BRANCHES = 20;
 
-export function createScmSync(context: Context) {
+export function createScmSync(context: Context, turns: Pick<Turns, 'enqueue'> | null = null) {
   const { storage, events, now } = context;
   const db = storage.db;
   const cursors = createCursors(context), checks = createChecks(context);
@@ -27,7 +33,7 @@ export function createScmSync(context: Context) {
     const project = await db.selectFrom('projects').select('manifest').where('id', '=', projectId).executeTakeFirstOrThrow();
     const manifest = JSON.parse(project.manifest) as { scm?: { repository?: string }; delivery?: { baseBranch?: string } };
     const repository = manifest.scm?.repository;
-    if (!repository) return { environments: 0, runs: 0 };
+    if (!repository) return { environments: 0, runs: 0, sentBack: 0 };
 
     // Preview and deployed environments become the product view's choices. One a person added by hand is never touched.
     const remote = await api.environments(repository);
@@ -60,8 +66,26 @@ export function createScmSync(context: Context) {
         runs++;
       }
     }
+
+    // A change in review that no longer merges into the base goes back to its author at once, to merge the base in, instead of
+    // being reviewed at a revision that cannot merge and found out only by the merge gate. The host's answer counts only for the
+    // revision the team is on. Once per revision, as at the gate: when the author could not put it right, the gate asks a person.
+    let sentBack = 0;
+    if (turns) for (const task of await db.selectFrom('tasks').select(['id', 'pr_url', 'head_sha']).where('project_id', '=', projectId).where('pr_url', 'is not', null).where('state', '=', 'in_review').orderBy('updated_at', 'desc').limit(MAX_BRANCHES).execute()) {
+      const found = await api.changeState(repository, task.pr_url!).catch(error => { failure = error; return null; });
+      if (!found?.open || found.conflicting !== true || !task.head_sha || found.headSha !== task.head_sha) continue;
+      const sent = await storage.transaction(async tx => {
+        const drafts: EventDraft[] = [];
+        const who = await sendBackToMerge(tx, task.id, { now: now(), approved: false, from: ['in_review'], actor: { actorKind: 'system' }, drafts });
+        // Reviews still waiting to start would look at a revision that is about to be replaced.
+        if (who) await tx.updateTable('work_items').set({ state: 'canceled' }).where('task_id', '=', task.id).where('kind', '=', 'review').where('state', '=', 'queued').execute();
+        return { who, published: drafts.length ? await events.append(tx, drafts) : [] };
+      });
+      events.published(sent.published);
+      if (sent.who) { await turns.enqueue({ ...sent.who, kind: 'work', dedupeKey: `work:${sent.who.taskId}` }); sentBack++; }
+    }
     if (failure) throw failure;
-    return { environments: environments.changed, runs };
+    return { environments: environments.changed, runs, sentBack };
   }
 
   return {

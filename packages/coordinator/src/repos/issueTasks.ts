@@ -1,6 +1,7 @@
 import { newId } from '@agent-team/protocol';
 import type { EventDraft } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
+import { moveTask } from '../runtime/taskMoves.ts';
 
 // The team a project works with: its own, or its parent's.
 export async function teamIdOf(tx: Tx, projectId: string): Promise<string | null> {
@@ -36,8 +37,8 @@ export async function taskFromIssue(tx: Tx, input: { issue: { id: string; number
     const waiting = await tx.selectFrom('tasks').select('id').where('id', '=', linked.to_id).where('state', '=', 'inbox').executeTakeFirst();
     if (!waiting) return { taskId: null, events: [] };
     const lowest = await tx.selectFrom('tasks').select(eb => eb.fn.max('priority').as('n')).where('project_id', '=', issue.project_id).executeTakeFirst();
-    await tx.updateTable('tasks').set({ state: 'assigned', assignee_agent_id: ownerId, priority: Number(lowest?.n ?? -1) + 1, updated_at: now }).where('id', '=', waiting.id).execute();
-    return { taskId: waiting.id, events: [{ ...input.actor, type: 'task.assigned', agentId: ownerId, projectId: issue.project_id, taskId: waiting.id, payload: { fromIssue: issue.id } }] };
+    const moved = await moveTask(tx, waiting.id, 'assigned', { set: { assignee_agent_id: ownerId, priority: Number(lowest?.n ?? -1) + 1 }, now, actor: input.actor, payload: { fromIssue: issue.id } });
+    return { taskId: waiting.id, events: [{ ...input.actor, type: 'task.assigned', agentId: ownerId, projectId: issue.project_id, taskId: waiting.id, payload: { fromIssue: issue.id } }, ...moved] };
   }
   const taskId = newId(now);
   const lowest = await tx.selectFrom('tasks').select(eb => eb.fn.max('priority').as('n')).where('project_id', '=', issue.project_id).executeTakeFirst();

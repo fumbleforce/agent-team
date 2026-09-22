@@ -132,6 +132,8 @@ export function createMcp(context: Context, deps: McpDeps) {
       const published = await storage.transaction(async tx => {
         // The journal is the owner's own record of where the task stands; the next turn starts from it on whatever worker runs it.
         const journal = JSON.stringify({ standing: input.summary, next: input.next ?? null, open: input.open ?? null, turnId: turn.id, at: now() });
+        // The report is always logged, with where the task was when it was given, also when it stays where it was (a checkpoint).
+        const from = (await tx.selectFrom('tasks').select('state').where('id', '=', turn.task_id!).executeTakeFirst())?.state ?? null;
         await tx.updateTable('tasks').set({ state, journal, blocked_reason: input.state === 'blocked' ? (input.blockedReason ?? 'blocked') : null, updated_at: now() }).where('id', '=', turn.task_id!).execute();
         await tx.updateTable('turns').set({ summary: input.summary }).where('id', '=', turn.id).execute();
         // Closed as not needed: nothing of it waits to be merged, and the report it came from is closed with it.
@@ -140,7 +142,7 @@ export function createMcp(context: Context, deps: McpDeps) {
           const issue = await tx.selectFrom('links').select('from_id').where('from_type', '=', 'issue').where('to_type', '=', 'task').where('to_id', '=', turn.task_id!).executeTakeFirst();
           if (issue) await tx.updateTable('issues').set({ state: 'closed', closed_at: now() }).where('id', '=', issue.from_id).execute();
         }
-        return events.append(tx, [{ type: 'task.state_changed', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, taskId: turn.task_id, turnId: turn.id, payload: { to: state, summary: input.summary } }]);
+        return events.append(tx, [{ type: 'task.state_changed', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, taskId: turn.task_id, turnId: turn.id, payload: { from, to: state, summary: input.summary } }]);
       });
       events.published(published);
       // A task that ends in a document hands in the page it wrote; from here it is reviewed at that revision.

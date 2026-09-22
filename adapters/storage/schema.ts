@@ -114,7 +114,7 @@ export interface SchedulesTable { id: string; project_id: string; kind: string; 
 export interface SchedulesSchema { schedules: SchedulesTable }
 
 // Where a local entity lives in another system, and how far each poll got. `scope_id` is a connection or a project.
-export interface ExternalRefsTable { entity_type: string; entity_id: string; system: string; external_id: string; url: string | null; synced_at: Ms; remote_version: string | null }
+export interface ExternalRefsTable { entity_type: string; entity_id: string; system: string; external_id: string; url: string | null; synced_at: Ms; remote_version: string | null; /* The column both sides last agreed on, for a task. */ synced_state: Generated<string | null> }
 export interface SyncCursorsTable { scope_id: string; resource: string; cursor: string | null; last_ok_at: Ms | null; error: string | null; failing_since: Ms | null }
 
 export interface SyncSchema { external_refs: ExternalRefsTable; sync_cursors: SyncCursorsTable }

@@ -1,7 +1,8 @@
 import type { z } from 'zod';
 import { providerEntry } from '../../../../adapters/engine/providers.ts';
 import { DESK_ROLE } from '../runtime/desk.ts';
-import { newId, type AgentBody, type AgentPatch, type FromTemplateBody, type HireBody, type MilestoneBody, type MilestonePatch, type ProjectLinkBody, type SeatLoanBody, type TemplateSeat } from '@agent-team/protocol';
+import { moveTask } from '../runtime/taskMoves.ts';
+import { newId, type AgentBody, type EventDraft, type AgentPatch, type FromTemplateBody, type HireBody, type MilestoneBody, type MilestonePatch, type ProjectLinkBody, type SeatLoanBody, type TemplateSeat } from '@agent-team/protocol';
 import type { Db, Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 
@@ -78,15 +79,16 @@ export async function stampTemplate(tx: Tx, now: () => number, projectId: string
 
 // The seat leaves for good. What it had not finished goes back to the backlog for someone else, and what waited for it is dropped;
 // a turn that is running ends by itself. A team is never left without the one who decides ties.
-export async function retireSeat(tx: Tx, now: () => number, agentId: string): Promise<{ name: string; returned: { id: string; key: string; projectId: string }[] }> {
+export async function retireSeat(tx: Tx, now: () => number, agentId: string): Promise<{ name: string; returned: { id: string; key: string; projectId: string }[]; drafts: EventDraft[] }> {
   const agent = await tx.selectFrom('agents').select(['name', 'is_pm', 'status']).where('id', '=', agentId).executeTakeFirst();
   if (!agent || agent.status === 'retired') throw notFound('Agent');
   if (agent.is_pm === true) throw new HttpError(409, 'pm_needed', `${agent.name} is the team's PM. Make someone else the PM first, then retire this seat.`);
   await tx.updateTable('agents').set({ status: 'retired' }).where('id', '=', agentId).execute();
   await tx.updateTable('work_items').set({ state: 'expired' }).where('agent_id', '=', agentId).where('state', '=', 'queued').execute();
   const tasks = await tx.selectFrom('tasks').select(['id', 'key', 'project_id']).where('assignee_agent_id', '=', agentId).where('state', 'in', ['backlog', 'assigned', 'in_progress', 'blocked']).execute();
-  if (tasks.length) await tx.updateTable('tasks').set({ assignee_agent_id: null, state: 'backlog', blocked_reason: null, updated_at: now() }).where('id', 'in', tasks.map(task => task.id)).execute();
-  return { name: agent.name, returned: tasks.map(task => ({ id: task.id, key: task.key, projectId: task.project_id })) };
+  const drafts: EventDraft[] = [];
+  for (const task of tasks) drafts.push(...await moveTask(tx, task.id, 'backlog', { set: { assignee_agent_id: null, blocked_reason: null }, now: now(), actor: { actorKind: 'system', agentId }, payload: { reason: 'seat-retired' } }));
+  return { name: agent.name, returned: tasks.map(task => ({ id: task.id, key: task.key, projectId: task.project_id })), drafts };
 }
 
 // Structure around the projects: milestones, cross-project links, seats on loan, and teams stamped from templates or hired from the library.
@@ -322,9 +324,9 @@ export function createOrg(context: Context) {
           await tx.deleteFrom('agent_roles').where('agent_id', '=', agentId).execute();
           for (const role of new Set(input.roles)) await tx.insertInto('agent_roles').values({ agent_id: agentId, role_slug: role }).execute();
         }
-        const returned = input.status === 'retired' ? (await retireSeat(tx, now, agentId)).returned : [];
+        const retired = input.status === 'retired' ? await retireSeat(tx, now, agentId) : null, returned = retired?.returned ?? [];
         const type = input.status === 'retired' ? 'agent.retired' : input.status === 'paused' && agent.status !== 'paused' ? 'agent.paused' : input.status === 'active' && agent.status !== 'active' ? 'agent.resumed' : 'agent.updated';
-        return events.append(tx, [{ type, category: 'audit', ...user(userId), agentId, projectId, payload: { name: input.name ?? agent.name, changed: Object.keys(input), ...(returned.length ? { returned: returned.map(task => task.key) } : {}) } }]);
+        return events.append(tx, [{ type, category: 'audit', ...user(userId), agentId, projectId, payload: { name: input.name ?? agent.name, changed: Object.keys(input), ...(returned.length ? { returned: returned.map(task => task.key) } : {}) } }, ...retired?.drafts ?? []]);
       });
       events.published(published);
     },

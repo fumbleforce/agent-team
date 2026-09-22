@@ -70,6 +70,10 @@ test('work is published, reviewed at its head by three agents, then merged by th
   assert.equal(gate.branch, 'agents/gh-7');
   // Read while the delivery turn held its lease: the gate sees the platform's approvals, not a copy.
   assert.deepEqual(approvalKinds, ['pm', 'reviewer', 'tester']);
+  const moves = (await db.selectFrom('events').select('payload').where('task_id', '=', taskId).where('type', '=', 'task.state_changed').orderBy('seq').execute()).map(row => JSON.parse(row.payload) as { from: string; to: string });
+  // Every move is said, with where it came from: approval, the merge starting, the merge done. A move nobody announced let a
+  // board mirror put the task back where the mirror last saw it.
+  assert.deepEqual(moves.map(move => `${move.from} > ${move.to}`), ['in_review > approved', 'approved > merging', 'merging > done']);
   await coordinator.close();
 });
 
