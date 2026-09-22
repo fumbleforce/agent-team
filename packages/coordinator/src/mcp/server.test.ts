@@ -77,6 +77,43 @@ test('a report that names nothing is not logged: the refusal says what a report 
   } finally { await coordinator.close(); }
 });
 
+test('a bare handoff is refused without spending its once-per-turn call, and still names what was done when it goes through', async () => {
+  const { coordinator, db, call, agents, taskId, claimed } = await boot('work');
+  try {
+    const bare = await call('task.handoff', { toAgentId: agents.Ada, summary: 'done' });
+    assert.equal(bare.error, true);
+    assert.match(bare.text, /cannot be logged/);
+    // The refusal reserved nothing, so the real handoff still goes through in the same turn.
+    const handed = await call('task.handoff', { toAgentId: agents.Ada, summary: 'CK-31: animation done; timeout handling is left.' });
+    assert.deepEqual(handed.data, { taskId, assigneeAgentId: agents.Ada });
+    assert.equal((await db.selectFrom('turns').select('summary').where('id', '=', claimed.turnId).executeTakeFirstOrThrow()).summary, 'CK-31: animation done; timeout handling is left.');
+  } finally { await coordinator.close(); }
+});
+
+test('a bare verdict is refused without spending the review turn\'s one verdict', async () => {
+  const { coordinator, db, call } = await boot('review', { agent: 'Cleo', roles: ['tester'] });
+  try {
+    await db.updateTable('tasks').set({ head_sha: 'a'.repeat(40) }).where('key', '=', 'CK-31').execute();
+    const bare = await call('task.review', { kind: 'tester', verdict: 'pass', summary: 'ok' });
+    assert.equal(bare.error, true);
+    assert.match(bare.text, /cannot be logged/);
+    assert.equal(await db.selectFrom('approvals').select('id').executeTakeFirst(), undefined);
+    const real = await call('task.review', { kind: 'tester', verdict: 'pass', summary: 'Checked the claim query and the retry guard; both hold.' });
+    assert.equal(real.error, false, real.text);
+  } finally { await coordinator.close(); }
+});
+
+test('an engine summary that names nothing is not logged and is no report: one continuation follows', async () => {
+  const { coordinator, db, turns, claimed, projectId } = await boot('work');
+  try {
+    await turns.finish(claimed.turnId, 'w1', claimed.leaseToken, { state: 'completed', summary: 'Done.' });
+    assert.equal((await db.selectFrom('turns').select('summary').where('id', '=', claimed.turnId).executeTakeFirstOrThrow()).summary, null);
+    const again = (await turns.claim({ workerId: 'w1', free: { work: 1 }, projects: [projectId] }))!;
+    assert.equal(again.kind, 'work');
+    assert.match(again.packet?.prompt ?? '', /ended without a report/);
+  } finally { await coordinator.close(); }
+});
+
 test('tools are scoped by turn kind, project and lease', async () => {
   const { coordinator, db, rpc, turns, claimed } = await boot('feedback');
   try {

@@ -8,6 +8,7 @@ import { createDecisions } from './decisions.ts';
 import { buildPacket, type Packet } from './packet.ts';
 import { createSessions, STALLED_AFTER, type Resume } from './sessions.ts';
 import { DEFAULT_RULES, type Notice } from './rules.ts';
+import { saysNothing } from './reports.ts';
 import * as scheduler from './scheduler.ts';
 import { accessOf, laneOf, maxWritersOf, WORKER_FRESH_MS, type ClaimDraft, type Snapshot } from './scheduler.ts';
 
@@ -302,8 +303,9 @@ export function createTurns(context: Context) {
       const published = await storage.transaction(async tx => {
         const turn = await leased(tx, turnId, workerId, leaseToken);
         if (turn.kind === 'work' && turn.task_id && outcome.state === 'completed' && (await tx.selectFrom('tasks').select('state').where('id', '=', turn.task_id).executeTakeFirst())?.state === 'in_review') reviewTaskId = turn.task_id;
-        // The report the agent wrote during the turn survives a finish that brings no engine summary of its own; it is the turn's log entry.
-        await tx.updateTable('turns').set({ state: outcome.state, stop_reason: outcome.stopReason ?? null, summary: (outcome.summary?.trim() ? outcome.summary.slice(0, 2000) : null) ?? turn.summary, tokens_in: outcome.tokensIn ?? 0, tokens_out: outcome.tokensOut ?? 0, cost_minor: outcome.costMinor ?? 0, finished_at: now() }).where('id', '=', turnId).execute();
+        // The report the agent wrote during the turn survives a finish that brings no engine summary of its own, and an engine summary
+// that names nothing is not logged: it is no report either (sessions decides the continuation that follows from that).
+        await tx.updateTable('turns').set({ state: outcome.state, stop_reason: outcome.stopReason ?? null, summary: (outcome.summary?.trim() && !saysNothing(outcome.summary) ? outcome.summary.slice(0, 2000) : null) ?? turn.summary, tokens_in: outcome.tokensIn ?? 0, tokens_out: outcome.tokensOut ?? 0, cost_minor: outcome.costMinor ?? 0, finished_at: now() }).where('id', '=', turnId).execute();
         // Sessions decide the two continuations that happen on their own: a lost resume and a turn without a report.
         const after = await sessions.afterFinish(tx, turn, outcome);
         if (after.stalled && turn.task_id) stalledTask = { projectId: turn.project_id, taskId: turn.task_id, agentId: turn.agent_id, reason: String((after.drafts.find(draft => draft.type === 'task.stalled')?.payload as { reason?: string } | undefined)?.reason ?? '') };

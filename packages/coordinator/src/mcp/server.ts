@@ -16,6 +16,7 @@ import type { Turns } from '../runtime/turns.ts';
 import { createChecks } from '../checks/checks.ts';
 import { createCosts } from '../costs/costs.ts';
 import { createActions } from './actions.ts';
+import { BARE_REPORT, BARE_VERDICT, saysNothing } from '../runtime/reports.ts';
 import { createProposals } from '../runtime/proposals.ts';
 import { HttpError } from '../context.ts';
 import { ideationOf } from '../sync/tracker.ts';
@@ -26,9 +27,9 @@ type Handlers = { [N in ToolName]: (turn: Turn, input: ToolInput<N>) => Promise<
 export interface McpDeps { workspace: Workspace; deliberation: Deliberation; reviews: Reviews; knowledge: Knowledge; turns: Turns; issues: Issues; integrations: Integrations; mentions: Mentions }
 
 const RECORDED = { recorded: true } as const;
-// A log entry that names no step and no outcome says nothing: refuse it whole, before anything is written.
-const NOTHING_SAID = new Set(['done', 'ok', 'okay', 'completed', 'complete', 'finished', 'in progress', 'working on it', 'wip', 'started', 'picked up', 'took it', 'nothing to report']);
-const saysNothing = (summary: string) => NOTHING_SAID.has(summary.trim().toLowerCase().replace(/[.!?]+$/, '').replace(/\s+/g, ' '));
+// The tools whose summary is a log entry. A bare line is refused before the call is reserved: it is not a call worth charging
+// against the per-turn limits, nothing was written, and the same call may be made again with a summary that says something.
+const LOG_SUMMARY: Partial<Record<ToolName, string>> = { 'task.update': BARE_REPORT, 'task.handoff': BARE_REPORT, 'task.review': BARE_VERDICT, 'document.review': BARE_VERDICT };
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 // Keys sorted at every level, so the same arguments hash the same however the client ordered them.
 const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : value !== null && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}` : JSON.stringify(value) ?? 'null';
@@ -128,7 +129,6 @@ export function createMcp(context: Context, deps: McpDeps) {
     },
     'task.update': async (turn, input) => {
       if (!turn.task_id) throw new ToolError('This turn has no task');
-      if (saysNothing(input.summary)) throw new ToolError('This summary cannot be logged: it names no step and no outcome. Say what was done — the task, the concrete step or file it touched, what happened and how it ended.');
       const kind = (await db.selectFrom('tasks').select('result_kind').where('id', '=', turn.task_id).executeTakeFirst())?.result_kind;
       if (kind === 'document' && input.state === 'ready_for_review' && !input.document) throw new ToolError('The result of this task is a document: write it with knowledge.write, then pass its path as `document`.');
       if (kind !== 'document' && input.document) throw new ToolError('This task ends in a change, not a document; leave `document` out.');
@@ -263,6 +263,8 @@ export function createMcp(context: Context, deps: McpDeps) {
     if (!parsed.success) throw new ToolError(z.prettifyError(parsed.error));
     if (givenKey !== undefined && (typeof givenKey !== 'string' || givenKey.length === 0 || givenKey.length > 200)) throw new ToolError('idempotencyKey is a string of at most 200 characters');
     await confine(turn, parsed.data as Record<string, unknown>);
+    const bare = LOG_SUMMARY[name];
+    if (bare && saysNothing((parsed.data as { summary: string }).summary)) throw new ToolError(bare);
     const text = canonical(parsed.data);
     // Reads are not replayed: they are logged for the limits only.
     const reserved = await reserve(turn, name, sha256(text), spec.mutating ? (givenKey as string | undefined) ?? sha256(`${turn.id}\n${name}\n${text}`) : null);
