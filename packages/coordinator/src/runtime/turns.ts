@@ -8,6 +8,7 @@ import { createDecisions } from './decisions.ts';
 import { buildPacket, type Packet } from './packet.ts';
 import { createSessions, STALLED_AFTER, type Resume } from './sessions.ts';
 import { DEFAULT_RULES, type Notice } from './rules.ts';
+import { saysNothing } from './reports.ts';
 import * as scheduler from './scheduler.ts';
 import { accessOf, laneOf, maxWritersOf, WORKER_FRESH_MS, type ClaimDraft, type Snapshot } from './scheduler.ts';
 
@@ -302,7 +303,9 @@ export function createTurns(context: Context) {
       const published = await storage.transaction(async tx => {
         const turn = await leased(tx, turnId, workerId, leaseToken);
         if (turn.kind === 'work' && turn.task_id && outcome.state === 'completed' && (await tx.selectFrom('tasks').select('state').where('id', '=', turn.task_id).executeTakeFirst())?.state === 'in_review') reviewTaskId = turn.task_id;
-        await tx.updateTable('turns').set({ state: outcome.state, stop_reason: outcome.stopReason ?? null, summary: outcome.summary?.slice(0, 2000) ?? null, tokens_in: outcome.tokensIn ?? 0, tokens_out: outcome.tokensOut ?? 0, cost_minor: outcome.costMinor ?? 0, finished_at: now() }).where('id', '=', turnId).execute();
+        // The report the agent wrote during the turn is the turn's log entry and no engine summary erases it — not even a generic one.
+// An engine that reports through its final summary (sessions decides what that is worth) fills only a turn that has nothing yet.
+        await tx.updateTable('turns').set({ state: outcome.state, stop_reason: outcome.stopReason ?? null, summary: turn.summary?.trim() ? turn.summary : (outcome.summary?.trim() && !saysNothing(outcome.summary) ? outcome.summary.slice(0, 2000) : null), tokens_in: outcome.tokensIn ?? 0, tokens_out: outcome.tokensOut ?? 0, cost_minor: outcome.costMinor ?? 0, finished_at: now() }).where('id', '=', turnId).execute();
         // Sessions decide the two continuations that happen on their own: a lost resume and a turn without a report.
         const after = await sessions.afterFinish(tx, turn, outcome);
         if (after.stalled && turn.task_id) stalledTask = { projectId: turn.project_id, taskId: turn.task_id, agentId: turn.agent_id, reason: String((after.drafts.find(draft => draft.type === 'task.stalled')?.payload as { reason?: string } | undefined)?.reason ?? '') };
@@ -330,7 +333,8 @@ export function createTurns(context: Context) {
         if (turn.task_id && outcome.prUrl) await tx.updateTable('tasks').set({ pr_url: outcome.prUrl }).where('id', '=', turn.task_id).execute();
         // A delivery that comes back later leaves the queue as it found it.
         if (turn.kind === 'deliver' && turn.task_id && outcome.state === 'deferred') {
-          await tx.updateTable('merge_queue').set({ state: 'queued', reason: outcome.summary?.slice(0, 300) ?? null }).where('task_id', '=', turn.task_id).where('state', '=', 'running').execute();
+          // A bare line is no reason to wait by: the queue states what it knows, or nothing.
+          await tx.updateTable('merge_queue').set({ state: 'queued', reason: outcome.summary?.trim() && !saysNothing(outcome.summary) ? outcome.summary.slice(0, 300) : null }).where('task_id', '=', turn.task_id).where('state', '=', 'running').execute();
           await tx.updateTable('tasks').set({ state: 'approved', updated_at: now() }).where('id', '=', turn.task_id).where('state', '=', 'merging').execute();
         }
         if (turn.kind === 'deliver' && turn.task_id && outcome.delivery) {

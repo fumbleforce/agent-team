@@ -59,13 +59,13 @@ export const TOOLS = {
     permission: null, turnKinds: ALL, mutating: false, rateClass: 'read',
   }),
   'task.update': tool({
-    description: 'Report on the task of this turn. A summary is required; it is what a later turn resumes from. When the result of the task is a document, ready_for_review takes `document`: the path of the knowledge page you wrote, which is then reviewed as it reads at that moment. With checkpoint, say in `next` what you will do in your next turn, which then starts at once, and in `open` what is still undecided: together they are the task\'s journal, the only thing your next turn is sure to have. not_needed closes the task: use it only when the base branch already contains what the task was for, and say where in the summary.',
+    description: 'Report on the task of this turn. A summary is required; it is what a later turn resumes from. The summary is a log entry a reader must be able to audit on its own: name the task, the concrete step or file it touched, what actually happened and the outcome. A bare "done" or "completed" is refused: a line that cannot say what was done does not get logged. When the result of the task is a document, ready_for_review takes `document`: the path of the knowledge page you wrote, which is then reviewed as it reads at that moment. With checkpoint, say in `next` what you will do in your next turn, which then starts at once, and in `open` what is still undecided: together they are the task\'s journal, the only thing your next turn is sure to have. not_needed closes the task: use it only when the base branch already contains what the task was for, and say where in the summary.',
     input: z.object({ state: z.enum(['checkpoint', 'ready_for_review', 'blocked', 'not_needed']), summary: Words(120), blockedReason: z.string().max(200).optional(), next: z.string().max(600).optional(), open: z.string().max(600).optional(), document: z.string().min(4).max(200).optional() }),
     output: z.object({ state: z.string() }),
     permission: null, turnKinds: ['work'], mutating: true, rateClass: 'write',
   }),
   'document.review': tool({
-    description: 'Record your verdict on the document under review, as it reads in your packet. pass means you would stand behind it going out as it is; changes means it must change first, and each finding says what and why. Judge whether it does what the task is for.',
+    description: 'Record your verdict on the document under review, as it reads in your packet. pass means you would stand behind it going out as it is; changes means it must change first, and each finding says what and why. Judge whether it does what the task is for. The summary is a log entry: say what you looked at and what you found; a bare "pass" or "ok" is refused.',
     input: z.object({ verdict: z.enum(['pass', 'changes']), summary: Words(80), findings: z.array(z.object({ severity: z.enum(['must', 'should']), note: z.string().min(1).max(400) })).max(8).default([]) }),
     output: z.object({ recorded: z.boolean(), state: z.string() }),
     permission: null, turnKinds: ['review'], mutating: true, rateClass: 'once',
@@ -131,7 +131,7 @@ export const TOOLS = {
     permission: null, turnKinds: ['work', 'review'], mutating: true, rateClass: 'write',
   }),
   'task.review': tool({
-    description: 'Record your verdict on the task as it stands in the folder you were given, which is checked out at the head under review. Pass only what you verified yourself; findings go back to the author.',
+    description: 'Record your verdict on the task as it stands in the folder you were given, which is checked out at the head under review. Pass only what you verified yourself; findings go back to the author. The summary is a log entry: say what you checked and what you found; a bare "pass" or "ok" is refused.',
     input: z.object({ kind: z.enum(['tester', 'reviewer', 'pm']), verdict: z.enum(['pass', 'changes', 'fail']), headSha: z.string().regex(/^[0-9a-f]{40}$/).optional(), summary: Words(100), findings: z.array(z.object({ severity: z.enum(['low', 'med', 'high']), path: z.string().max(300).optional(), note: z.string().min(1).max(240) })).max(10).default([]) }),
     output: z.object({ approved: z.boolean() }),
     permission: null, turnKinds: ['review'], mutating: true, rateClass: 'once',
@@ -221,7 +221,7 @@ export const TOOLS = {
     permission: null, turnKinds: ['work', 'triage'], mutating: true, rateClass: 'rare',
   }),
   'task.handoff': tool({
-    description: 'Hand the task of this turn to a teammate, with what you did and what is left. End your turn afterwards.',
+    description: 'Hand the task of this turn to a teammate, with what you did and what is left. The summary is a log entry: name the task, the step or file it touched, what happened and the outcome; a bare "done" is refused. End your turn afterwards.',
     input: z.object({ toAgentId: z.string(), summary: Words(120) }),
     output: z.object({ taskId: z.string(), assigneeAgentId: z.string() }),
     permission: null, turnKinds: ['work'], mutating: true, rateClass: 'once',

@@ -10,12 +10,42 @@ interface TaskView {
   steps: PipelineStep[]; reviewer: string | null; pm: string | null; canWrite: boolean;
   issue: { number: number; source: string; priority: string; raisedBy: string | null; attachmentId: string | null; markers: Marker[]; environment: string | null } | null;
   tracker: { url: string | null; system: string; id: string } | null;
-  log: { id: string; agentId: string; kind: string; state: string; summary: string | null; at: number }[];
+  log: { id: string; agentId: string; kind: string; state: string; summary: string | null; stopReason: string | null; at: number }[];
   approvals: { kind: string; agentId: string; verdict: string; summary: string; stale: boolean; at: number }[];
   messages: { id: string; authorKind: string; authorId: string | null; kind: string; body: string; at: number }[];
 }
 const STATE: Record<string, [string, ChipTone]> = { inbox: ['Inbox · triage', 'attention'], backlog: ['Backlog', 'neutral'], assigned: ['Assigned', 'neutral'], in_progress: ['In progress', 'working'], awaiting_decision: ['Waiting for a decision', 'attention'], in_review: ['In review', 'review'], approved: ['Approved', 'review'], merging: ['Merging', 'review'], done: ['Done', 'working'], blocked: ['Blocked', 'stop'], stopped: ['Stopped', 'stop'], canceled: ['Declined', 'neutral'], quarantined: ['Needs you', 'stop'] };
-const LINE: Record<string, Record<string, string>> = { work: { running: 'working now', completed: 'worked on it', failed: 'stopped with an error', deferred: 'waiting for a limit to reset', interrupted: 'was interrupted' }, review: { running: 'reviewing now', completed: 'reviewed it' }, publish: { completed: 'published the change' }, deliver: { running: 'merging now', completed: 'merged it', failed: 'could not merge it' } };
+// Every entry says what happened and how it ended, in words; a turn that stopped carries why.
+const LINE: Record<string, Record<string, string>> = {
+  work: { running: 'working now', completed: 'worked on it', failed: 'stopped with an error', deferred: 'was set aside to wait', interrupted: 'was interrupted', timed_out: 'ran out of time', uncertain: 'ended in doubt' },
+  review: { running: 'reviewing now', completed: 'reviewed it', failed: 'the review stopped with an error', deferred: 'was set aside to wait', interrupted: 'was interrupted', timed_out: 'ran out of time', uncertain: 'ended in doubt' },
+  publish: { running: 'publishing now', completed: 'published the change', failed: 'could not publish it' },
+  deliver: { running: 'merging now', completed: 'merged it', failed: 'could not merge it', deferred: 'was set aside to wait', interrupted: 'was interrupted', uncertain: 'ended in doubt' },
+  reply: { running: 'writing the reply now', completed: 'answered in the thread' },
+  triage: { running: 'sorting it out now', completed: 'sorted it out' },
+  capture: { running: 'capturing now', completed: 'captured the screenshot', failed: 'the capture failed' },
+};
+const REASON: Record<string, string> = {
+  'rate-limited': 'the usage limit was reached; it resumes on its own',
+  'lease-expired': 'the worker stopped answering',
+  'worker-restarted': 'the worker restarted',
+  'no-report': 'the turn ended without a report',
+  'auth': 'the engine could not sign in',
+  'context-overflow': 'the context filled up',
+  'resume-missing': 'the earlier session could not be resumed',
+  'crashed': 'the engine stopped unexpectedly',
+  'timeout': 'it ran out of time',
+  'aborted': 'it was stopped',
+};
+const VERDICT: Record<string, string> = { pass: 'passed', changes: 'asked for changes', fail: 'failed' };
+// The line of a log entry: what this kind of turn did, how it ended, and why it stopped.
+const logLine = (turn: { kind: string; state: string; stopReason: string | null; summary: string | null }) => {
+  const line = LINE[turn.kind]?.[turn.state] ?? `${turn.kind} · ${turn.state}`;
+  if (turn.state === 'running') return line;
+  // A work turn that ended with no report at all is marked as such rather than left to look like work went unrecorded.
+  const unreported = turn.kind === 'work' && turn.state === 'completed' && !turn.summary?.trim() ? ' · ended without a report' : '';
+  return `${line}${unreported}${turn.stopReason ? ` · ${REASON[turn.stopReason] ?? turn.stopReason}` : ''}`;
+};
 // Reasons an earlier version stored as a code, in words.
 const WHY: Record<string, string> = { 'needs-attention': 'A turn on this task stopped with an error or ran out of time, and the task was set aside for it. Carry on puts it back where it was.', 'no-report': 'The work ended twice without a report. Carry on starts it again.' };
 const time = (at: number) => new Date(at).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
@@ -74,8 +104,8 @@ export function TaskPage({ slug, taskId, roster, board, navigate }: { slug: stri
             </section>
             <section className="flex min-w-0 flex-col gap-2.5">
               <SectionLabel aside={owner ? <LinkButton size="sm" variant="ghost" href={`/agents/${owner.id}`}>Full trace</LinkButton> : undefined}>{inbox ? 'Triage' : 'Work log'}</SectionLabel>
-              {data.log.map(turn => <LogCard key={turn.id} agent={agent(turn.agentId)} line={LINE[turn.kind]?.[turn.state] ?? `${turn.kind} · ${turn.state}`} at={turn.at} live={turn.state === 'running'}>{turn.summary && <Markdown size="small">{turn.summary}</Markdown>}</LogCard>)}
-              {data.approvals.map(row => <LogCard key={row.kind + row.at} agent={agent(row.agentId)} line={`${row.kind} review · ${row.verdict}${row.stale ? ' · out of date' : ''}`} at={row.at}>{row.summary && <Text size="small" tone="soft">{row.summary}</Text>}</LogCard>)}
+              {data.log.map(turn => <LogCard key={turn.id} agent={agent(turn.agentId)} line={logLine(turn)} at={turn.at} live={turn.state === 'running'}>{turn.summary && <Markdown size="small">{turn.summary}</Markdown>}</LogCard>)}
+              {data.approvals.map(row => <LogCard key={row.kind + row.at} agent={agent(row.agentId)} line={`${row.kind} review · ${VERDICT[row.verdict] ?? row.verdict}${row.stale ? ' · out of date' : ''}`} at={row.at}>{row.summary && <Text size="small" tone="soft">{row.summary}</Text>}</LogCard>)}
               {inbox && data.messages.map(message => message.kind === 'decision'
                 ? <Card key={message.id} tone="decision" pad="sm" className="flex flex-col gap-1"><Text size="label" tone="accent">Decision · {message.authorKind === 'user' ? 'You' : agent(message.authorId)?.name ?? ''}</Text><Text size="small">{message.body}</Text></Card>
                 : <LogCard key={message.id} agent={message.authorKind === 'user' ? undefined : agent(message.authorId)} line={message.authorKind === 'user' ? 'you' : ''} at={message.at}><Text size="small" tone="soft">{message.body}</Text></LogCard>)}

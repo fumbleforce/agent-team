@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { buildResumeDelta } from '../runtime/packet.ts';
+import { createTurns } from '../runtime/turns.ts';
 import { boot } from './testing.ts';
 
 test('a card opens to what the task is and what happened on it; what a person writes there or says to the agent directly is direction for the work in hand', async () => {
@@ -44,5 +45,39 @@ test('a card opens to what the task is and what happened on it; what a person wr
     assert.deepEqual([after.inbox.length, (await db.selectFrom('tasks').select('state').where('id', 'in', [same.taskId, no.taskId]).execute()).map(row => row.state), (await db.selectFrom('issues').select('state').where('number', 'in', [same.number, no.number]).execute()).map(row => row.state)], [0, ['canceled', 'canceled'], ['closed', 'closed']]);
     assert.ok(((await call(`/api/tasks/${taskId}`, { cookie })).json.messages as { body: string }[]).some(message => /Also reported as ISSUE-\d+: Double pick-up again[\s\S]*review lane/.test(message.body)));
     assert.deepEqual(((await call(`/api/tasks/${no.taskId}`, { cookie })).json.messages as { kind: string; body: string }[]).map(message => [message.kind, message.body]), [['decision', 'Declined: Not now.']]);
+  } finally { await coordinator.close(); }
+});
+
+test('a task that changes hands is logged as it stands: the strip names who holds it now, a stopped turn says why, and the agent page names the task', async () => {
+  const { coordinator, call, owner } = await boot();
+  try {
+    const cookie = await owner();
+    await call('/api/projects', { cookie, body: { name: 'Shop' } });
+    const project = (await call('/api/projects/shop', { cookie })).json, teammates = project.roster.filter((agent: { is_pm: boolean }) => !agent.is_pm), developer = teammates[0], other = teammates[1];
+    const raised = (await call('/api/projects/shop/issues', { cookie, body: { title: 'Reassigned, but the old owner kept it', body: 'The log still said the first picker.' } })).json;
+    const taskId = raised.taskId as string;
+    await call(`/api/tasks/${taskId}/accept`, { cookie, body: { agentId: developer.id } });
+    // One turn that stops with an error, and one that reports what it did: both stay in the log with what happened.
+    const turns = createTurns(coordinator.context), projectId = project.project.id;
+    const claim = async () => (await turns.claim({ workerId: 'w1', free: { work: 1 }, projects: [projectId] }))!;
+    const first = await claim();
+    await turns.finish(first.turnId, 'w1', first.leaseToken, { state: 'failed', stopReason: 'crashed' });
+    // The person carries it on, the owner reports properly, and then it is reassigned to someone else.
+    await call(`/api/tasks/${taskId}/carry-on`, { cookie, body: {} });
+    const second = await claim();
+    await turns.finish(second.turnId, 'w1', second.leaseToken, { state: 'completed', summary: `ISSUE-${raised.number}: rewrote the claim query in issueTasks.ts; npm test passes.` });
+    await call(`/api/tasks/${taskId}/assign`, { cookie, body: { agentId: other.id } });
+    const page = (await call(`/api/tasks/${taskId}`, { cookie })).json;
+    assert.equal(page.steps[2].label, 'Picked up');
+    assert.equal(page.steps[2].agentId, other.id);
+    assert.match(page.steps[2].who, new RegExp(`${other.name} · up next`));
+    // The work log keeps what happened: the report, and why the earlier turn stopped.
+    assert.equal(page.log[0].state, 'completed');
+    assert.equal(page.log[0].stopReason, null);
+    assert.equal(page.log[1].state, 'failed');
+    assert.equal(page.log[1].stopReason, 'crashed');
+    // Each of the agent's turns names the task it belongs to.
+    const mine = (await call(`/api/agents/${developer.id}`, { cookie })).json;
+    assert.deepEqual(mine.turns.map((turn: { task_key: string | null }) => turn.task_key), [page.task.key, page.task.key]);
   } finally { await coordinator.close(); }
 });

@@ -142,6 +142,18 @@ test('a work turn without a report gets one continuation, then the task is block
   } finally { await storage.close(); }
 });
 
+test('a continuation is whoever holds the task now: a task reassigned mid-turn is not requeued for the old owner', async () => {
+  const { storage, db, claim, work, runTurn, taskId } = await boot();
+  try {
+    await work();
+    const hung = (await claim())!;
+    const other = (await db.selectFrom('agents').select('id').where('name', '=', 'Cleo').executeTakeFirstOrThrow()).id;
+    await db.updateTable('tasks').set({ assignee_agent_id: other }).where('id', '=', taskId).execute();
+    await runTurn(hung, { state: 'timed_out' });
+    assert.equal((await db.selectFrom('work_items').select('id').where('task_id', '=', taskId).where('state', '=', 'queued').execute()).length, 0);
+  } finally { await storage.close(); }
+});
+
 test('a lost bounded turn is never retried', async () => {
   const { storage, db, turns, claim, projectId, agent, tick } = await boot();
   try {

@@ -4,6 +4,7 @@ import type { Tx } from '@agent-team/storage';
 import type { Context } from '../context.ts';
 import { wayOfWorking } from './wayOfWorking.ts';
 import { buildResumeDelta, buildResumePacket, type Packet } from './packet.ts';
+import { saysNothing } from './reports.ts';
 
 // A session's input grows with every resumed turn; past this many tokens the next turn starts a new one from a packet.
 export const ROTATE_AT_TOKENS = 120_000;
@@ -48,6 +49,13 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
     }
     return { requeued: true, drafts: [await queueWork(tx, turn, `${CARRY}${turn.id}`)] };
   }
+
+  // A continuation belongs to whoever holds the task now: one that requeued for an owner the task has left would have the old
+  // owner pick it up again. A finished task, a blocked one and a reassigned one all wait for their holder instead.
+  const stillTheirs = async (tx: Tx, turn: TurnRow): Promise<boolean> => {
+    const held = await tx.selectFrom('tasks').select(['state', 'blocked_reason', 'assignee_agent_id']).where('id', '=', turn.task_id!).executeTakeFirst();
+    return held?.state === 'in_progress' && held.blocked_reason === null && held.assignee_agent_id === turn.agent_id;
+  };
 
   return {
     // Called inside the claim, after the turn row exists. Decides between resuming the engine session and a packet:
@@ -103,20 +111,22 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
         if (turn.session_id) await tx.updateTable('agent_sessions').set({ state: 'lost' }).where('id', '=', turn.session_id).execute();
         const lost = { ...base, type: 'session.lost', payload: { sessionId: turn.session_id } };
         const output = (outcome.tokensOut ?? 0) > 0 || await tx.selectFrom('trace_steps').select('seq').where('turn_id', '=', turn.id).executeTakeFirst();
-        // Only a resumed turn can be requeued, and the requeued one has no session to miss: once, by construction.
-        if (turn.context_mode !== 'resume' || output) return { requeued: false, drafts: [lost] };
+        // Only a resumed turn can be requeued, and the requeued one has no session to miss: once, by construction — and only while the task is still this agent's.
+        if (turn.context_mode !== 'resume' || output || !(await stillTheirs(tx, turn))) return { requeued: false, drafts: [lost] };
         return { requeued: true, drafts: [lost, await queueWork(tx, turn, `${REQUEUE}${turn.id}`)] };
       }
       // Running out of time is not a failure: the process is known to be gone and the worktree holds the work, so the owner carries on
       // from its journal. Twice in a row without a report in between is a task too big for its turns, and that is a person's to see.
       if (outcome.state === 'timed_out') {
         const item = await tx.selectFrom('work_items').select('dedupe_key').where('id', '=', turn.work_item_id).executeTakeFirst();
-        if (item?.dedupe_key?.startsWith(`${CARRY}timeout:`)) return { requeued: false, drafts: [] };
+        if (item?.dedupe_key?.startsWith(`${CARRY}timeout:`) || !(await stillTheirs(tx, turn))) return { requeued: false, drafts: [] };
         return { requeued: true, drafts: [await queueWork(tx, turn, `${CARRY}timeout:${turn.id}`)] };
       }
-      // task.update writes the turn's summary; an engine without platform tools reports through its final summary.
-      if (outcome.state === 'completed' && (turn.summary?.trim() || outcome.summary?.trim())) return carryOn(tx, turn);
+      // task.update writes the turn's summary; an engine without platform tools reports through its final summary — unless that
+      // summary is bare, which is no report at all.
+      if (outcome.state === 'completed' && (turn.summary?.trim() || (outcome.summary?.trim() && !saysNothing(outcome.summary)))) return carryOn(tx, turn);
       if (outcome.state !== 'completed') return { requeued: false, drafts: [] };
+      if (!(await stillTheirs(tx, turn))) return { requeued: false, drafts: [] };
       const item = await tx.selectFrom('work_items').select('dedupe_key').where('id', '=', turn.work_item_id).executeTakeFirst();
       if (item?.dedupe_key?.startsWith(CONTINUE)) {
         await tx.updateTable('tasks').set({ state: 'blocked', blocked_reason: 'no-report', updated_at: now() }).where('id', '=', turn.task_id).execute();
