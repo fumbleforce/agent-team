@@ -23,7 +23,7 @@ test('sound data breaks no rule; each kind of breach is named with the rows that
     // Two writers on one task, or two turns of one agent in one lane, cannot even be written: the database refuses them.
     await db.insertInto('work_items').values([item('wi-a'), item('wi-b')] as never).execute();
     await db.insertInto('turns').values(turn('b', 'running', now - 3600_000, now - 3000_000) as never).execute();
-    await assert.rejects(db.insertInto('turns').values(turn('a', 'running', now - 1000, now + 60_000) as never).execute(), /UNIQUE/);
+    await assert.rejects(db.insertInto('turns').values(turn('a', 'running', now - 1000, now + 60_000) as never).execute(), /unique constraint/i);
     assert.deepEqual((await checkInvariants(context)).map(entry => entry.rule), ['an expired lease is swept']);
 
     // An uncertain turn whose work item ran again.
