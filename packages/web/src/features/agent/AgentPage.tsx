@@ -1,8 +1,8 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Me, ProjectNode } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
-import { AppShell, Attachment, DiffView, Disclosure, OutputView, PageHeader, Sidebar, TraceRow } from '../../patterns';
+import { AppShell, Attachment, DiffView, Disclosure, OutputView, PageHeader, Sidebar, TraceRow, usePinnedTail } from '../../patterns';
 import { AgentControls, DirectMessages } from './AgentControls';
 import { Avatar, Card, Chip, ListRow, SectionLabel, Text, type ChipTone } from '../../ui';
 
@@ -40,7 +40,9 @@ export function AgentPage({ id, me, projects }: { id: string; me: Me; projects: 
   // The trace is read per turn, so each step says whether it carries a diff or output; the agent view's own steps cover the moment before it loads.
   const trace = useResource<Trace>(latest ? `/api/turns/${latest}/steps` : null);
   useStream(event => event.type.startsWith('turn.') && (event as { agentId?: string }).agentId === id, () => { view.reload(); trace.reload(); });
+  const tail = usePinnedTail();
   const steps = trace.data?.steps ?? (latest === data?.turns[0]?.id ? data?.steps : undefined) ?? [];
+  useEffect(tail.follow, [latest, steps.length]);
   return (
     <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} links={[]} />}>
       <PageHeader title={data?.agent.name ?? 'Agent'} crumbs={[{ label: 'Teams', href: '/org' }]} />
@@ -63,7 +65,7 @@ export function AgentPage({ id, me, projects }: { id: string; me: Me; projects: 
           </Card>
           <Card className="flex min-h-0 flex-col gap-1 xl:col-span-2">
             <SectionLabel aside={shown?.state === 'running' ? <Text size="caption" tone="working">streaming</Text> : undefined}>{shown ? `${KIND[shown.kind] ?? shown.kind} · ${new Date(shown.started_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' })}` : 'Trace'}</SectionLabel>
-            <div className="flex min-h-0 flex-col overflow-y-auto">{steps.map(step => <StepRow key={`${latest}:${step.seq}`} turnId={latest ?? ''} step={step} />)}</div>
+            <div ref={tail.container} onScroll={tail.onScroll} className="flex min-h-0 flex-col overflow-y-auto">{steps.map(step => <StepRow key={`${latest}:${step.seq}`} turnId={latest ?? ''} step={step} />)}</div>
             {steps.length === 0 && <Text size="small" tone="muted">Nothing traced yet.</Text>}
           </Card>
         </div>

@@ -10,7 +10,7 @@ export function useResource<T>(path: string | null): Resource<T> {
   useEffect(() => {
     if (!path) return;
     let live = true;
-    api<T>(path).then(data => { if (live) setState({ path, data, error: null }); }, error => { if (live) setState({ path, data: null, error: error as ApiError }); });
+    api<T>(path).then(data => { if (live) setState({ path, data, error: null }); }, error => { if (live) setState(current => ({ path, data: current.path === path ? current.data : null, error: error as ApiError })); });
     return () => { live = false; };
   }, [path, version]);
   const reload = useCallback(() => setVersion(value => value + 1), []);
