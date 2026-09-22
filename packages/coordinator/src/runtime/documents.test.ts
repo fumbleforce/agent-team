@@ -37,8 +37,8 @@ test('a task whose result is a document is written, reviewed at its revision, se
     const writing = await claim();
     assert.match(writing.packet.prompt, /The result of this task is a document, not a change to the repository/);
     const author = as(writing);
-    assert.match((await author('task.update', { state: 'ready_for_review', summary: 'Done.' })).text, /pass its path as `document`/);
-    assert.match((await author('task.update', { state: 'ready_for_review', summary: 'Done.', document: 'briefs/spring-launch.md' })).text, /no knowledge page at briefs\/spring-launch\.md/);
+    assert.match((await author('task.update', { state: 'ready_for_review', summary: 'The brief is drafted for spring launch.' })).text, /pass its path as `document`/);
+    assert.match((await author('task.update', { state: 'ready_for_review', summary: 'The brief is drafted for spring launch.', document: 'briefs/spring-launch.md' })).text, /no knowledge page at briefs\/spring-launch\.md/);
     const written = await author('knowledge.write', { path: 'briefs/spring-launch.md', title: 'Spring launch brief', body: 'Goal: more use of offline mode.' });
     assert.equal(written.error, false, written.text);
     const handedIn = await author('task.update', { state: 'ready_for_review', summary: 'The brief is written.', document: 'briefs/spring-launch.md' });
@@ -93,6 +93,6 @@ test('a task that ends in a change cannot hand in a document, and an author cann
     await db.updateTable('tasks').set({ result_kind: 'change' }).where('id', '=', taskId).execute();
     await turns.enqueue({ agentId: agents.Bram!, projectId, kind: 'work', taskId });
     const working = await claim();
-    assert.match((await as(working)('task.update', { state: 'ready_for_review', summary: 'Done.', document: 'briefs/x' })).text, /ends in a change, not a document/);
+    assert.match((await as(working)('task.update', { state: 'ready_for_review', summary: 'The change is on the branch; tests pass.', document: 'briefs/x' })).text, /ends in a change, not a document/);
   } finally { await coordinator.close(); }
 });

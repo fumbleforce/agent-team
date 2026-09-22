@@ -610,7 +610,7 @@ export function createApp(context: Context) {
     const agent = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'agents.name', 'agents.initials', 'agents.tint', 'agents.title', 'agents.persona', 'agents.status', 'agents.model', 'agents.doing', 'projects.id as project_id']).where('agents.id', '=', c.req.param('id')).executeTakeFirst();
     if (!agent) throw new HttpError(404, 'not_found', 'Agent not found');
     allow(c, 'project.read', agent.project_id);
-    const turns = await context.storage.db.selectFrom('turns').select(['id', 'kind', 'state', 'task_id', 'summary', 'tokens_in', 'tokens_out', 'cost_minor', 'started_at', 'finished_at']).where('agent_id', '=', agent.id).orderBy('started_at', 'desc').limit(10).execute();
+    const turns = await context.storage.db.selectFrom('turns').leftJoin('tasks', 'tasks.id', 'turns.task_id').select(['turns.id', 'turns.kind', 'turns.state', 'turns.task_id', 'tasks.key as task_key', 'turns.summary', 'turns.tokens_in', 'turns.tokens_out', 'turns.cost_minor', 'turns.started_at', 'turns.finished_at']).where('turns.agent_id', '=', agent.id).orderBy('turns.started_at', 'desc').limit(10).execute();
     const steps = turns[0] ? await context.storage.db.selectFrom('trace_steps').selectAll().where('turn_id', '=', turns[0].id).orderBy('seq').limit(400).execute() : [];
     return c.json({ agent, turns, steps, seq: await context.events.head() });
   });

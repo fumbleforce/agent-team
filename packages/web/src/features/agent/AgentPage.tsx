@@ -6,7 +6,7 @@ import { AppShell, Attachment, DiffView, Disclosure, OutputView, PageHeader, Sid
 import { AgentControls, DirectMessages } from './AgentControls';
 import { Avatar, Card, Chip, ListRow, SectionLabel, Text, type ChipTone } from '../../ui';
 
-interface Turn { id: string; kind: string; state: string; summary: string | null; tokens_in: number; tokens_out: number; cost_minor: number; started_at: number }
+interface Turn { id: string; kind: string; state: string; task_key: string | null; summary: string | null; tokens_in: number; tokens_out: number; cost_minor: number; started_at: number }
 type ArtifactKind = 'diff' | 'output' | 'think' | 'image';
 interface Step { seq: number; at: number; kind: string; title: string; detail: string | null; artifact_kind?: ArtifactKind | null }
 interface Trace { steps: Step[] }
@@ -15,6 +15,7 @@ interface View { agent: { id: string; name: string; initials: string; tint: stri
 
 const KIND: Record<string, string> = { work: 'Work on a task', review: 'A review', reply: 'A reply to a message', triage: 'Sorting out what was raised', feedback: 'Feedback on a proposal', revise: 'Revising a proposal', conclude: 'Deciding a proposal', retro: 'The retro', ideate: 'New ideas', publish: 'Publishing a change', deliver: 'Merging a change', capture: 'A screenshot' };
 const STATE: Record<string, ChipTone> = { running: 'working', completed: 'neutral', deferred: 'attention', failed: 'stop', timed_out: 'stop', uncertain: 'stop', interrupted: 'attention' };
+const STATE_WORD: Record<string, string> = { running: 'running', completed: 'completed', deferred: 'deferred', failed: 'failed', timed_out: 'timed out', uncertain: 'in doubt', interrupted: 'interrupted' };
 
 // A step that produced something opens onto it: an edit onto its diff as git saw it, a run onto its output or the files its shell changed,
 // a screenshot onto the image the browser tool left behind.
@@ -57,7 +58,8 @@ export function AgentPage({ id, me, projects }: { id: string; me: Me; projects: 
             <DirectMessages id={id} name={data.agent.name} />
             <SectionLabel>Recent turns</SectionLabel>
             {data.turns.map(turn => (
-              <ListRow key={turn.id} active={turn.id === latest} onClick={() => setPicked(turn.id)} title={KIND[turn.kind] ?? turn.kind} note={turn.summary?.split('\n')[0] ?? ''} aside={<Chip tone={STATE[turn.state] ?? 'neutral'}>{turn.state}</Chip>} />
+              // Each turn names the task it belongs to: a turn read alone still says what it was on.
+              <ListRow key={turn.id} active={turn.id === latest} onClick={() => setPicked(turn.id)} title={[KIND[turn.kind] ?? turn.kind, turn.task_key].filter(Boolean).join(' · ')} note={turn.summary?.split('\n')[0] ?? ''} aside={<Chip tone={STATE[turn.state] ?? 'neutral'}>{STATE_WORD[turn.state] ?? turn.state}</Chip>} />
             ))}
             {data.turns.length === 0 && <Text size="small" tone="muted">No turns yet.</Text>}
           </Card>
