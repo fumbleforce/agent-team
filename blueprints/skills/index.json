@@ -1,0 +1,122 @@
+{
+  "about": "Skills shipped with the platform, as their authors wrote them (the agents/ folders of one collection, which only hold another tool's display metadata, are left out). Each is seeded into the organization's skill library once; an owner's edit is never overwritten. Licenses are in LICENSES/.",
+  "sources": {
+    "pstack": {
+      "repository": "cursor/plugins",
+      "path": "pstack/skills",
+      "commit": "53e579f1481697931fc44f5445171397cfa2b24b",
+      "license": "MIT",
+      "author": "Lauren Tan"
+    },
+    "mattpocock": {
+      "repository": "mattpocock/skills",
+      "path": "skills/engineering",
+      "commit": "c55ee46073ed923f86ce59a5eb3b6d895095d1b7",
+      "license": "MIT",
+      "author": "Matt Pocock"
+    }
+  },
+  "skills": [
+    {
+      "slug": "unslop",
+      "from": "pstack",
+      "always": true
+    },
+    {
+      "slug": "technical-writing",
+      "from": "pstack"
+    },
+    {
+      "slug": "typescript-best-practices",
+      "from": "pstack"
+    },
+    {
+      "slug": "blast-radius",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-attack-the-premise",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-boundary-discipline",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-encode-lessons-in-structure",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-experience-first",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-fix-root-causes",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-foundational-thinking",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-make-operations-idempotent",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-migrate-callers-then-delete-legacy-apis",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-minimize-reader-load",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-model-the-domain",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-outcome-oriented-execution",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-redesign-from-first-principles",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-separate-before-serializing-shared-state",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-subtract-before-you-add",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-test-behavior-not-implementation",
+      "from": "pstack"
+    },
+    {
+      "slug": "principle-type-system-discipline",
+      "from": "pstack"
+    },
+    {
+      "slug": "tdd",
+      "from": "mattpocock"
+    },
+    {
+      "slug": "diagnosing-bugs",
+      "from": "mattpocock"
+    },
+    {
+      "slug": "resolving-merge-conflicts",
+      "from": "mattpocock"
+    },
+    {
+      "slug": "codebase-design",
+      "from": "mattpocock"
+    },
+    {
+      "slug": "domain-modeling",
+      "from": "mattpocock"
+    }
+  ]
+}

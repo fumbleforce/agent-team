@@ -10,5 +10,6 @@ export * from './deliberation.ts';
 export * from './permissions.ts';
 export * from './proposals.ts';
 export * from './org.ts';
+export * from './skills.ts';
 export * from './rules.ts';
 export * from './views.ts';

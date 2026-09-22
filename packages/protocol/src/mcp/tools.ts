@@ -88,6 +88,12 @@ export const TOOLS = {
     output: z.object({ id: z.string(), path: z.string(), title: z.string(), rev: z.number(), body: z.string(), authorKind: z.string(), authorId: z.string().nullable(), updatedAt: z.number(), readByToday: z.number() }),
     permission: null, turnKinds: ALL, mutating: false, rateClass: 'read',
   }),
+  'skill.read': tool({
+    description: 'Read one of your skills in full (its method, before the work it is for), or one of the files it names.',
+    input: z.object({ name: z.string().min(1).max(63), file: z.string().max(160).optional() }),
+    output: z.object({ name: z.string(), description: z.string(), body: z.string(), files: z.array(z.string()) }).or(z.object({ name: z.string(), file: z.string(), content: z.string() })),
+    permission: null, turnKinds: ALL, mutating: false, rateClass: 'read',
+  }),
   'knowledge.propose_memory': tool({
     description: 'File something the team should not have to learn twice: a gotcha, an observation, a convention or a decision. It is reviewed before it is injected into later turns.',
     input: z.object({ type: z.enum(['observation', 'gotcha', 'decision', 'convention']), title: z.string().min(1).max(160), body: z.string().min(1).max(2000) }),

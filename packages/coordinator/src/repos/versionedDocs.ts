@@ -1,12 +1,14 @@
 import type { z } from 'zod';
-import { CostRules, DelegationRules, LibraryAgent, ProjectSettings, Role, RoutingRules, TeamTemplate, WayOfWorking } from '@agent-team/protocol';
+import { CostRules, DelegationRules, LibraryAgent, ProjectSettings, Role, RoutingRules, Skill, TeamTemplate, WayOfWorking } from '@agent-team/protocol';
 import type { ExpressionBuilder } from 'kysely';
 import type { Schema, Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 
 // Every kind of versioned document and the schema that validates it. Adding a kind is one line here.
-export const DOC_KINDS = { role: Role, project_settings: ProjectSettings, team_template: TeamTemplate, library_agent: LibraryAgent, cost_rules: CostRules, routing_rules: RoutingRules, delegation_rules: DelegationRules, way_of_working: WayOfWorking } as const satisfies Record<string, z.ZodType>;
+export const DOC_KINDS = { role: Role, project_settings: ProjectSettings, team_template: TeamTemplate, library_agent: LibraryAgent, cost_rules: CostRules, routing_rules: RoutingRules, delegation_rules: DelegationRules, way_of_working: WayOfWorking, skill: Skill } as const satisfies Record<string, z.ZodType>;
 export type DocKind = keyof typeof DOC_KINDS;
+// The author of what the platform ships; anything else was written by a person or a seat.
+const SHIPPED = 'toolkit';
 export type DocOf<K extends DocKind> = z.infer<(typeof DOC_KINDS)[K]>;
 export interface DocScope { type: 'library' | 'org' | 'team' | 'project'; id: string }
 export interface Stored<K extends DocKind> { slug: string; version: number; author: string; updatedAt: number; doc: DocOf<K> }
@@ -55,10 +57,17 @@ export function createVersionedDocs(context: Context) {
       return result.version;
     },
 
-    // Shipped documents are inserted once and never overwrite what an owner changed.
+    // Shipped documents are inserted once and never overwrite what an owner changed. One that nobody changed since it was shipped
+    // (its current version is the toolkit's own) follows the shipped library when that changes, so an organization gets what a
+    // new version of the platform adds to a role it never touched.
     async seed<K extends DocKind>(kind: K, scope: DocScope, docs: Record<string, unknown>) {
       await storage.transaction(async tx => {
-        for (const [slug, doc] of Object.entries(docs)) if (!await tx.selectFrom('versioned_docs').select('version').where(at(kind, scope, slug)).executeTakeFirst()) await write(tx, kind, scope, slug, doc, 'toolkit', 'seeded');
+        for (const [slug, doc] of Object.entries(docs)) {
+          const current = await tx.selectFrom('versioned_docs').select(['doc', 'author']).where(at(kind, scope, slug)).executeTakeFirst();
+          if (!current) { await write(tx, kind, scope, slug, doc, SHIPPED, 'seeded'); continue; }
+          const parsed = DOC_KINDS[kind].safeParse(doc);
+          if (current.author === SHIPPED && parsed.success && JSON.stringify(parsed.data) !== current.doc) await write(tx, kind, scope, slug, doc, SHIPPED, 'updated from the shipped library');
+        }
       });
     },
 

@@ -20,6 +20,7 @@ import { BARE_REPORT, BARE_VERDICT, saysNothing } from '../runtime/reports.ts';
 import { createProposals } from '../runtime/proposals.ts';
 import { HttpError } from '../context.ts';
 import { ideationOf } from '../sync/tracker.ts';
+import { readSkill, skillsOf } from '../runtime/skills.ts';
 
 interface Turn { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; grants: string }
 class ToolError extends Error {}
@@ -163,6 +164,14 @@ export function createMcp(context: Context, deps: McpDeps) {
       const page = await db.selectFrom('kb_pages').select(['scope_type', 'scope_id']).where('id', '=', input.pageId).executeTakeFirst();
       if (!page || !(await scopesOf(turn)).some(scope => scope.type === page.scope_type && scope.id === page.scope_id)) throw new ToolError('Page not found in this project');
       return knowledge.read(input.pageId, { agentId: turn.agent_id, turnId: turn.id });
+    },
+    'skill.read': async (turn, input) => {
+      const found = await readSkill(db, input.name, input.file);
+      if (found) return found;
+      // Say what there is, so a wrong name or path costs one call, not a guessing game.
+      const mine = (await skillsOf(db, turn.agent_id)).map(skill => skill.slug);
+      const skill = input.file ? await readSkill(db, input.name) : null;
+      throw new ToolError(skill && 'files' in skill ? `${input.name} has no file ${input.file}; its files are: ${skill.files.join(', ') || 'none'}` : `There is no skill ${input.name}. Yours are: ${mine.join(', ') || 'none'}`);
     },
     'knowledge.propose_memory': async (turn, input) => ({ memoryId: await knowledge.fileMemory({ scope: (await scopesOf(turn))[0]!, agentId: turn.agent_id, ...input }) }),
     'proposal.create': async (turn, input) => proposals.create(turn, input),

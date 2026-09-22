@@ -22,6 +22,7 @@ import { ENGINES } from '../../../../adapters/engine/index.ts';
 import { createControls } from '../runtime/controls.ts';
 import { createNeedsYou, type NeedsYouKind } from '../runtime/needsYou.ts';
 import { mountProviderRoutes } from './providerSetupRoutes.ts';
+import { mountSkillRoutes } from './skillRoutes.ts';
 import { mountTaskRoutes } from './taskRoutes.ts';
 import { deskOf } from '../runtime/desk.ts';
 import { createWorkload } from '../runtime/workload.ts';
@@ -586,6 +587,8 @@ export function createApp(context: Context) {
 
   // Providers are organization-wide: which engine serves them, how they bill, and which models an agent may be given.
   providerSetup = mountProviderRoutes(app, context);
+  // Skills: written methods the roles name, read by the seats that wear them.
+  mountSkillRoutes(app, context);
   mountTaskRoutes(app, context, turns);
   app.post('/api/agents/:id/provider', async c => {
     const agent = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'projects.id as project_id']).where('agents.id', '=', c.req.param('id')).executeTakeFirst();

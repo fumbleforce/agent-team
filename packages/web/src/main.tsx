@@ -7,6 +7,7 @@ import { CostsPage } from './features/costs/CostsPage';
 import { IntegrationsPage } from './features/integrations/IntegrationsPage';
 import { AuditPage } from './features/audit/AuditPage';
 import { OrgPage, RolesPage } from './features/org/OrgPages';
+import { SkillsPage } from './features/org/SkillsPage';
 import { LibraryPage } from './features/org/LibraryPage';
 import { ProjectSettingsPage } from './features/settings/ProjectSettingsPage';
 import { AuthPage, MembersPage } from './features/settings/SettingsPages';
@@ -58,6 +59,8 @@ function Signed() {
       <Route path="/org"><OrgPage me={me.data} projects={tree.data.projects} /></Route>
       <Route path="/roles/:slug">{params => <RolesPage slug={params.slug} me={me.data!} projects={tree.data!.projects} />}</Route>
       <Route path="/roles"><RolesPage slug={null} me={me.data} projects={tree.data.projects} /></Route>
+      <Route path="/skills/:slug">{params => <SkillsPage slug={params.slug} me={me.data!} projects={tree.data!.projects} />}</Route>
+      <Route path="/skills"><SkillsPage slug={null} me={me.data} projects={tree.data.projects} /></Route>
       <Route path="/library"><LibraryPage me={me.data} projects={tree.data.projects} /></Route>
       <Route path="/welcome"><WelcomePage me={me.data} projects={tree.data.projects} /></Route>
       <Route path="/needs-you"><NeedsYouPage me={me.data} projects={tree.data.projects} /></Route>

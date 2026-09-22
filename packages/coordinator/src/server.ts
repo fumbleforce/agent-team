@@ -29,6 +29,7 @@ import { createCheckWake } from './checks/wake.ts';
 
 import { backfillSearch } from './knowledge/backfill.ts';
 import { createLaunches, type LauncherFactory } from './runtime/launch.ts';
+import { SKILL_SCOPE, shippedSkills } from './runtime/skills.ts';
 export type { LauncherFactory } from './runtime/launch.ts';
 export type TrackerFactory = (kind: string) => Promise<TrackerClient | null>;
 // The tracker clients are adapters; a project without a credential for its tracker is simply not polled.
@@ -61,6 +62,8 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), local: isLoopback(host), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null, ...(config.env ? { env: config.env } : {}), ...(config.fetch ? { fetch: config.fetch } : {}), ...(config.decider !== undefined ? { decider: config.decider } : {}) });
   await context.secrets.load();
   await createIssues(context, path.join(context.dataDir, 'blobs')).backfillInbox();
+  // The shipped skills, which the shipped roles name. Like every shipped document, one an owner edited is never overwritten.
+  await createVersionedDocs(context).seed('skill', SKILL_SCOPE, shippedSkills(path.join(packageRoot(), 'blueprints', 'skills')));
   // The shipped role library is seeded once; an owner's edits are never overwritten.
   await createVersionedDocs(context).seed('role', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'roles.json'), 'utf8')) as Record<string, unknown>);
   // So is the agent library, from the seats of the default team; the PM seat belongs to a team, not to the library.

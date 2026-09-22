@@ -77,7 +77,7 @@ export function outsideWriteScope(grant: PermissionGrant, changed: string[]): st
 
 export const Role = z.object({
   slug: z.string().regex(/^[a-z][a-z0-9-]{0,40}$/), summary: z.string().max(200), perspective: z.string().max(800).default(''),
-  skills: z.array(z.string().max(60)).max(20).default([]), permissions: PermissionGrant, knowledgeFirst: z.array(z.string().max(200)).max(8).default([]),
+  skills: z.array(z.string().max(63)).max(40).default([]), permissions: PermissionGrant, knowledgeFirst: z.array(z.string().max(200)).max(8).default([]),
   decides: z.array(z.string().max(80)).max(12).default([]), approvalKinds: z.array(z.enum(['tester', 'reviewer', 'pm'])).max(3).default([]),
 });
 export type Role = z.infer<typeof Role>;

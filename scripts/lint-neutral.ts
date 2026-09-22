@@ -8,7 +8,8 @@ const roots = ['packages', 'blueprints'];
 const terms = ['github', 'gitlab', 'linear', 'fly', 'tailscale', 'opencode', 'claude', 'codex', 'myntbase', 'manti', 'hubro', 'stockapp', 'anthropic', 'bedrock', 'gh', 'glab', 'supabase', 'typesafe', 'jev'];
 const pattern = new RegExp(`\\b(${terms.join('|')})\\b`, 'i');
 // Generic English uses of otherwise-provider words, and imports of the adapters themselves.
-const benign = [/\bon the fly\b/i, /\blinear(ly)? (time|scan|search)\b/i, /adapters\//];
+// The last one is a shipped writing skill listing "bedrock" among metaphor words to avoid.
+const benign = [/\bon the fly\b/i, /\blinear(ly)? (time|scan|search)\b/i, /adapters\//, /surface \(as in "API surface"\), bedrock, scaffolding/];
 const skip = /(^|[\\/])(node_modules|dist|demo|dev)([\\/]|$)|\.test\.tsx?$/;
 
 function* files(dir: string): Generator<string> {

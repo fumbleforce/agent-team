@@ -4,7 +4,7 @@ import { AppShell, PageHeader, Sidebar, type Crumb } from '../../patterns';
 import { Tabs, Text } from '../../ui';
 
 export const isOrgAdmin = (me: Me): boolean => me.user.orgRole === 'owner' || me.user.orgRole === 'admin';
-const SECTIONS = [{ href: '/org', label: 'Organization', admin: false }, { href: '/roles', label: 'Roles', admin: false }, { href: '/library', label: 'Agent library', admin: false }, { href: '/settings/members', label: 'Members', admin: true }, { href: '/settings/auth', label: 'Sign-in', admin: true }, { href: '/audit', label: 'Audit', admin: true }];
+const SECTIONS = [{ href: '/org', label: 'Organization', admin: false }, { href: '/roles', label: 'Roles', admin: false }, { href: '/skills', label: 'Skills', admin: false }, { href: '/library', label: 'Agent library', admin: false }, { href: '/settings/members', label: 'Members', admin: true }, { href: '/settings/auth', label: 'Sign-in', admin: true }, { href: '/audit', label: 'Audit', admin: true }];
 export const orgLinks = (me: Me) => SECTIONS.filter(section => !section.admin || isOrgAdmin(me)).map(({ href, label }) => ({ href, label }));
 
 // The frame of every organization-level page: the sidebar, the title and the tabs between those pages.

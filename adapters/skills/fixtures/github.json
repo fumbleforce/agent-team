@@ -1,0 +1,79 @@
+{
+  "https://api.github.com/repos/o/r": {
+    "default_branch": "main",
+    "license": null
+  },
+  "https://api.github.com/repos/o/r/commits/main": {
+    "sha": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "https://api.github.com/repos/o/r/git/trees/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa?recursive=1": {
+    "tree": [
+      {
+        "path": "README.md",
+        "type": "blob",
+        "size": 10
+      },
+      {
+        "path": "pack",
+        "type": "tree"
+      },
+      {
+        "path": "pack/LICENSE",
+        "type": "blob",
+        "size": 80
+      },
+      {
+        "path": "pack/skills/alpha/SKILL.md",
+        "type": "blob",
+        "size": 120
+      },
+      {
+        "path": "pack/skills/alpha/references/notes.md",
+        "type": "blob",
+        "size": 20
+      },
+      {
+        "path": "pack/skills/alpha/agents/openai.yaml",
+        "type": "blob",
+        "size": 20
+      },
+      {
+        "path": "pack/skills/alpha/diagram.png",
+        "type": "blob",
+        "size": 900
+      },
+      {
+        "path": "pack/skills/alpha/huge.md",
+        "type": "blob",
+        "size": 70000
+      },
+      {
+        "path": "pack/skills/beta/SKILL.md",
+        "type": "blob",
+        "size": 100
+      },
+      {
+        "path": "pack/skills/beta/playbooks/deep/SKILL.md",
+        "type": "blob",
+        "size": 40
+      },
+      {
+        "path": "pack/skills/no-description/SKILL.md",
+        "type": "blob",
+        "size": 30
+      },
+      {
+        "path": "other/gamma/SKILL.md",
+        "type": "blob",
+        "size": 30
+      }
+    ],
+    "truncated": false
+  },
+  "https://raw.githubusercontent.com/o/r/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pack/LICENSE": "MIT License\n\nCopyright (c) 2026 Ada Lovelace\n\nPermission is hereby granted...",
+  "https://raw.githubusercontent.com/o/r/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pack/skills/alpha/SKILL.md": "---\nname: alpha\ndescription: \"Use when the first letter matters: says so, in quotes.\"\n---\n\n# Alpha\n\nRead [notes](references/notes.md).\n",
+  "https://raw.githubusercontent.com/o/r/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pack/skills/alpha/references/notes.md": "Notes for alpha.",
+  "https://raw.githubusercontent.com/o/r/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pack/skills/beta/SKILL.md": "---\nname: Beta Mode\ndescription: >-\n  Use when the second letter\n  matters.\n---\nBeta body.",
+  "https://raw.githubusercontent.com/o/r/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pack/skills/beta/playbooks/deep/SKILL.md": "---\nname: deep\ndescription: part of beta\n---\nDeep playbook.",
+  "https://raw.githubusercontent.com/o/r/aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa/pack/skills/no-description/SKILL.md": "---\nname: no-description\n---\nText without a description."
+}

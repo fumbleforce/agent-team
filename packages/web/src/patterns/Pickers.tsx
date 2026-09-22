@@ -6,12 +6,12 @@ export interface PickOption { id: string; name: string; note?: string }
 // Choose several from a list that may be long: what is chosen stays on top as chips, the rest is found by typing.
 // A name the list does not have can be added as typed. The choice travels in a hidden input, one per line.
 // `inline` is the picker inside a row of a page: the list only opens while someone is looking for something.
-export function MultiPicker({ name, label, options, value, onChange, loading, error, inline, disabled }: { name: string; label: string; options: PickOption[]; value: string[]; onChange(next: string[]): void; loading?: boolean; error?: string | undefined; inline?: boolean; disabled?: boolean }) {
+export function MultiPicker({ name, label, options, value, onChange, loading, error, inline, disabled, noun = 'model', listedOnly }: { name: string; label: string; options: PickOption[]; value: string[]; onChange(next: string[]): void; loading?: boolean; error?: string | undefined; inline?: boolean; disabled?: boolean; /* What one choice is called, in the picker's own words. */ noun?: string; /* Only what the list has can be chosen: nothing is added as typed. */ listedOnly?: boolean }) {
   const [query, setQuery] = useState(''), [looking, setLooking] = useState(false);
   const words = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
   const shown = useMemo(() => options.filter(option => words.every(word => `${option.id} ${option.name}`.toLowerCase().includes(word))).slice(0, 60), [options, query]);
   const toggle = (id: string) => onChange(value.includes(id) ? value.filter(item => item !== id) : [...value, id]);
-  const typed = query.trim(), addable = typed && !/\s/.test(typed) && !value.includes(typed) && !options.some(option => option.id === typed);
+  const typed = query.trim(), addable = !listedOnly && typed && !/\s/.test(typed) && !value.includes(typed) && !options.some(option => option.id === typed);
   // In a row the search stays out of the way until it is asked for.
   const [adding, setAdding] = useState(false), open = !inline || (adding && looking);
   return (
@@ -21,16 +21,16 @@ export function MultiPicker({ name, label, options, value, onChange, loading, er
       <div className="flex flex-wrap items-center gap-1.5">
         {value.map(id => <button key={id} type="button" disabled={disabled} onClick={() => toggle(id)} aria-label={`Remove ${id}`} className="cursor-pointer disabled:cursor-default"><Chip tone="working">{options.find(option => option.id === id)?.name ?? id}{!disabled && ' ×'}</Chip></button>)}
         {inline && !disabled && (adding
-          ? <span className="w-52"><Input compact autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder="Search, or type a name" aria-label={`Search ${label}`} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (addable) { toggle(typed); setQuery(''); } } if (event.key === 'Escape') event.currentTarget.blur(); }} /></span>
-          : <Button size="sm" variant="ghost" aria-label={`Add to ${label}`} onClick={() => setAdding(true)}>+ Model</Button>)}
+          ? <span className="w-52"><Input compact autoFocus value={query} onChange={event => setQuery(event.target.value)} placeholder={listedOnly ? 'Search' : 'Search, or type a name'} aria-label={`Search ${label}`} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (addable) { toggle(typed); setQuery(''); } } if (event.key === 'Escape') event.currentTarget.blur(); }} /></span>
+          : <Button size="sm" variant="ghost" aria-label={`Add to ${label}`} onClick={() => setAdding(true)}>+ {noun[0]!.toUpperCase() + noun.slice(1)}</Button>)}
       </div>
-      {!inline && <Input value={query} onChange={event => setQuery(event.target.value)} placeholder={options.length > 6 ? 'Search models' : 'Add a model by name'} aria-label={`Search ${label}`} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (addable) { toggle(typed); setQuery(''); } } }} />}
+      {!inline && <Input value={query} onChange={event => setQuery(event.target.value)} placeholder={options.length > 6 || listedOnly ? `Search ${noun}s` : `Add a ${noun} by name`} aria-label={`Search ${label}`} onKeyDown={event => { if (event.key === 'Enter') { event.preventDefault(); if (addable) { toggle(typed); setQuery(''); } } }} />}
       {open && !disabled && (
         <fieldset aria-label={`Choices for ${label}`} onMouseDown={event => { if (inline) event.preventDefault(); }} className="m-0 flex max-h-56 min-w-0 flex-col gap-2 overflow-y-auto rounded-control border border-line bg-raised px-3 py-2.5">
           {loading && <span className="flex items-center gap-2"><Spinner /><Text size="small" tone="muted">Loading the list…</Text></span>}
           {shown.map(option => <Checkbox key={option.id} label={option.name} {...(option.note ? { note: option.note } : {})} checked={value.includes(option.id)} onChange={() => toggle(option.id)} />)}
           {addable && <div><Button size="sm" onClick={() => { toggle(typed); setQuery(''); }}>Add “{typed}”</Button></div>}
-          {!loading && shown.length === 0 && !addable && <Text size="small" tone="muted">{options.length ? 'Nothing matches.' : 'Type a model name and press Enter.'}</Text>}
+          {!loading && shown.length === 0 && !addable && <Text size="small" tone="muted">{options.length ? 'Nothing matches.' : listedOnly ? `There are no ${noun}s to choose from yet.` : `Type a ${noun} name and press Enter.`}</Text>}
         </fieldset>
       )}
       {error && <Text size="caption" tone="stop">{error}</Text>}

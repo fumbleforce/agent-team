@@ -113,11 +113,12 @@ export function RolesPage({ slug, me, projects }: { slug: string | null; me: Me;
               <Text tone="soft">{role.doc.summary}. {role.doc.perspective}</Text>
             </div>
             {editing === role.slug && <RoleEditor role={role as unknown as EditableRole} onCancel={() => setEditing(null)} onSaved={() => { setEditing(null); roles.reload(); }} />}
-            <div className="grid grid-cols-1 gap-3 xl:grid-cols-3">
+            <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
               <Card className="flex flex-col gap-2.5">
                 <SectionLabel>Permissions</SectionLabel>
                 <KeyValueList items={[['Read repository', scope(role.doc.permissions.repoRead)], ['Write code', scope(role.doc.permissions.codeWrite)], ['Run shell', role.doc.permissions.shell], ['Run browser', role.doc.permissions.browser], ['Issues', role.doc.permissions.issues], ['Comms', role.doc.permissions.comms], ['Deploy', role.doc.permissions.deploy], ['Hire and retire', role.doc.permissions.staffing ?? 'none'], ['Secrets', role.doc.permissions.secrets.join(', ') || 'none'], ['Spend per day', String(role.doc.permissions.spendDailyCapMinor / 100)]]} />
               </Card>
+              <Card className="flex flex-col gap-2.5"><SectionLabel>Skills</SectionLabel><div className="flex flex-wrap gap-1.5">{role.doc.skills.map(skill => <Link key={skill} href={`/skills/${skill}`}><Chip>{skill}</Chip></Link>)}</div>{role.doc.skills.length === 0 && <Text size="small" tone="muted">None yet.</Text>}</Card>
               <Card className="flex flex-col gap-2.5"><SectionLabel>Reads first</SectionLabel>{role.doc.knowledgeFirst.map(page => <Text key={page} size="small" mono tone="soft">{page}</Text>)}{role.doc.knowledgeFirst.length === 0 && <Text size="small" tone="muted">Nothing pinned.</Text>}<SectionLabel>Approves as</SectionLabel><div className="flex gap-1">{role.doc.approvalKinds.map(kind => <Chip key={kind} tone="review">{kind}</Chip>)}{role.doc.approvalKinds.length === 0 && <Text size="small" tone="muted">Nothing.</Text>}</div></Card>
               <Card className="flex flex-col gap-2.5"><SectionLabel>Worn by</SectionLabel>{role.wornBy.map(agent => <div key={agent.id} className="flex items-center gap-2"><Avatar initials={agent.initials} tint={agent.tint} size="sm" /><Text>{agent.name}</Text></div>)}{role.wornBy.length === 0 && <Text size="small" tone="muted">Nobody yet.</Text>}</Card>
             </div>
