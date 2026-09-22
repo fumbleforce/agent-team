@@ -1,13 +1,14 @@
 import type { ReactNode } from 'react';
 import { Link } from 'wouter';
 import type { Agent, TaskCardData } from '../data/client';
-import { Avatar, Card, Chip, Select, StatusDot, Text, type DotTone } from '../ui';
+import { Avatar, Button, Card, Chip, Select, StatusDot, Text, type DotTone } from '../ui';
 
 // Why a card is held, in the words of the person looking at the board.
 const HELD: [RegExp, string][] = [[/approval required/i, 'Waiting for your approval'], [/being marked ready/i, 'Approved: getting ready'], [/on hold/i, 'On hold'], [/is blocked/i, 'Blocked by another issue']];
 const heldWords = (reason: string) => HELD.find(([pattern]) => pattern.test(reason))?.[1] ?? reason;
+const approvalPending = (reason: string) => HELD[0]![0].test(reason);
 
-export function TaskCard({ task, owner, roster = [], onAssign, href }: { task: TaskCardData; owner: Agent | undefined; roster?: Agent[]; onAssign?: ((taskId: string, agentId: string) => void) | undefined; href?: string | undefined }) {
+export function TaskCard({ task, owner, roster = [], onAssign, onApprove, href }: { task: TaskCardData; owner: Agent | undefined; roster?: Agent[]; onAssign?: ((taskId: string, agentId: string) => void) | undefined; onApprove?: ((taskId: string) => void) | undefined; href?: string | undefined }) {
   const held = task.state === 'backlog' && Boolean(task.blocked_reason);
   return (
     <Card as="article" tone="raised" pad="sm" className="flex flex-col gap-2">
@@ -20,6 +21,7 @@ export function TaskCard({ task, owner, roster = [], onAssign, href }: { task: T
         {task.state === 'awaiting_decision' && <Chip tone="attention">awaiting decision</Chip>}
         {held && <Chip tone="attention">{heldWords(task.blocked_reason!)}</Chip>}
         <span className="ml-auto flex items-center gap-1.5">
+          {onApprove && held && approvalPending(task.blocked_reason!) && <Button size="sm" variant="ghost" onClick={() => onApprove(task.id)}>Approve</Button>}
           {onAssign && !owner && !held && task.state !== 'inbox' && <Select compact aria-label={`Assign ${task.key}`} value="" onChange={event => { if (event.target.value) onAssign(task.id, event.target.value); }}><option value="">Assign…</option>{roster.map(agent => <option key={agent.id} value={agent.id}>{agent.name}</option>)}</Select>}
           {owner && <Avatar initials={owner.initials} tint={owner.tint} size="xs" />}
         </span>
@@ -28,12 +30,12 @@ export function TaskCard({ task, owner, roster = [], onAssign, href }: { task: T
   );
 }
 
-export function BoardColumn({ name, tone, tasks, roster, onAssign, hrefOf, aside }: { name: string; tone: DotTone; tasks: TaskCardData[]; roster: Agent[]; onAssign?: (taskId: string, agentId: string) => void; hrefOf?: (taskId: string) => string; aside?: ReactNode }) {
+export function BoardColumn({ name, tone, tasks, roster, onAssign, onApprove, hrefOf, aside }: { name: string; tone: DotTone; tasks: TaskCardData[]; roster: Agent[]; onAssign?: (taskId: string, agentId: string) => void; onApprove?: (taskId: string) => void; hrefOf?: (taskId: string) => string; aside?: ReactNode }) {
   return (
     <section className="flex min-h-0 flex-col gap-2">
       <div className="flex h-5.5 items-center gap-2 px-0.5"><StatusDot tone={tone} /><Text size="small" weight="semibold">{name}</Text><Text size="caption" tone="muted" mono>{tasks.length}</Text>{aside && <span className="ml-auto">{aside}</span>}</div>
       <div className="flex min-h-0 flex-col gap-2 overflow-y-auto">
-        {tasks.map(task => <TaskCard key={task.id} task={task} owner={roster.find(agent => agent.id === task.assignee_agent_id)} roster={roster} onAssign={onAssign} href={hrefOf?.(task.id)} />)}
+        {tasks.map(task => <TaskCard key={task.id} task={task} owner={roster.find(agent => agent.id === task.assignee_agent_id)} roster={roster} onAssign={onAssign} onApprove={onApprove} href={hrefOf?.(task.id)} />)}
       </div>
     </section>
   );

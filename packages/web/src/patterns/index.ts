@@ -13,3 +13,4 @@ export { ChoiceCard, Steps, StatusLine, StepCard } from './Setup';
 export { NewProject } from './NewProject';
 export { Pipeline, LogCard, RailFacts, RailSection, DetailHeader, DetailRail, type PipelineStep } from './TaskParts';
 export { MultiPicker, SecretField, More, type PickOption } from './Pickers';
+export { usePinnedTail } from './usePinnedTail';

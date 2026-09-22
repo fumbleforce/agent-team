@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { api, ApiError } from '../../data/client';
 import { useStream } from '../../data/stream';
 import { useResource } from '../../data/useResource';
-import { StatusLine } from '../../patterns';
+import { StatusLine, usePinnedTail } from '../../patterns';
 import { Avatar, Button, Checkbox, Dialog, Input, Text } from '../../ui';
 import { useVoice } from './useVoice';
 
@@ -33,9 +33,10 @@ function Conversation({ desk }: { desk: Desk }) {
   useStream(event => event.type === 'message.posted' && (event as { threadId?: string }).threadId === view.data?.threadId, view.reload);
 
   // A new answer ends the wait, is read aloud when asked for, and in a spoken conversation hands the turn back to the person.
-  const messages = view.data?.messages ?? [], last = messages.at(-1), spoken = useRef<string | null>(null), end = useRef<HTMLDivElement>(null);
+  const tail = usePinnedTail();
+  const messages = view.data?.messages ?? [], last = messages.at(-1), spoken = useRef<string | null>(null);
   useEffect(() => {
-    end.current?.scrollIntoView({ block: 'end' });
+    tail.follow();
     if (!last || last.authorKind === 'user') return;
     if (spoken.current === null) { spoken.current = last.id; return; }
     if (spoken.current === last.id) return;
@@ -46,12 +47,11 @@ function Conversation({ desk }: { desk: Desk }) {
 
   return (
     <div className="flex min-h-0 flex-col gap-3">
-      <div className="flex max-h-80 min-h-24 flex-col gap-2.5 overflow-y-auto">
+      <div ref={tail.container} onScroll={tail.onScroll} className="flex max-h-80 min-h-24 flex-col gap-2.5 overflow-y-auto">
         {messages.length === 0 && view.data && <Text size="small" tone="muted">Ask what is going on, or say what you need.</Text>}
         {messages.map(message => <div key={message.id} className="flex flex-col gap-0.5"><Text size="caption" tone="muted">{message.authorKind === 'user' ? 'You' : desk.name}</Text><Text size="small" tone={message.authorKind === 'user' ? 'soft' : 'ink'}>{message.body}</Text></div>)}
         {waiting && <StatusLine tone="working" busy>{desk.name} is answering</StatusLine>}
         {voice.listening && <StatusLine tone="working" busy>{voice.hearing || 'Listening…'}</StatusLine>}
-        <div ref={end} />
       </div>
       {(error ?? voice.problem) && <Text size="small" tone="stop">{error ?? voice.problem}</Text>}
       <form className="flex items-center gap-2" onSubmit={event => { event.preventDefault(); void send(text); }}>

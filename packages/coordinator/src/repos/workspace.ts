@@ -114,7 +114,7 @@ export function createWorkspace(context: Context) {
         const task = await tx.selectFrom('tasks').select(['id', 'project_id', 'state', 'blocked_reason']).where('id', '=', taskId).executeTakeFirst();
         if (!task) throw notFound('Task');
         // Held in the backlog means not to be worked on yet; handing it to someone would start exactly that.
-        if (task.state === 'backlog' && task.blocked_reason) throw new HttpError(409, 'conflict', `This task is held: ${task.blocked_reason}. Approve it in the tracker (or lift the hold there) first.`);
+        if (task.state === 'backlog' && task.blocked_reason) throw new HttpError(409, 'conflict', `This task is held: ${task.blocked_reason}. Approve it here or in the tracker first.`);
         await tx.updateTable('tasks').set({ assignee_agent_id: agentId, state: task.state === 'backlog' || task.state === 'inbox' ? 'assigned' : task.state, updated_at: now() }).where('id', '=', taskId).execute();
         return { projectId: task.project_id, events: await events.append(tx, [{ type: 'task.assigned', actorKind: 'user', userId: viewer.userId, projectId: task.project_id, taskId, agentId }]) };
       });
