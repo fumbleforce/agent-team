@@ -58,6 +58,25 @@ test('a work turn lists its tools, posts to discussion and reports on its task; 
   } finally { await coordinator.close(); }
 });
 
+test('a report that names nothing is not logged: the refusal says what a report needs and the task keeps its state', async () => {
+  const { coordinator, db, call, turns, taskId, claimed } = await boot('work');
+  try {
+    const bare = await call('task.update', { state: 'ready_for_review', summary: 'Done.' });
+    assert.equal(bare.error, true);
+    assert.match(bare.text, /names no step and no outcome/);
+    // Refused before anything was written: the task stays where the claim left it, and the turn has no summary.
+    assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'in_progress');
+    assert.equal((await db.selectFrom('turns').select('summary').where('id', '=', claimed.turnId).executeTakeFirstOrThrow()).summary, null);
+    const update = await call('task.update', { state: 'checkpoint', summary: 'CK-31: added the retry guard in checkout.ts; npm test passes.' });
+    assert.equal(update.error, false);
+    assert.equal(update.data.state, 'in_progress');
+    assert.equal((await db.selectFrom('turns').select('summary').where('id', '=', claimed.turnId).executeTakeFirstOrThrow()).summary, 'CK-31: added the retry guard in checkout.ts; npm test passes.');
+    // A finish that brings no engine summary of its own does not erase the report the agent wrote.
+    await turns.finish(claimed.turnId, 'w1', claimed.leaseToken, { state: 'completed' });
+    assert.equal((await db.selectFrom('turns').select('summary').where('id', '=', claimed.turnId).executeTakeFirstOrThrow()).summary, 'CK-31: added the retry guard in checkout.ts; npm test passes.');
+  } finally { await coordinator.close(); }
+});
+
 test('tools are scoped by turn kind, project and lease', async () => {
   const { coordinator, db, rpc, turns, claimed } = await boot('feedback');
   try {

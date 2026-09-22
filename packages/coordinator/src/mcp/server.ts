@@ -26,6 +26,9 @@ type Handlers = { [N in ToolName]: (turn: Turn, input: ToolInput<N>) => Promise<
 export interface McpDeps { workspace: Workspace; deliberation: Deliberation; reviews: Reviews; knowledge: Knowledge; turns: Turns; issues: Issues; integrations: Integrations; mentions: Mentions }
 
 const RECORDED = { recorded: true } as const;
+// A log entry that names no step and no outcome says nothing: refuse it whole, before anything is written.
+const NOTHING_SAID = new Set(['done', 'ok', 'okay', 'completed', 'complete', 'finished', 'in progress', 'working on it', 'wip', 'started', 'picked up', 'took it', 'nothing to report']);
+const saysNothing = (summary: string) => NOTHING_SAID.has(summary.trim().toLowerCase().replace(/[.!?]+$/, '').replace(/\s+/g, ' '));
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 // Keys sorted at every level, so the same arguments hash the same however the client ordered them.
 const canonical = (value: unknown): string => Array.isArray(value) ? `[${value.map(canonical).join(',')}]` : value !== null && typeof value === 'object' ? `{${Object.keys(value).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}` : JSON.stringify(value) ?? 'null';
@@ -125,6 +128,7 @@ export function createMcp(context: Context, deps: McpDeps) {
     },
     'task.update': async (turn, input) => {
       if (!turn.task_id) throw new ToolError('This turn has no task');
+      if (saysNothing(input.summary)) throw new ToolError('This summary cannot be logged: it names no step and no outcome. Say what was done — the task, the concrete step or file it touched, what happened and how it ended.');
       const kind = (await db.selectFrom('tasks').select('result_kind').where('id', '=', turn.task_id).executeTakeFirst())?.result_kind;
       if (kind === 'document' && input.state === 'ready_for_review' && !input.document) throw new ToolError('The result of this task is a document: write it with knowledge.write, then pass its path as `document`.');
       if (kind !== 'document' && input.document) throw new ToolError('This task ends in a change, not a document; leave `document` out.');
