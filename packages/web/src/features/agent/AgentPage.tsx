@@ -57,7 +57,7 @@ export function AgentPage({ id, me, projects }: { id: string; me: Me; projects: 
             <DirectMessages id={id} name={data.agent.name} />
             <SectionLabel>Recent turns</SectionLabel>
             {data.turns.map(turn => (
-              <ListRow key={turn.id} active={turn.id === latest} onClick={() => setPicked(turn.id)} title={KIND[turn.kind] ?? turn.kind} note={turn.summary ?? ''} aside={<Chip tone={STATE[turn.state] ?? 'neutral'}>{turn.state}</Chip>} />
+              <ListRow key={turn.id} active={turn.id === latest} onClick={() => setPicked(turn.id)} title={KIND[turn.kind] ?? turn.kind} note={turn.summary?.split('\n')[0] ?? ''} aside={<Chip tone={STATE[turn.state] ?? 'neutral'}>{turn.state}</Chip>} />
             ))}
             {data.turns.length === 0 && <Text size="small" tone="muted">No turns yet.</Text>}
           </Card>
