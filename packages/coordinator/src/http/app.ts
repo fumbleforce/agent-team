@@ -114,7 +114,8 @@ export function createApp(context: Context) {
     await machine(c);
     const rows = await context.storage.db.selectFrom('projects').select(['id', 'kind', 'parent_id', 'status', 'manifest']).execute();
     const repository = new Map(rows.map(row => [row.id, row.kind !== 'org' && Boolean((JSON.parse(row.manifest) as { delivery?: { repository?: unknown } }).delivery?.repository)]));
-    return c.json({ projects: rows.filter(row => row.status === 'active' && !repository.get(row.id) && (row.kind === 'org' || !(row.parent_id && repository.get(row.parent_id)))).map(row => row.id) });
+    // A code project is never a desk, with a repository or not yet: one registered from a checkout without a remote is served from that checkout.
+    return c.json({ projects: rows.filter(row => row.status === 'active' && row.kind !== 'repo' && !repository.get(row.id) && (row.kind === 'org' || !(row.parent_id && repository.get(row.parent_id)))).map(row => row.id) });
   });
   // Assigned further down, where the guided setup is mounted; routes only run after that.
   let setup: ReturnType<typeof mountSetupRoutes>;

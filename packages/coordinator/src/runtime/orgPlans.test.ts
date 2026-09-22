@@ -119,3 +119,18 @@ test('only a role that may plan the organisation gets its tools', () => {
   assert.equal(permits(grants('chief-of-staff'), TOOLS['org.plan'].permission), true);
   for (const slug of ['hr', 'pm', 'front-desk', 'sales']) assert.equal(permits(grants(slug), TOOLS['org.plan'].permission), false, slug);
 });
+
+test('a seat is made only with roles of the role library, and a team with nobody to start is said, not turned into a failure', async () => {
+  const { storage, db, plans, threadId, propose } = await boot();
+  try {
+    await assert.rejects(propose({ title: 'Outreach', why: 'Cold outreach.', steps: [{ kind: 'create_team', ref: '$out', name: 'Outreach', charter: { area: 'first messages to new accounts', outcomes: [] }, seats: [{ name: 'Sid', title: 'Lead', persona: '', roles: ['pm'], isPm: true }, { name: 'Pia', title: 'Caller', persona: '', roles: ['sdr'], isPm: false }] }] }), /Step 1 cannot be done: sdr is not in the role library/);
+
+    const shop = await db.selectFrom('projects').select('team_id').where('slug', '=', 'shop').executeTakeFirstOrThrow();
+    await db.updateTable('agents').set({ status: 'paused' }).where('team_id', '=', shop.team_id!).where('is_pm', '=', true).execute();
+    const plan = await propose({ title: 'The shop owns checkout', why: 'Nobody owns it.', steps: [{ kind: 'set_charter', team: 'shop', charter: { area: 'the checkout', outcomes: [] } }] });
+    await plans.apply('user-1', plan.planId);
+    assert.equal((await plans.get(plan.planId)).state, 'applied');
+    const said = await db.selectFrom('messages').select('body').where('thread_id', '=', threadId).where('author_kind', '=', 'system').orderBy('seq', 'desc').executeTakeFirstOrThrow();
+    assert.equal(said.body, 'Applied: The shop owns checkout. Shop has no PM at work, so nobody was started on it yet.');
+  } finally { await storage.close(); }
+});

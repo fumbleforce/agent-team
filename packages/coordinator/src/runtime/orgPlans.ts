@@ -90,6 +90,12 @@ export function createOrgPlans(context: Context, turns: Turns) {
       for (let n = 2; await tx.selectFrom('projects').select('id').where('slug', '=', slug).executeTakeFirst(); n++) slug = `${base}-${n}`;
       return slug;
     };
+    // A seat wears roles of the role library only: a role nobody wrote down gives it nothing to work with.
+    const rolesKnown = async (roles: string[]) => {
+      const wanted = [...new Set(roles)], known = wanted.length ? await tx.selectFrom('versioned_docs').select('slug').where('kind', '=', 'role').where('scope_type', '=', LIBRARY.type).where('slug', 'in', wanted).execute() : [];
+      const unknown = wanted.filter(role => !known.some(row => row.slug === role));
+      if (unknown.length) throw refuse(`${unknown.join(', ')} ${unknown.length === 1 ? 'is' : 'are'} not in the role library`);
+    };
     const manifestOf = async (projectId: string) => JSON.parse((await tx.selectFrom('projects').select('manifest').where('id', '=', projectId).executeTakeFirstOrThrow()).manifest) as Record<string, unknown>;
 
     for (const [index, step] of plan.steps.entries()) {
@@ -120,6 +126,7 @@ export function createOrgPlans(context: Context, turns: Turns) {
             names = template.seats.map(seat => seat.name);
             from = ` from the ${template.name} template`;
           } else {
+            await rolesKnown(step.seats!.flatMap(seat => seat.roles));
             // A team has one PM: the seat marked so, or else the first.
             const seats = step.seats!.map((seat, at) => ({ ...seat, isPm: step.seats!.some(other => other.isPm) ? seat.isPm && step.seats!.findIndex(other => other.isPm) === at : at === 0 }));
             await stampTemplate(tx, now, id, { slug: 'custom', version: 1, name: `${step.name} team`, seats }, 'create');
@@ -135,9 +142,7 @@ export function createOrgPlans(context: Context, turns: Turns) {
           const stored = step.library ? await libraryDoc(tx, 'library_agent', step.library) : null;
           if (step.library && !stored) throw refuse(`Nobody called ${step.library} is in the agent library`);
           const seat = stored ? LibraryAgent.parse(JSON.parse(stored.doc)) : step.seat!;
-          const known = await tx.selectFrom('versioned_docs').select('slug').where('kind', '=', 'role').where('slug', 'in', seat.roles).execute();
-          const unknown = seat.roles.filter(role => !known.some(row => row.slug === role));
-          if (unknown.length) throw refuse(`${unknown.join(', ')} is not in the role library`);
+          await rolesKnown(seat.roles);
           for (let n = 0; n < step.count; n++) {
             const { agentId } = await hireInto(tx, now, target.id, { name: seat.name, title: seat.title, persona: seat.persona, roles: seat.roles });
             drafts.push({ type: stored ? 'agent.hired' : 'agent.created', category: 'audit', ...who, agentId, projectId: target.id, payload: { name: seat.name, ...(stored ? { library: stored.slug } : { roles: seat.roles }) } });
@@ -152,6 +157,7 @@ export function createOrgPlans(context: Context, turns: Turns) {
         }
         case 'change_seat': {
           const seat = await seatOf(step.agentId);
+          if (step.roles) await rolesKnown(step.roles);
           const set = { ...(step.title !== undefined ? { title: step.title } : {}), ...(step.persona !== undefined ? { persona: step.persona } : {}) };
           if (Object.keys(set).length) await tx.updateTable('agents').set(set).where('id', '=', step.agentId).execute();
           if (step.roles) {
@@ -327,9 +333,14 @@ export function createOrgPlans(context: Context, turns: Turns) {
         return { ...done, published: await events.append(tx, [{ type: 'org.plan_applied', category: 'audit', actorKind: 'user', userId, projectId: found.row.project_id, payload: { planId: id, title: found.plan.title, steps: done.lines.length } }, ...done.drafts]) };
       });
       events.published(result.published);
-      await note(found.threadId, found.row.project_id, `Applied: ${found.plan.title}.`, { orgPlan: id, applied: true });
-      // A team given an area hears so where it reads, and its PM starts on it.
-      for (const item of result.started) await handover(item.projectId, `${item.name} now owns ${item.charter.area}.${item.charter.outcomes.length ? ` What it should show for it: ${item.charter.outcomes.join('; ')}.` : ''} Put the first work for it on the board.`);
+      // A team given an area hears so where it reads, and its PM starts on it. The plan is applied by now: a team with nobody to start is
+      // said in the conversation, never turned into a failure of what was already done.
+      const unstarted: string[] = [];
+      for (const item of result.started) {
+        try { await handover(item.projectId, `${item.name} now owns ${item.charter.area}.${item.charter.outcomes.length ? ` What it should show for it: ${item.charter.outcomes.join('; ')}.` : ''} Put the first work for it on the board.`); }
+        catch (error) { if (!(error instanceof HttpError)) throw error; unstarted.push(item.name); }
+      }
+      await note(found.threadId, found.row.project_id, `Applied: ${found.plan.title}.${unstarted.length ? ` ${unstarted.join(' and ')} ${unstarted.length === 1 ? 'has' : 'have'} no PM at work, so nobody was started on ${unstarted.length === 1 ? 'it' : 'them'} yet.` : ''}`, { orgPlan: id, applied: true });
       return { lines: result.lines, setUp: result.setUp };
     },
 

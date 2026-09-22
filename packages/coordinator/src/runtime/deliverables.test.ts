@@ -137,3 +137,31 @@ test('a duty that asks for changes opens no task: its PM is told the target and 
     assert.equal((await deliverables.progress([projectId]))[0]!.approved, 1);
   } finally { await storage.close(); }
 });
+
+test('documents are handed in like any deliverable, and the owner judging by hand carries the round with it', async () => {
+  const { storage, db, projectId, agents, turnOf, duties, deliverables } = await boot();
+  try {
+    await duties.set(projectId, { title: 'Briefs', brief: 'One-page briefs for the week.', ownerAgentId: agents.Rita!, everyHours: 24, result: 'document', deliverable: { kind: 'document', target: 2 } });
+    await duties.sweep();
+    const task = await db.selectFrom('tasks').select('id').where('tag', '=', 'duty').executeTakeFirstOrThrow();
+    const rita = turnOf('Rita', task.id);
+    const state = async () => (await db.selectFrom('tasks').select('state').where('id', '=', task.id).executeTakeFirstOrThrow()).state;
+    const one = await deliverables.submit(rita, { kind: 'document', title: 'Northwind brief', body: '# Northwind\nWhat they buy and why now.', fields: {} });
+    const two = await deliverables.submit(rita, { kind: 'document', title: 'Globex brief', body: '# Globex\nTheir second team.', fields: {} });
+    await deliverables.handIn(rita);
+    assert.equal(await state(), 'in_review');
+
+    // Everything waiting judged by hand: nothing is left for the reviewer, whose waiting turn is taken off, and the round is settled.
+    await deliverables.decide('user-1', projectId, one.deliverableId, 'pass', null);
+    assert.equal(await state(), 'in_review');
+    await deliverables.decide('user-1', projectId, two.deliverableId, 'changes', 'Too long.');
+    assert.equal(await state(), 'in_progress');
+    assert.equal(await db.selectFrom('work_items').select('id').where('task_id', '=', task.id).where('kind', '=', 'review').where('state', '=', 'queued').executeTakeFirst(), undefined);
+    assert.ok(await db.selectFrom('work_items').select('id').where('task_id', '=', task.id).where('kind', '=', 'work').where('state', '=', 'queued').executeTakeFirst());
+
+    // Approved by hand up to the number while in hand: the round is done.
+    const three = await deliverables.submit(rita, { kind: 'document', title: 'Globex brief, shorter', body: '# Globex\nSecond team, in two lines.', fields: {} });
+    await deliverables.decide('user-1', projectId, three.deliverableId, 'pass', null);
+    assert.equal(await state(), 'done');
+  } finally { await storage.close(); }
+});

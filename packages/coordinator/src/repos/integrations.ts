@@ -40,9 +40,12 @@ export function createIntegrations(context: Context, turns: Turns) {
       const id = newId(now());
       const published = await storage.transaction(async tx => {
         const existing = await tx.selectFrom('connections').select(['id', 'kind', 'name', 'config']).where('project_id', '=', projectId).execute();
-        const stale = existing.filter(row => (exclusive ? (JSON.parse(row.config) as { target?: string }).target === exclusive : row.kind === input.kind && row.name === input.name)).map(row => row.id);
+        const replaced = existing.filter(row => (exclusive ? (JSON.parse(row.config) as { target?: string }).target === exclusive : row.kind === input.kind && row.name === input.name)), stale = replaced.map(row => row.id);
         if (stale.length) await tx.deleteFrom('connections').where('id', 'in', stale).execute();
-        await tx.insertInto('connections').values({ id, project_id: projectId, kind: input.kind, name: input.name, category: input.category, mode: input.mode, config: JSON.stringify(input.config), status: input.connected ? 'connected' : 'warning', status_detail: input.waiting, credential_ref: input.credentialRef, last_sync_at: null, created_at: now() }).execute();
+        // Who may use it stays as it was set (by a plan, say) unless the form names it again: pasting a token does not widen who gets the tool.
+        const kept = replaced.map(row => (JSON.parse(row.config) as { roles?: unknown }).roles).find((roles): roles is string => typeof roles === 'string' && roles.trim() !== '');
+        const config = !input.config.roles?.trim() && kept ? { ...input.config, roles: kept } : input.config;
+        await tx.insertInto('connections').values({ id, project_id: projectId, kind: input.kind, name: input.name, category: input.category, mode: input.mode, config: JSON.stringify(config), status: input.connected ? 'connected' : 'warning', status_detail: input.waiting, credential_ref: input.credentialRef, last_sync_at: null, created_at: now() }).execute();
         // Without a person behind it (a checkout registering itself), the platform is the actor.
         return events.append(tx, [{ type: 'connection.added', category: 'audit', actorKind: userId ? 'user' : 'system', ...(userId ? { userId } : {}), projectId, payload: { kind: input.kind, name: input.name } }]);
       });

@@ -38,5 +38,10 @@ test('an agent tool takes a pasted token, checks it against the MCP server and k
     const sealed = await db.selectFrom('secrets').select('sealed').where('name', '=', 'HUBSPOT_MCP_TOKEN').executeTakeFirstOrThrow();
     assert.ok(!sealed.sealed.includes(PASTED), 'stored sealed');
     assert.equal(coordinator.context.secrets.get('HUBSPOT_MCP_TOKEN'), PASTED);
+
+    // Setting it up again without naming who may use it, as when the token is pasted after a plan connected it, keeps who may.
+    assert.equal((await call('/api/projects/sales/integrations/setup', { cookie, body: { kind: 'hubspot', token: PASTED, values: {} } })).status, 200);
+    const again = await db.selectFrom('connections').select('config').where('kind', '=', 'hubspot').execute();
+    assert.deepEqual(again.map(row => JSON.parse(row.config).roles), ['sales']);
   } finally { await coordinator.close(); }
 });

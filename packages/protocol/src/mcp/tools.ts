@@ -271,16 +271,16 @@ export const TOOLS = {
     permission: 'comms:post', turnKinds: ['work', 'conclude', 'triage'], mutating: true, rateClass: 'rare',
   }),
   'deliverable.submit': tool({
-    description: 'Hand in one deliverable of the task of this turn: a card for the board, a record (a lead, a person to contact, a follow-up), a message ready to send, a piece of material (a deck, a poster) or a campaign set up and not launched. Write it so someone can act on it as it stands: the body is the thing itself, the link is where it lives outside the platform. Hand in each one as soon as it is ready; when you have handed in what the task asks for, call task.update with ready_for_review and a teammate reviews them all. Nothing you hand in is sent or published by itself.',
+    description: 'Hand in one deliverable of the task of this turn: a document (the body is the text itself), a card for the board, a record (a lead, a person to contact, a follow-up), a message ready to send, a piece of material (a deck, a poster) or a campaign set up and not launched. Write it so someone can act on it as it stands: the body is the thing itself, the link is where it lives outside the platform. Hand in each one as soon as it is ready; when you have handed in what the task asks for, call task.update with ready_for_review and a teammate reviews them all. Nothing you hand in is sent or published by itself.',
     input: DeliverableSubmission,
     output: z.object({ deliverableId: z.string(), handedIn: z.number().int(), target: z.number().int() }),
     permission: null, turnKinds: ['work'], mutating: true, rateClass: 'write',
   }),
   'deliverable.review': tool({
-    description: 'Judge the deliverables under review, as they read in your packet: one verdict per deliverable, in one call. pass means it can go out as it stands; changes means it cannot, and the note says what is wrong. A rejected one does not count; its author is told why.',
+    description: 'Judge the deliverables under review, as they read in your packet: one verdict per deliverable, in one call. pass means it can go out as it stands; changes means it cannot, and the note says what is wrong. A call that leaves one out is refused and changes nothing: call again with all of them. A rejected one does not count; its author is told why.',
     input: z.object({ verdicts: z.array(z.object({ deliverableId: z.string(), verdict: z.enum(['pass', 'changes']), note: z.string().trim().min(1).max(400) })).min(1).max(50) }),
     output: z.object({ approved: z.number().int(), rejected: z.number().int(), target: z.number().int(), state: z.string() }),
-    permission: null, turnKinds: ['review'], mutating: true, rateClass: 'once',
+    permission: null, turnKinds: ['review'], mutating: true, rateClass: 'few',
   }),
   'org.review': tool({
     description: 'The organisation as it stands: every team with what it is for, its seats and their roles, its standing duties with what each should deliver and how far today is, what it is connected to and what it spent; and what can be brought in: the agent library, team templates, the role library, the tools that can be connected and the models there are. Read it before you plan.',

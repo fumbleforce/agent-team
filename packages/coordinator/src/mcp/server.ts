@@ -1,6 +1,6 @@
 import { createDuties } from '../runtime/duties.ts';
 import { createDocuments } from '../runtime/documents.ts';
-import { createDeliverables, DELIVERABLES } from '../runtime/deliverables.ts';
+import { createDeliverables, DELIVERABLES, mayHandIn } from '../runtime/deliverables.ts';
 import { createOrgPlans } from '../runtime/orgPlans.ts';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
@@ -139,7 +139,7 @@ export function createMcp(context: Context, deps: McpDeps) {
       if (kind !== 'document' && input.document) throw new ToolError('This task ends in a change, not a document; leave `document` out.');
       // A round of deliverables is handed in as a whole, once what it asks for is in.
       const handingIn = kind === DELIVERABLES && input.state === 'ready_for_review';
-      if (handingIn && !(await db.selectFrom('deliverables').select('id').where('task_id', '=', turn.task_id).where('state', '=', 'submitted').executeTakeFirst())) throw new ToolError('Nothing is handed in yet: hand in each deliverable with deliverable.submit, then report ready_for_review.');
+      if (handingIn && !await mayHandIn(db, turn.task_id)) throw new ToolError('Nothing is handed in yet: hand in each deliverable with deliverable.submit, then report ready_for_review.');
       const state = input.state === 'ready_for_review' ? (input.document || handingIn ? 'in_progress' : 'in_review') : input.state === 'blocked' ? 'blocked' : input.state === 'not_needed' ? 'canceled' : 'in_progress';
       const published = await storage.transaction(async tx => {
         // The journal is the owner's own record of where the task stands; the next turn starts from it on whatever worker runs it.

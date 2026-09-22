@@ -24,9 +24,10 @@ test('a project without a repository, made after the worker started, is served b
     const plain = createWorker({ coordinatorUrl: coordinator.url, token: TOKEN, workerId: 'plain', stateDir: plainState, lanes: { work: 1, bounded: 1, deliver: 1 }, projects: { [shop]: checkout }, engine: fake, env, timeoutMs: 5000 });
     assert.equal(await desks.tick(), false, 'nothing to do yet');
 
-    const marketing = await register({ slug: 'marketing', name: 'Marketing' });
+    const marketing = await register({ slug: 'marketing', name: 'Marketing', kind: 'team' });
+    await register({ slug: 'no-remote', name: 'No remote', manifest: { scm: { kind: 'github' } } });
     const listed = (await (await fetch(`${coordinator.url}/machine/desks`, { headers: machine })).json()) as { projects: string[] };
-    assert.deepEqual(listed.projects, [marketing], 'a project with a repository is no desk');
+    assert.deepEqual(listed.projects, [marketing], 'a code project is no desk, with a repository or without a remote yet');
     const seat = await db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select('agents.id').where('projects.id', '=', marketing).executeTakeFirstOrThrow();
     const thread = await db.selectFrom('threads').select('id').where('project_id', '=', marketing).where('kind', '=', 'discussion').executeTakeFirstOrThrow();
     assert.ok(await createTurns(coordinator.context).enqueue({ agentId: seat.id, projectId: marketing, kind: 'reply', threadId: thread.id }));

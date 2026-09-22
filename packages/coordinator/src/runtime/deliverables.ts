@@ -26,6 +26,12 @@ async function counts(tx: Pick<Tx, 'selectFrom'>, taskId: string) {
   return { submitted: rows.filter(row => row.state === 'submitted').length, approved: rows.filter(row => row.state === 'approved').length, rejected: rows.filter(row => row.state === 'rejected').length };
 }
 
+// Whether the owner of a round may hand it in: something waits to be judged, or it already has what it asks for.
+export async function mayHandIn(tx: Pick<Tx, 'selectFrom'>, taskId: string): Promise<boolean> {
+  const count = await counts(tx, taskId);
+  return count.submitted > 0 || count.approved >= (await roundOf(tx, taskId)).target;
+}
+
 // For a packet: where the round stands, for its owner; the deliverables to judge, for its reviewer.
 export async function roundPart(tx: Tx, taskId: string, forReview: boolean): Promise<string | null> {
   const task = await tx.selectFrom('tasks').select('result_kind').where('id', '=', taskId).executeTakeFirst();
@@ -67,6 +73,19 @@ export function createDeliverables(context: Context, turns: Turns) {
     return { ref: null, drafts: [] };
   }
 
+  // After the owner's own verdict the round's task follows its deliverables: a round in review with nothing left to judge is done when it
+  // has what it asks for and goes back to its owner otherwise, and a round in hand that reached its number is done.
+  async function settle(tx: Tx, taskId: string, userId: string): Promise<{ drafts: EventDraft[]; wake: { agentId: string; projectId: string } | null }> {
+    const task = await tx.selectFrom('tasks').select(['state', 'assignee_agent_id', 'project_id']).where('id', '=', taskId).executeTakeFirstOrThrow();
+    const count = await counts(tx, taskId), met = count.approved >= (await roundOf(tx, taskId)).target;
+    const to = task.state === 'in_review' && count.submitted === 0 ? (met ? 'done' : 'in_progress') : ['assigned', 'in_progress'].includes(task.state) && met ? 'done' : null;
+    if (!to) return { drafts: [], wake: null };
+    if (task.state === 'in_review') await tx.updateTable('work_items').set({ state: 'canceled', defer_reason: 'task-closed' }).where('task_id', '=', taskId).where('kind', '=', 'review').where('state', '=', 'queued').execute();
+    if (to === 'done') await tx.updateTable('work_items').set({ state: 'canceled', defer_reason: 'task-closed' }).where('task_id', '=', taskId).where('state', '=', 'queued').execute();
+    const drafts = await moveTask(tx, taskId, to, { now: now(), actor: { actorKind: 'user', userId }, payload: { byOwner: true } });
+    return { drafts, wake: to === 'in_progress' && task.assignee_agent_id ? { agentId: task.assignee_agent_id, projectId: task.project_id } : null };
+  }
+
   return {
     async submit(turn: Turn, input: DeliverableSubmission) {
       if (!turn.task_id) throw refuse('This turn has no task');
@@ -93,11 +112,12 @@ export function createDeliverables(context: Context, turns: Turns) {
     async handIn(turn: Turn) {
       const result = await storage.transaction(async tx => {
         const task = await tx.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id']).where('id', '=', turn.task_id!).executeTakeFirstOrThrow();
-        const count = await counts(tx, task.id);
-        if (count.submitted === 0) throw refuse('Nothing is handed in yet: hand in each deliverable with deliverable.submit first');
-        const [reviewer] = await reviewersFor(tx, task.project_id, task.assignee_agent_id, 1);
+        const count = await counts(tx, task.id), target = (await roundOf(tx, task.id)).target;
+        if (count.submitted === 0 && count.approved < target) throw refuse('Nothing is handed in yet: hand in each deliverable with deliverable.submit first');
+        // With nothing new to judge (the owner judged them by hand), there is nobody to ask.
+        const [reviewer] = count.submitted ? await reviewersFor(tx, task.project_id, task.assignee_agent_id, 1) : [];
         if (!reviewer) await tx.updateTable('deliverables').set({ state: 'approved', decided_at: now(), note: 'Nobody else on the team to judge it' }).where('task_id', '=', task.id).where('state', '=', 'submitted').execute();
-        const done = !reviewer && count.approved + count.submitted >= (await roundOf(tx, task.id)).target;
+        const done = !reviewer && count.approved + count.submitted >= target;
         const moved = await moveTask(tx, task.id, reviewer ? 'in_review' : done ? 'done' : 'in_progress', { set: { blocked_reason: null }, now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, payload: { deliverables: count.submitted } });
         return { reviewer, task, state: reviewer ? 'in_review' : done ? 'done' : 'in_progress', published: await events.append(tx, [...moved, ...(reviewer ? [{ type: 'review.requested', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: task.project_id, taskId: task.id, turnId: turn.id, payload: { deliverables: count.submitted, reviewers: [reviewer] } }] : [])]) };
       });
@@ -168,9 +188,11 @@ export function createDeliverables(context: Context, turns: Turns) {
         if (row.state !== 'submitted') throw refuse(`It is already ${row.state === 'approved' ? 'approved' : 'sent back'}`);
         const outcome = verdict === 'pass' ? await act(tx, row, row.author_agent_id) : { ref: null, drafts: [] };
         await tx.updateTable('deliverables').set({ state: verdict === 'pass' ? 'approved' : 'rejected', reviewer_agent_id: null, note: note ?? (verdict === 'pass' ? 'Approved by the owner' : 'Sent back by the owner'), outcome_ref: outcome.ref, decided_at: now() }).where('id', '=', row.id).execute();
-        return events.append(tx, [{ type: 'deliverable.decided', category: 'audit', actorKind: 'user', userId, projectId, taskId: row.task_id, payload: { deliverableId, verdict } }, ...outcome.drafts]);
+        const settled = await settle(tx, row.task_id, userId);
+        return { wake: settled.wake, taskId: row.task_id, published: await events.append(tx, [{ type: 'deliverable.decided', category: 'audit', actorKind: 'user', userId, projectId, taskId: row.task_id, payload: { deliverableId, verdict } }, ...outcome.drafts, ...settled.drafts]) };
       });
-      events.published(result);
+      events.published(result.published);
+      if (result.wake) await turns.enqueue({ agentId: result.wake.agentId, projectId: result.wake.projectId, kind: 'work', taskId: result.taskId, dedupeKey: `delowner:${result.taskId}:${deliverableId}` });
     },
   };
 }
