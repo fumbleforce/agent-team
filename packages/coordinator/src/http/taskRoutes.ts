@@ -6,6 +6,8 @@ import { can, type Action, type Viewer } from '../auth/rbac.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
 import type { Turns } from '../runtime/turns.ts';
 import { teamIdOf } from '../repos/issueTasks.ts';
+import { ideationOf, APPROVAL_HOLD, APPROVED_HOLD } from '../sync/tracker.ts';
+import { trackerClient } from '../../../../adapters/tracker/index.ts';
 import { parseBody } from './conventions.ts';
 
 type Env = { Variables: { viewer: Viewer } };
@@ -126,6 +128,32 @@ export function mountTaskRoutes(app: Hono<Env>, context: Context, turns: Turns) 
         drafts.push(await say(tx, into, intoThread, userId, 'note', `Also reported as ${task.key}: ${task.title}\n\n${task.brief}`.slice(0, 7000), { mergedFrom: task.id }));
       }
       return events.append(tx, [...drafts, { type: 'task.state_changed', actorKind: 'user', userId, projectId: task.project_id, taskId: task.id, payload: { from: 'inbox', to: 'canceled', ...(into ? { mergedInto: into.id } : {}) } }]);
+    });
+    events.published(published);
+    return c.json({ ok: true });
+  });
+
+  // Approving a held idea: the tracker is the board of record, so the approval is written there and the board follows. The
+  // tracker must agree that the idea is now approved; where it cannot say so (a state-based tracker that does not read the
+  // ideation labels), the owner approves it there instead.
+  app.post('/api/tasks/:id/approve', async c => {
+    const task = await found(c, 'project.contribute'), userId = c.get('viewer').userId;
+    if (task.source !== 'tracker' || task.state !== 'backlog' || task.blocked_reason !== APPROVAL_HOLD) throw new HttpError(409, 'conflict', 'Only an idea that waits for approval can be approved');
+    const project = await db.selectFrom('projects').select('manifest').where('id', '=', task.project_id).executeTakeFirstOrThrow();
+    const full = JSON.parse(project.manifest) as { tracker?: Record<string, unknown>; ideation?: unknown };
+    const config = ideationOf(full);
+    if (!config) throw new HttpError(409, 'conflict', 'This project has no idea workflow');
+    const system = (await db.selectFrom('external_refs').select('system').where('entity_type', '=', 'task').where('entity_id', '=', task.id).executeTakeFirst())?.system;
+    const client = system ? trackerClient(system, { env: context.env, fetch: context.fetch }) : null;
+    if (!client) throw new HttpError(409, 'conflict', 'No connection to the tracker; approve it there instead');
+    const manifest = { ...(full.tracker ?? {}), ideation: config };
+    await client.addLabel(manifest, task.key, config.approvedState).catch(error => { throw new HttpError(502, 'tracker', `The tracker refused the approval: ${(error as Error).message}`); });
+    const agreed = (await client.snapshot(manifest).catch(() => null))?.allIssues.find(issue => issue.identifier === task.key);
+    if (!agreed || agreed.state.name !== config.approvedState) throw new HttpError(409, 'conflict', 'The tracker did not take the approval; approve it there instead');
+    const threadId = await threadOf(task.id);
+    const published = await storage.transaction(async tx => {
+      await tx.updateTable('tasks').set({ blocked_reason: APPROVED_HOLD, updated_at: now() }).where('id', '=', task.id).execute();
+      return events.append(tx, [await say(tx, task, threadId, userId, 'decision', 'Approved.'), { type: 'task.state_changed', actorKind: 'user', userId, projectId: task.project_id, taskId: task.id, payload: { from: 'backlog', to: 'backlog', reason: 'approved' } }]);
     });
     events.published(published);
     return c.json({ ok: true });

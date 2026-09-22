@@ -13,7 +13,7 @@ const withGeometry = (el: HTMLElement, geometry: { scrollHeight: number; clientH
 describe('usePinnedTail', () => {
   const Feed = () => {
     const tail = usePinnedTail();
-    return <div ref={tail.container} onScroll={tail.onScroll} data-testid="feed" style={{ height: 100, overflow: 'auto' }}><button onClick={tail.follow}>follow</button></div>;
+    return <div ref={tail.container} onScroll={tail.onScroll} data-testid="feed" className="h-24 overflow-y-auto"><button type="button" onClick={tail.follow}>follow</button></div>;
   };
 
   it('follows the end while the reader is there, and stays put once they have scrolled up to read', () => {

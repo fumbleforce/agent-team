@@ -48,6 +48,7 @@ export function TaskPage({ slug, taskId, roster, board, navigate }: { slug: stri
             </div>
           </div>
           {data.canWrite && <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+            {task.state === 'backlog' && task.blocked_reason === 'Owner approval required' && <Button variant="primary" onClick={() => act(`/api/tasks/${task.id}/approve`, {})}>Approve</Button>}
             {inbox && <span className="w-36"><Select aria-label="Accept and give it to" value="" onChange={event => { if (event.target.value) act(`/api/tasks/${task.id}/accept`, { agentId: event.target.value === 'backlog' ? null : event.target.value }); }}><option value="">Accept →</option><option value="backlog">The backlog, no owner yet</option>{roster.filter(item => item.status !== 'paused').map(item => <option key={item.id} value={item.id}>{item.name} · {item.title}</option>)}</Select></span>}
             {inbox && <Button onClick={() => setMerging(value => !value)}>Merge into…</Button>}
             {inbox && <Button onClick={() => { const reason = window.prompt('Why is this declined? (optional)'); if (reason !== null) act(`/api/tasks/${task.id}/decline`, { reason }, () => navigate(`/p/${slug}/tasks`)); }}>Decline</Button>}

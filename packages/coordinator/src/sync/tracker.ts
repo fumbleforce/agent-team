@@ -51,11 +51,14 @@ export const Ideation = z.object({ enabled: z.literal(true), backlogCap: z.numbe
   .refine(config => config.batchSize <= config.backlogCap && new Set([config.proposedState, config.approvedState, config.rejectedState]).size === 3);
 export type Ideation = z.infer<typeof Ideation>;
 export const ideationOf = (manifest: { ideation?: unknown }): Ideation | null => { const parsed = Ideation.safeParse(manifest.ideation); return parsed.success ? parsed.data : null; };
+// What a held idea says on the board while it waits for its owner, and once it has been approved and is waiting to be marked ready.
+export const APPROVAL_HOLD = 'Owner approval required';
+export const APPROVED_HOLD = 'Approved; being marked ready';
 
 // An idea becomes work only while its owner approves it: in the approved state, not on hold, not blocked, a root issue.
 export function approvalStatus(config: Ideation, issue: TrackerIssue | undefined): { allowed: boolean; reason: string } {
   if (!issue || issue.archived || issue.child || !has(issue, config.ideaLabel)) return { allowed: false, reason: 'Not an active idea of this project' };
-  if (issue.state.name !== config.approvedState || terminal(issue)) return { allowed: false, reason: 'Owner approval required' };
+  if (issue.state.name !== config.approvedState || terminal(issue)) return { allowed: false, reason: APPROVAL_HOLD };
   if (issue.labels.some(label => HOLD_LABELS.includes(label.name))) return { allowed: false, reason: 'Idea is on hold for a decision or repair' };
   if (issue.blocked) return { allowed: false, reason: 'Idea is blocked' };
   return { allowed: true, reason: 'Owner approved' };
@@ -204,7 +207,7 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
           // Everything in the tracker is on the board. An idea its owner has not approved, or one on hold, is shown held in the
           // backlog with the reason; holding it is what keeps it from being worked on, not hiding it.
           if (state === 'canceled') continue;
-          const heldBecause = approval && !terminal(issue) && (!approval.allowed || unprepared.has(issue.identifier)) ? (approval.allowed ? 'Approved; being marked ready' : approval.reason) : null;
+          const heldBecause = approval && !terminal(issue) && (!approval.allowed || unprepared.has(issue.identifier)) ? (approval.allowed ? APPROVED_HOLD : approval.reason) : null;
           const id = newId(now());
           await tx.insertInto('tasks').values({ id, project_id: projectId, key: issue.identifier, source: 'tracker', title: issue.title, brief: issue.description ?? '', tag, priority: index, milestone_id: null, state: heldBecause ? 'backlog' : state, assignee_agent_id: null, author_agent_id: null, branch: null, head_sha: null, pr_url: null, blocked_reason: heldBecause, created_at: now(), updated_at: now() }).execute();
           await remember(id, issue, false);

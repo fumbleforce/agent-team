@@ -12,7 +12,7 @@ describe('useResource', () => {
     const view = useResource<{ items: string[] }>('/feed');
     return <>
       <ul>{(view.data?.items ?? []).map(item => <li key={item}>{item}</li>)}{view.error && <li>failed</li>}</ul>
-      <button onClick={() => view.reload()}>reload</button>
+      <button type="button" onClick={() => view.reload()}>reload</button>
     </>;
   };
 
