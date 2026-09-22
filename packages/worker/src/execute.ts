@@ -8,6 +8,8 @@ export interface TurnResult { state: 'completed' | 'failed' | 'deferred' | 'inte
 const GRACE_MS = 5000;
 // How much of the engine's stderr a failed turn carries into its summary: the last lines, where a CLI names what went wrong.
 const STDERR_LINES = 12, STDERR_CHARS = 1500;
+// What the coordinator takes as a turn's summary (FinishBody): the whole composed text stays under it, or the turn could never finish.
+const SUMMARY_CHARS = 2000;
 
 const CAUSE: Record<Exclude<StopReason, 'completed' | 'rate-limited'> | 'timeout', string> = {
   auth: 'The engine is not logged in on this worker.',
@@ -18,11 +20,14 @@ const CAUSE: Record<Exclude<StopReason, 'completed' | 'rate-limited'> | 'timeout
 };
 
 // What a failed turn says: the cause as classified, the exit, and the tail of stderr, so the owner reads why without another run.
-// The engine's own summary, when it wrote one, stays on top.
+// The engine's own summary, when it wrote one, stays on top, cut to what fits beside the cause and the tail.
 export function failureSummary(stopReason: keyof typeof CAUSE, exit: { code: number | null; signal: string | null }, summary: string | null, stderrTail: string): string {
   const how = exit.signal ? `signal ${exit.signal}` : exit.code === null ? 'no exit code' : `exit ${exit.code}`;
   const tail = stderrTail.trim().split('\n').slice(-STDERR_LINES).join('\n').slice(-STDERR_CHARS).trim();
-  return [summary, `${CAUSE[stopReason]} (${stopReason}, ${how})`, tail ? `Last of stderr:\n\`\`\`\n${tail.replaceAll('```', "'''")}\n\`\`\`` : ''].filter(Boolean).join('\n\n');
+  const cause = [`${CAUSE[stopReason]} (${stopReason}, ${how})`, tail ? `Last of stderr:\n\`\`\`\n${tail.replaceAll('```', "'''")}\n\`\`\`` : ''].filter(Boolean).join('\n\n');
+  const room = SUMMARY_CHARS - cause.length - 2;
+  const own = summary && room > 0 ? summary.slice(0, room) : '';
+  return [own, cause].filter(Boolean).join('\n\n');
 }
 
 // Runs one engine process for one turn. The caller owns the lease; aborting the signal kills the process.

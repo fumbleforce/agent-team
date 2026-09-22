@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { createTurns, seedDemo, startCoordinator } from '@agent-team/coordinator';
 import { fake } from '../../../adapters/engine/fake.ts';
-import { createWorker } from './worker.ts';
+import { createWorker, finishSummary } from './worker.ts';
 
 const TOKEN = 'machine-token-for-tests-0123456789';
 
@@ -50,6 +50,17 @@ test('a usage limit defers the turn, a crash blocks the task, a hang times out a
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, taskState, scenario);
     await coordinator.close();
   }
+});
+
+// Redaction can grow a short secret into its mark, so whatever reaches the finish body is capped on the final text: a failure keeps its tail, a completion its headline.
+test('the summary a turn finishes with fits the coordinator\'s cap, whatever redaction did to it', () => {
+  assert.equal(finishSummary('r'.repeat(2100), 'completed')!.length, 2000);
+  const failed = `${'e'.repeat(2100)}stderr tail`;
+  const kept = finishSummary(failed, 'failed');
+  assert.equal(kept!.length, 2000);
+  assert.ok(kept!.endsWith('stderr tail'), 'the diagnosis lives at the end of a failure');
+  assert.equal(finishSummary(null, 'failed'), null);
+  assert.equal(finishSummary('short', 'deferred'), 'short');
 });
 
 // Rows come back without a prototype; a copy compares as a plain object.

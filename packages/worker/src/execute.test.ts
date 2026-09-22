@@ -39,3 +39,11 @@ test('the failure summary is bounded and keeps the engine\'s own summary on top'
   assert.ok(!text.includes('line 27\n') && text.includes('line 28\n'), 'only the last lines are kept');
   assert.equal(failureSummary('crashed', { code: null, signal: 'SIGKILL' }, null, ''), 'The engine stopped without finishing. (crashed, signal SIGKILL)');
 });
+
+test('the whole summary fits what the coordinator takes, whatever the engine wrote: the cause and the tail survive, the engine\'s text is cut', () => {
+  const text = failureSummary('crashed', { code: 3, signal: null }, 'r'.repeat(2000), 'e'.repeat(8192));
+  assert.ok(text.length <= 2000, `${text.length} chars`);
+  assert.ok(text.startsWith('rrrr'));
+  assert.match(text, /The engine stopped without finishing\. \(crashed, exit 3\)/);
+  assert.ok(text.endsWith('e'.repeat(1500) + '\n```'));
+});
