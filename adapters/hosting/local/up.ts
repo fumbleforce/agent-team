@@ -29,7 +29,8 @@ export function webBuildIsStale(root: string): boolean {
 
 export const localDir = (projectId: string, env: NodeJS.ProcessEnv = process.env) => path.join(configDir(env), 'local', projectId);
 
-// Private configuration for the two processes; the machine token is generated once and reused.
+// Private configuration for the two processes; the machine token is generated once and reused. The worker also keeps desks, so a team
+// made later in the app without a repository (marketing, say) has somewhere to run.
 export function writeLocalConfigs(options: LocalOptions) {
   const dir = localDir(options.projectId, options.env);
   const data = path.join(dir, 'data');
@@ -43,7 +44,7 @@ export function writeLocalConfigs(options: LocalOptions) {
   return {
     dir, url, machineToken,
     coordinator: write('coordinator.json', { host: '127.0.0.1', port, storage: { kind: 'sqlite', path: path.join(data, 'coordinator.sqlite') } }),
-    worker: write('worker.json', { coordinatorUrl: url, workerId: workerIdFor(os.hostname(), options.projectId), stateDir: path.join(data, 'worker'), engine: options.engine, projects: { [options.projectId]: options.checkout }, ...(publishTarget(options.checkout) ? { publish: publishTarget(options.checkout) } : {}) }),
+    worker: write('worker.json', { coordinatorUrl: url, workerId: workerIdFor(os.hostname(), options.projectId), stateDir: path.join(data, 'worker'), engine: options.engine, projects: { [options.projectId]: options.checkout }, desks: true, ...(publishTarget(options.checkout) ? { publish: publishTarget(options.checkout) } : {}) }),
     envFile: write('service.env', `AGENT_TEAM_TOKEN=${machineToken}\nAGENT_TEAM_URL=${url}\n`),
   };
 }

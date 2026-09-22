@@ -63,6 +63,29 @@ export function integrationServers(integrations: readonly Integration[], env: En
   return servers;
 }
 
+// Where an agent turn may be sent: https without credentials in the address, or plain http to this same machine (a server run beside the worker).
+const LOOPBACK = new Set(['127.0.0.1', 'localhost', '[::1]']);
+function reachable(url: string): boolean {
+  try { const parsed = new URL(url); return !parsed.username && !parsed.password && (parsed.protocol === 'https:' || (parsed.protocol === 'http:' && LOOPBACK.has(parsed.hostname))); } catch { return false; }
+}
+
+// A connection set up in the app, as the integration an agent turn reaches; null when its kind is no tool here or its address or scope is
+// not usable. `variable` is the credential it may be handed, and only ever one its own adapter reads: a connection that names another
+// product's key gets none. Lists typed into the form ("contacts, deals") are split here.
+export function connectionIntegration(connection: { kind: string; config: Record<string, unknown>; credentialRef: string | null }): { integration: Integration; variable: string | null } | null {
+  const adapter = Object.hasOwn(ADAPTERS, connection.kind) ? ADAPTERS[connection.kind]! : null;
+  if (!adapter) return null;
+  const text = (key: string) => { const value = connection.config[key]; return typeof value === 'string' && value.trim() ? value.trim() : undefined; };
+  const list = (key: string) => text(key)?.toLowerCase().split(/[\s,]+/).filter(Boolean);
+  const name = text('name') ?? adapter.name, url = text('url') ?? adapter.defaultUrl, objects = list('objects'), roles = list('roles'), purpose = text('purpose');
+  if (!NAME.test(name) || RESERVED.has(name) || name === 'platform' || !url || !reachable(url)) return null;
+  const readable = [...adapter.credentialVariables, ...(adapter.name === 'mcp' ? [credentialVariable(name), `${name.toUpperCase().replace(/[^A-Z0-9]/g, '_')}_MCP_TOKEN`] : [])];
+  try {
+    const integration = adapter.validate({ kind: adapter.name, name, url, ...(objects?.length ? { objects } : {}), ...(roles?.length ? { roles } : {}), ...(purpose ? { purpose } : {}) });
+    return { integration, variable: connection.credentialRef && readable.includes(connection.credentialRef) ? connection.credentialRef : null };
+  } catch { return null; }
+}
+
 // Prompt notes: what each tool is for and the limits the manifest sets.
 export function integrationInstructions(integrations: readonly Integration[]): string {
   if (!integrations.length) return '';

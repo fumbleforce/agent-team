@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { TraceStepInput } from '@agent-team/protocol';
-import { allowlistedEnvironment, type EngineAdapter, type EngineStep, type ParseState } from './contract.ts';
+import { allowlistedEnvironment, mcpServers, type EngineAdapter, type EngineStep, type ParseState } from './contract.ts';
 
 const LIMIT = /rate.?limit|usage limit|limit reached|hit your limit|out of (?:extra )?usage|too many requests|\b429\b/i;
 const READ_TOOLS = ['Read', 'Grep', 'Glob'];
@@ -35,15 +35,16 @@ export const claude: EngineAdapter = {
   prepare(spec, turnDir, env) {
     const systemFile = path.join(turnDir, 'system-prompt.md');
     const mcpFile = path.join(turnDir, 'mcp.json');
-    // The token lives only in this private per-turn file, never in argv or the environment.
-    const servers = spec.platform ? { platform: { type: 'http', url: spec.platform.url, headers: { Authorization: `Bearer ${readFileSync(spec.platform.tokenFile, 'utf8').trim()}` } } } : {};
+    // Tokens live only in this private per-turn file, never in argv or the environment. Each connected tool is allowed by its server's name.
+    const servers = Object.fromEntries(Object.entries(mcpServers(spec)).map(([name, server]) => [name, { type: 'http', ...server }]));
+    const connected = Object.keys(servers).filter(name => name !== 'platform').map(name => `mcp__${name}`);
     const tools = spec.toolProfile === 'write' ? [] : ['--tools', spec.toolProfile === 'none' ? '' : [...READ_TOOLS, ...(spec.toolProfile === 'verify' ? ['Bash'] : [])].join(',')];
     return {
       bin: 'claude',
       args: [
         '--print', '--output-format', 'stream-json', '--verbose', '--setting-sources', 'user', '--strict-mcp-config', '--mcp-config', mcpFile,
         '--permission-mode', spec.toolProfile === 'write' ? 'acceptEdits' : 'default', '--append-system-prompt-file', systemFile,
-        ...tools, '--allowedTools', ...(spec.toolProfile === 'write' || spec.toolProfile === 'verify' ? ['Bash'] : []), ...(spec.platform ? ['mcp__platform'] : []), '--disallowedTools', ...DENIED,
+        ...tools, '--allowedTools', ...(spec.toolProfile === 'write' || spec.toolProfile === 'verify' ? ['Bash'] : []), ...(spec.platform ? ['mcp__platform'] : []), ...connected, '--disallowedTools', ...DENIED,
         ...(spec.sessionId ? ['--resume', spec.sessionId] : ['--session-id', spec.turnId]),
         ...(spec.model ? ['--model', spec.model] : []), ...(spec.effort && /^[a-z]{2,12}$/.test(spec.effort) ? ['--effort', spec.effort] : []),
       ],

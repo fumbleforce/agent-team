@@ -43,6 +43,20 @@ for (const name of ENGINES) {
     if (adapter.capabilities.bounded) for (const flag of ['acceptEdits', 'workspace-write', '--force']) assert.ok(!prepared.args.includes(flag), flag);
   });
 
+  // A connected tool's token is read from its private file into the engine's own config file, never argv, the environment or the prompt.
+  test(`${name}: a connected tool reaches the engine only through its MCP config, with its token`, () => {
+    const { spec: turn, dir } = spec();
+    const toolToken = path.join(dir, 'tool-crm-token');
+    writeFileSync(toolToken, 'crm-secret-value');
+    const prepared = adapter.prepare({ ...turn, tools: [{ name: 'crm', url: 'http://127.0.0.1:9/mcp', tokenFile: toolToken }] }, dir, adapter.environment(HOSTILE));
+    assert.ok(![...prepared.args, prepared.input ?? '', ...Object.values(prepared.env).map(String)].some(text => text.includes('crm-secret-value')));
+    const config = prepared.files.find(file => file.content.includes('http://127.0.0.1:9/mcp'));
+    if (adapter.capabilities.mcp === 'http') {
+      assert.ok(config?.content.includes('Bearer crm-secret-value'), 'the server carries its bearer header');
+      assert.ok(config!.content.includes(SECRET), 'the platform is still there');
+    } else assert.equal(config, undefined);
+  });
+
   test(`${name}: garbage lines are ignored and exits are classified`, () => {
     const state = newParseState();
     assert.deepEqual(adapter.parse('not json', state), []);
@@ -66,6 +80,18 @@ test('claude: stream events become typed trace steps, usage and a session id', (
   assert.equal(steps[3]!.title, 'Bash: npm test');
   assert.deepEqual([state.sessionId, state.costUsd, state.tokensIn, state.summary], ['abc', 0.12, 900, 'Done.']);
   assert.equal(adapter.classifyExit({ code: 1, signal: null }, newParseState(), 'Error: No conversation found with session ID'), 'resume-missing');
+});
+
+test('claude: a connected tool is in mcp.json beside the platform and allowed by its server name', () => {
+  const { spec: turn, dir } = spec({ toolProfile: 'read-only' });
+  writeFileSync(path.join(dir, 'tool-crm-token'), 'crm-secret-value');
+  const prepared = engineAdapter('claude').prepare({ ...turn, tools: [{ name: 'crm', url: 'http://127.0.0.1:9/mcp', tokenFile: path.join(dir, 'tool-crm-token') }, { name: 'docs', url: 'https://docs.example/mcp', tokenFile: null }] }, dir, {});
+  const config = JSON.parse(prepared.files.find(file => file.path.endsWith('mcp.json'))!.content) as { mcpServers: Record<string, { type: string; url: string; headers?: Record<string, string> }> };
+  assert.deepEqual(config.mcpServers.crm, { type: 'http', url: 'http://127.0.0.1:9/mcp', headers: { Authorization: 'Bearer crm-secret-value' } });
+  assert.deepEqual(config.mcpServers.docs, { type: 'http', url: 'https://docs.example/mcp' });
+  assert.equal(config.mcpServers.platform!.headers!.Authorization, `Bearer ${SECRET}`);
+  const allowed = prepared.args.slice(prepared.args.indexOf('--allowedTools') + 1, prepared.args.indexOf('--disallowedTools'));
+  assert.deepEqual(allowed, ['mcp__platform', 'mcp__crm', 'mcp__docs']);
 });
 
 test('claude: the context size is what the latest model call carried, not the sum over the turn; tool lookups are not steps', () => {

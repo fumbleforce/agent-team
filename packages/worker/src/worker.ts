@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { outsideWriteScope, STEP_ARTIFACT_LIMITS, STREAM_ARTIFACT_SEQ, turnToken, type Lane, type PermissionGrant, type TraceStepInput, type TurnKind, type Viewport } from '@agent-team/protocol';
 import { enforcesToolPolicy, type EngineAdapter } from '../../../adapters/engine/contract.ts';
@@ -8,6 +8,7 @@ import { deliver as gate, type Approvals, type DeliveryConfig } from './deliver/
 import { capturePage, type CaptureFn } from './capture.ts';
 import { executeTurn, turnDirectory, type TurnResult } from './execute.ts';
 import { clearRun, identifyRun, recordRun, sweepOrphans } from './orphans.ts';
+import { INTEGRATION_KINDS, integrationAdapter } from '../../../adapters/integration/index.ts';
 import { createRedactor } from './redact.ts';
 import { createTracer, type StepArtifact } from './trace.ts';
 import { cappedBy, changedPaths, committedCeiling, ensureReviewWorktree, ensureWorktree, headSha, publishAuthorized, removeReviewWorktrees, reviewedTasks, untouchedOverlays, worktreeFor, type AdminHooks, type ReviewWorktree, type Worktree } from './worktree.ts';
@@ -53,8 +54,11 @@ export interface WorkerConfig {
   // A disposable host that is gone after its turn (`--once`): it keeps neither a session nor a worktree, so it serves a project only when
   // the committed manifest authorizes publishing, runs every turn from its packet and pushes the branch at the end of every turn.
   ephemeral?: boolean;
+  // Also serve every active project that has no repository (the coordinator lists them), each in a scratch folder of its own under
+  // the state directory. A project named in `projects` is served from its checkout as always. The list is asked for again every `desksRefreshMs`.
+  desks?: boolean; desksRefreshMs?: number;
 }
-interface Claimed { /* Keys entered in the app that this turn's engine reads, by variable name. Held in memory for the turn only. */ secrets?: Record<string, string>; review?: { headSha: string; reviewer: string } | null; turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; taskTitle?: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; effort?: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
+interface Claimed { /* Keys entered in the app that this turn's engine reads, by variable name. Held in memory for the turn only. */ secrets?: Record<string, string>; /* External tools the seat may reach, with the bearer header when the platform holds the token. */ tools?: { name: string; kind: string; url: string; headers?: { Authorization: string } }[]; review?: { headSha: string; reviewer: string } | null; turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; taskTitle?: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; effort?: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
 interface Lease { workerId: string; leaseToken: string }
 // What one turn shares with its heartbeat: whether it is inside an operation on the checkout's shared git state right now.
 interface TurnState { adminOpen: boolean }
@@ -77,11 +81,25 @@ export function createWorker(config: WorkerConfig) {
   // Checkouts a lost lease left in the middle of a git-admin operation: nothing more is claimed for them by this process.
   const unknownCheckouts = new Set<string>();
   const refused = new Map<string, string>();
+  let desks: { ids: string[]; at: number } = { ids: [], at: -Infinity };
+
+  // A project this worker was not given a checkout for is one of its desks: a private folder, never the process's own directory.
+  const isDesk = (projectId: string) => !Object.hasOwn(config.projects, projectId);
+  const checkoutOf = (projectId: string) => (isDesk(projectId) ? path.join(config.stateDir, 'desks', projectId) : config.projects[projectId]!);
+  async function deskProjects(): Promise<string[]> {
+    if (!config.desks || config.ephemeral) return [];
+    if (Date.now() - desks.at >= (config.desksRefreshMs ?? 60_000)) {
+      // Unreachable for a moment: the list known so far stands.
+      const response = await fetch(`${config.coordinatorUrl}/machine/desks`, { headers: { authorization: `Bearer ${config.token}` }, signal: AbortSignal.timeout(10_000) }).catch(() => null);
+      if (response?.ok) desks = { ids: ((await response.json()) as { projects: string[] }).projects.filter(isDesk), at: Date.now() };
+    }
+    return desks.ids.filter(id => !unknownCheckouts.has(id));
+  }
 
   // Which projects this worker may claim for right now.
   async function servable(): Promise<string[]> {
     const projects = Object.keys(config.projects).filter(id => !unknownCheckouts.has(id));
-    if (!config.ephemeral) return projects;
+    if (!config.ephemeral) return [...projects, ...await deskProjects()].slice(0, 100);
     const allowed: string[] = [];
     for (const id of projects) {
       const authorized = config.worktrees ? await publishAuthorized(config.projects[id]!, config.worktrees.base).catch(() => false) : false;
@@ -116,7 +134,7 @@ export function createWorker(config: WorkerConfig) {
   // No model runs here: the gate re-reads the change, the checks and the approvals, merges once, and confirms.
   async function runDelivery(turn: Claimed, lease: Lease) {
     const facts = await call<DeliveryFacts>(`/worker/turns/${turn.turnId}/delivery`, lease);
-    const checkout = config.projects[turn.projectId] ?? process.cwd();
+    const checkout = checkoutOf(turn.projectId);
     const worktree = worktreeFor(checkout, facts.taskKey, config.worktrees?.branchPrefix ?? 'agents/');
     const scm = facts.manifest.scm?.kind;
     if (!scm) throw new Error('The project manifest names no source host');
@@ -166,7 +184,9 @@ export function createWorker(config: WorkerConfig) {
       const tokenFile = path.join(turnDir, 'platform-token');
       const platformToken = turnToken(config.token, turn.turnId, turn.leaseToken), env = config.env ?? process.env;
       writeFileSync(tokenFile, platformToken, { mode: 0o600 });
-      const checkout = config.projects[turn.projectId] ?? process.cwd();
+      // A desk has no repository: no worktree, no committed ceiling, nothing to publish. The turn works in the folder as it is.
+      const desk = isDesk(turn.projectId), checkout = checkoutOf(turn.projectId);
+      if (desk) mkdirSync(checkout, { recursive: true, mode: 0o700 });
       // Announced to the coordinator on both sides, so a lease lost in between is known to have left the checkout itself unknown.
       const admin: AdminHooks = {
         begin: async () => { await call(`/worker/turns/${turn.turnId}/git-admin`, { ...lease, state: 'begin' }); state.adminOpen = true; },
@@ -178,11 +198,12 @@ export function createWorker(config: WorkerConfig) {
       try {
         // The base is read fresh from the code host before a task's worktree is made from it; a task already under way keeps its own.
         const remoteBase = config.worktrees ? /^origin\/(.+)$/.exec(config.worktrees.base)?.[1] : undefined;
-        if (lane === 'work' && remoteBase && config.publish) await config.publish.exec('git', ['-C', checkout, 'fetch', '--quiet', 'origin', remoteBase], { cwd: checkout }).catch((error: Error) => console.error(`Fetching ${remoteBase} failed: ${error.message}`));
-        if (lane === 'work' && turn.taskKey && config.worktrees) worktree = await ensureWorktree({ checkout, taskKey: turn.taskKey, ...config.worktrees, admin });
-        else if (turn.kind === 'review' && turn.taskKey && turn.review && config.worktrees) reviewTree = await ensureReviewWorktree({ checkout, taskKey: turn.taskKey, reviewer: turn.review.reviewer, headSha: turn.review.headSha, projectId: turn.projectId, admin });
+        if (lane === 'work' && remoteBase && config.publish && !desk) await config.publish.exec('git', ['-C', checkout, 'fetch', '--quiet', 'origin', remoteBase], { cwd: checkout }).catch((error: Error) => console.error(`Fetching ${remoteBase} failed: ${error.message}`));
+        const trees = desk ? null : config.worktrees;
+        if (lane === 'work' && turn.taskKey && trees) worktree = await ensureWorktree({ checkout, taskKey: turn.taskKey, ...trees, admin });
+        else if (turn.kind === 'review' && turn.taskKey && turn.review && trees) reviewTree = await ensureReviewWorktree({ checkout, taskKey: turn.taskKey, reviewer: turn.review.reviewer, headSha: turn.review.headSha, projectId: turn.projectId, admin });
         // The committed ceiling wins even over what the coordinator sent.
-        grants = cappedBy(turn.grants, config.worktrees ? await committedCeiling(checkout, config.worktrees.base) : null);
+        grants = cappedBy(turn.grants, trees ? await committedCeiling(checkout, trees.base) : null);
       } catch (error) {
         if (error instanceof LeaseLost || lost()) throw error;
         await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'failed', stopReason: 'worktree-refused', summary: `The worktree could not be prepared safely; nothing was run. ${(error as Error).message}`.slice(0, 500) } });
@@ -198,7 +219,16 @@ export function createWorker(config: WorkerConfig) {
         return;
       }
       // Whatever leaves this worker is stripped of its secrets first.
-      const redact = createRedactor(env, [config.token, turn.leaseToken, platformToken, ...Object.values(turn.secrets ?? {})]);
+      // Connected tools go only to an engine that reaches remote MCP servers. A token the platform did not send may be on this machine; each
+      // is written to a private file of the turn, like the platform's own, and the engine reads it from there.
+      const offered = (turn.tools ?? []).filter(tool => /^[a-z][a-z0-9-]{0,31}$/.test(tool.name)), reaches = adapter.capabilities.mcp === 'http';
+      const tools = reaches ? offered.map(tool => {
+        const token = tool.headers?.Authorization.replace(/^Bearer /, '') ?? (INTEGRATION_KINDS.includes(tool.kind) ? integrationAdapter(tool.kind).credential(env, tool) : null);
+        const tokenFile = token ? path.join(turnDir, `tool-${tool.name}-token`) : null;
+        if (tokenFile) writeFileSync(tokenFile, token!, { mode: 0o600 });
+        return { name: tool.name, url: tool.url, tokenFile, token };
+      }) : [];
+      const redact = createRedactor(env, [config.token, turn.leaseToken, platformToken, ...Object.values(turn.secrets ?? {}), ...tools.flatMap(tool => tool.token ?? [])]);
       const artifact = (item: StepArtifact) => lost() ? Promise.resolve() : fetch(`${config.coordinatorUrl}/worker/turns/${turn.turnId}/artifacts`, { method: 'POST', headers: { 'content-type': item.mime, authorization: `Bearer ${config.token}`, 'x-worker-id': lease.workerId, 'x-lease-token': lease.leaseToken, 'x-step-seq': String(item.seq), 'x-step-kind': item.kind, 'x-step-truncated': item.truncated ? '1' : '0' }, body: item.body, signal: AbortSignal.timeout(30_000) }).then(() => {});
       const tracer = createTracer({ worktree: worktree?.path ?? null, turnDir, redact, screenshotDir: path.join(turnDir, 'browser'), onSteps: steps => { pending.push(...steps); }, onArtifact: artifact });
       tracer.start();
@@ -212,7 +242,7 @@ export function createWorker(config: WorkerConfig) {
       const moved = resume?.baseSha && worktree && resume.baseSha !== worktree.baseCommit ? `\n\n# The base moved\nThe base branch was at ${resume.baseSha.slice(0, 10)} when this session last ran and is at ${worktree.baseCommit.slice(0, 10)} now. Bring your branch up to date before you continue.` : '';
       const result = await executeTurn({
         adapter, turnDir, env, ...(turn.secrets ? { secrets: turn.secrets } : {}), timeoutMs: config.timeoutMs ?? (lane === 'work' ? 45 : 15) * 60_000, signal,
-        spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? reviewTree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, effort: turn.effort ?? null, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile } },
+        spec: { turnId: turn.turnId, kind: turn.kind, cwd: worktree?.path ?? reviewTree?.path ?? checkout, prompt: resume ? resume.prompt + moved : turn.packet.prompt, systemPrompt: turn.packet.system, model: turn.model, effort: turn.effort ?? null, sessionId: resume?.sessionId ?? null, toolProfile, platform: { url: `${config.coordinatorUrl}/mcp`, tokenFile }, tools: tools.map(({ token: _token, ...tool }) => tool) },
         onSteps: steps => tracer.steps(steps),
         onLine: keepLine,
         // What a crash leaves behind is found by the next start of this worker.
@@ -222,6 +252,7 @@ export function createWorker(config: WorkerConfig) {
         onSession: sessionId => { if (turn.kind === 'work' && !lost()) void call(`/worker/turns/${turn.turnId}/session`, { ...lease, sessionId, ...(worktree ? { baseSha: worktree.baseCommit } : {}) }).catch(() => {}); },
       });
       await tracer.finish();
+      if (!reaches && offered.length) tracer.note({ kind: 'think', title: `Not offered to this turn: ${offered.map(tool => tool.name).join(', ')}. The ${adapter.name} engine cannot reach connected tools.`, status: 'ok' });
       if (stream.length) await artifact({ seq: STREAM_ARTIFACT_SEQ, kind: 'stream', body: stream.map(line => `${line}\n`).join(''), mime: 'text/plain; charset=utf-8', truncated: streamCut }).catch(() => {});
       await flush();
       const summary = finishSummary(result.summary ? redact(result.summary) : null, result.state);
@@ -255,7 +286,11 @@ export function createWorker(config: WorkerConfig) {
         state: result.state, stopReason: result.stopReason, ...(summary ? { summary } : {}), tokensIn: result.tokensIn, tokensOut: result.tokensOut, costMinor: Math.round(result.costUsd * 100),
         ...(worktree ? { headSha: await headSha(worktree.path) } : {}), ...(published ? { prUrl: published.url } : {}),
       } });
-    } finally { clearInterval(flusher); clearRun(turnDir); }
+    } finally {
+      clearInterval(flusher); clearRun(turnDir);
+      // A tool's token outlives the turn's lease, so it does not stay on the disk once the turn is over.
+      for (const name of (() => { try { return readdirSync(turnDir); } catch { return []; } })()) if (/^tool-.+-token$/.test(name)) rmSync(path.join(turnDir, name), { force: true });
+    }
   }
 
   async function run(turn: Claimed, lane: Lane) {

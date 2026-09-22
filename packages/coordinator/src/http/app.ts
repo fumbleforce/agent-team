@@ -106,6 +106,14 @@ export function createApp(context: Context) {
   app.get('/health', c => c.json({ ok: true }));
   // A worker started by hand asks which project a name stands for.
   app.get('/machine/projects/:slug', async c => { await machine(c); const row = await context.storage.db.selectFrom('projects').select(['id', 'name']).where('slug', '=', c.req.param('slug')).executeTakeFirst(); if (!row) throw new HttpError(404, 'not_found', 'No such project'); return c.json(row); });
+  // A worker that keeps desks also serves every active project with no repository of its own (the org's own, a marketing or sales team),
+  // each in a scratch folder. A sub-project works in its parent's repository when the parent has one, so it is not a desk.
+  app.get('/machine/desks', async c => {
+    await machine(c);
+    const rows = await context.storage.db.selectFrom('projects').select(['id', 'kind', 'parent_id', 'status', 'manifest']).execute();
+    const repository = new Map(rows.map(row => [row.id, row.kind !== 'org' && Boolean((JSON.parse(row.manifest) as { delivery?: { repository?: unknown } }).delivery?.repository)]));
+    return c.json({ projects: rows.filter(row => row.status === 'active' && !repository.get(row.id) && (row.kind === 'org' || !(row.parent_id && repository.get(row.parent_id)))).map(row => row.id) });
+  });
   // Assigned further down, where the guided setup is mounted; routes only run after that.
   let setup: ReturnType<typeof mountSetupRoutes>;
   let providerSetup: ReturnType<typeof mountProviderRoutes>;

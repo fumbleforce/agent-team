@@ -109,6 +109,8 @@ export function createTracer(options: { worktree: string | null; turnDir: string
         });
       }
     },
+    // A step of the worker's own, after whatever the engine did: something about the turn the owner should see in its trace.
+    note: (step: Omit<TraceStepInput, 'seq'>) => { append({ ...step, title: redact(step.title) }); },
     // The last step is settled when the engine has exited; then come what no step accounted for, and the screenshots.
     async finish() {
       const closing = open;

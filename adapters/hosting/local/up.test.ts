@@ -13,6 +13,7 @@ test('local configs use one loopback port, one reused machine token and the two 
   assert.deepEqual([coordinator.host, coordinator.port, coordinator.storage.kind], ['127.0.0.1', 4310, 'sqlite']);
   assert.equal(worker.coordinatorUrl, 'http://127.0.0.1:4310');
   assert.deepEqual(worker.projects, { shop: '/srv/shop' });
+  assert.equal(worker.desks, true, 'a team made later without a repository runs on this worker too');
   assert.ok(first.machineToken.length >= 24);
   assert.equal(writeLocalConfigs({ projectId: 'shop', checkout: '/srv/shop', engine: 'fake', env }).machineToken, first.machineToken);
 });

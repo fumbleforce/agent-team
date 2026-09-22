@@ -1,7 +1,6 @@
-import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { TraceStepInput } from '@agent-team/protocol';
-import { allowlistedEnvironment, type EngineAdapter } from './contract.ts';
+import { allowlistedEnvironment, mcpServers, type EngineAdapter } from './contract.ts';
 
 const LIMIT = /rate.?limit|too many requests|\b429\b|\b402\b|insufficient|quota/i;
 const KIND: Record<string, TraceStepInput['kind']> = { read: 'read', grep: 'read', glob: 'read', list: 'read', webfetch: 'read', edit: 'edit', write: 'edit', patch: 'edit', bash: 'run' };
@@ -20,7 +19,8 @@ export const opencode: EngineAdapter = {
     // Tool policy and the platform server travel in a private per-turn config file; the token is never in argv or the environment.
     const config = {
       agent: { turn: { mode: 'primary', prompt: spec.systemPrompt, permission: { edit: readOnly ? 'deny' : 'allow', bash: spec.toolProfile === 'none' || (readOnly && spec.toolProfile !== 'verify') ? 'deny' : { '*': 'allow', '*git push*': 'deny', '*git reset --hard*': 'deny' }, task: 'deny' } } },
-      mcp: spec.platform ? { platform: { type: 'remote', url: spec.platform.url, enabled: true, headers: { Authorization: `Bearer ${readFileSync(spec.platform.tokenFile, 'utf8').trim()}` } } } : {},
+      // The platform and every connected tool, tokens read from the turn's private files.
+      mcp: Object.fromEntries(Object.entries(mcpServers(spec)).map(([name, server]) => [name, { type: 'remote', url: server.url, enabled: true, ...(server.headers ? { headers: server.headers } : {}) }])),
     };
     return {
       bin: 'opencode',

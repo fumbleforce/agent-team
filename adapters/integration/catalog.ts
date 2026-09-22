@@ -1,6 +1,8 @@
 // What a person sees when connecting something in the app: one entry per integration this toolkit supports, with the
 // words, fields and checks of that product. The platform renders these generically and never names a provider itself.
 import { githubCredential } from '../tracker/githubCredential.ts';
+import { hubspot } from './hubspot.ts';
+import { listTools } from './mcp.ts';
 
 type Fetch = typeof fetch;
 export type Values = Record<string, string>;
@@ -31,6 +33,9 @@ export interface SetupEntry {
 const ok = async (response: Response, what: string) => { if (!response.ok) throw new Error(`${what} answered ${response.status}. Check the token and what it may access.`); return response; };
 const REPOSITORY: SetupField = { key: 'repository', label: 'Repository', placeholder: 'owner/name', required: true, pattern: '[\\w.\\-]+(/[\\w.\\-]+)+' };
 const BASE: SetupField = { key: 'baseBranch', label: 'Main branch', placeholder: 'main' };
+// A tool agents use can be kept to some of the team: only seats that hold one of these roles are given it.
+const ROLES: SetupField = { key: 'roles', label: 'Only for these roles', placeholder: 'sales, marketing', help: 'Leave empty to let everyone on the team use it.', pattern: '[a-z][a-z0-9\\-]*([\\s,]+[a-z][a-z0-9\\-]*)*' };
+const HUBSPOT_OBJECTS = '(contacts|companies|deals|tickets|notes|tasks)';
 
 export const CATALOG: SetupEntry[] = [
   {
@@ -112,9 +117,13 @@ export const CATALOG: SetupEntry[] = [
   {
     kind: 'hubspot', title: 'HubSpot', category: 'business', target: 'connection', mode: 'agent tool',
     summary: 'Agents look up and update contacts, companies and deals.',
-    steps: ['In HubSpot: Development → MCP Connectors → Create, and complete its sign-in to get an access token.', 'Set HUBSPOT_MCP_TOKEN on each worker.'],
-    fields: [{ key: 'objects', label: 'Record types', placeholder: 'contacts, companies, deals', }],
-    credential: { variable: 'HUBSPOT_MCP_TOKEN', label: 'HubSpot access token', runsOn: 'workers' },
+    steps: ['In HubSpot: Settings → Integrations → Private Apps → Create a private app.', 'Under Scopes, allow reading and writing the CRM records the team should reach, then create the app.', 'Copy its access token and paste it here.'],
+    fields: [{ key: 'objects', label: 'Record types', placeholder: 'contacts, companies, deals', help: 'Leave empty to allow all of them.', pattern: `${HUBSPOT_OBJECTS}([\\s,]+${HUBSPOT_OBJECTS})*` }, ROLES],
+    credential: { variable: 'HUBSPOT_MCP_TOKEN', alternatives: ['HUBSPOT_ACCESS_TOKEN'], label: 'HubSpot private app token', runsOn: 'coordinator', placeholder: 'pat-…' },
+    async test(_values, token, request) {
+      const tools = await listTools(hubspot.defaultUrl!, token, request);
+      return tools.length ? `Signed in to HubSpot. The team can use ${tools.length} of its tools.` : 'Signed in to HubSpot, but it offers no tools to this token. Check the app\'s scopes.';
+    },
   },
   {
     kind: 'mcp', title: 'Any other tool (MCP server)', category: 'other', target: 'connection', mode: 'agent tool',
@@ -124,6 +133,7 @@ export const CATALOG: SetupEntry[] = [
       { key: 'name', label: 'Short name', placeholder: 'figma', required: true, pattern: '[a-z][a-z0-9\\-]{0,31}' },
       { key: 'url', label: 'Server address', placeholder: 'https://mcp.example.com/mcp', required: true, pattern: 'https://.+' },
       { key: 'purpose', label: 'What the team should use it for', placeholder: 'Read design files linked from a task' },
+      ROLES,
     ],
     credential: null,
   },

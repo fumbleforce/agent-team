@@ -15,6 +15,7 @@ import * as scheduler from './scheduler.ts';
 import { accessOf, laneOf, maxWritersOf, WORKER_FRESH_MS, type ClaimDraft, type Snapshot } from './scheduler.ts';
 
 import { effectiveProjects } from '../repos/org.ts';
+import { agentTools, turnTools, type TurnTool } from './agentTools.ts';
 export const LEASE_MS = 90_000;
 export { laneOf };
 // What an author is told when its approved change no longer merges. Merging the base in, never rebasing: a published branch is never force-pushed.
@@ -23,7 +24,7 @@ const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const RATE_LIMITED = /rate-limit|usage-limit/;
 
 export type ClaimRequest = z.infer<typeof ClaimBody>;
-export interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; /* What the task is called, for the change a work turn opens. */ taskTitle: string | null; threadId: string | null; packet: Packet; resume: Resume | null; grants: PermissionGrant; engine: string | null; model: string | null; /* How much effort the model is asked to spend: the agent's own, else its team's. */ effort: string | null; capture: { url: string; viewport: Viewport } | null; /* A review turn: the head to look at, and which kind of reviewer looks, which names its detached worktree. */ review: { headSha: string; reviewer: string } | null }
+export interface Claimed { turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; /* What the task is called, for the change a work turn opens. */ taskTitle: string | null; threadId: string | null; packet: Packet; resume: Resume | null; grants: PermissionGrant; engine: string | null; model: string | null; /* How much effort the model is asked to spend: the agent's own, else its team's. */ effort: string | null; capture: { url: string; viewport: Viewport } | null; /* A review turn: the head to look at, and which kind of reviewer looks, which names its detached worktree. */ review: { headSha: string; reviewer: string } | null; /* The external tools the seat may reach in this turn, with their tokens: held by the worker in the turn's private folder, never stored. */ tools: TurnTool[] }
 // The checkout a quarantine names is one worker's copy of one project.
 export const checkoutRef = (workerId: string, projectId: string) => `${workerId}:${projectId}`;
 export type Outcome = z.infer<typeof FinishBody>['outcome'];
@@ -265,8 +266,10 @@ export function createTurns(context: Context) {
           if (kind === 'work' && item.taskId) moved.push(...await moveTask(tx, item.taskId, 'in_progress', { from: ['backlog', 'assigned'], now: now(), actor: { actorKind: 'system', agentId: item.agentId, turnId } }));
           // A work turn resumes its (agent, task) session or starts a new one; everything else is a fresh packet.
           const session = await sessions.open(tx, { turnId, workItemId: item.id, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, workerId: request.workerId, providerId: route.providerId, model: route.model, engine });
+          // Frozen with the grants: the tools the seat's roles allow now. The tokens are read from the platform's keys, never from the packet.
+          const tools = ['deliver', 'capture', 'publish'].includes(kind) ? [] : turnTools(await agentTools(tx, item.agentId, item.projectId), name => context.secrets.get(name) ?? context.env[name] ?? null);
           const started = await events.append(tx, [{ type: 'turn.started', actorKind: 'worker', projectId: item.projectId, agentId: item.agentId, taskId: item.taskId, turnId, payload: { kind, workerId: request.workerId, providerId: route.providerId } }, ...moved]);
-          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, taskTitle: subject?.title ?? null, threadId: row.thread_id, grants, engine, model: route.model, effort: effortOf?.effort ?? effortOf?.default_effort ?? null, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, review, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
+          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, taskTitle: subject?.title ?? null, threadId: row.thread_id, grants, engine, model: route.model, effort: effortOf?.effort ?? effortOf?.default_effort ?? null, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, review, tools, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
         }
       });
       events.published(result.expired);

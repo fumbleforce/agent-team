@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import type { TraceStepInput, TurnKind } from '@agent-team/protocol';
 
 export interface DiscoveredModel { id: string; name: string; note?: string; efforts?: string[] }
@@ -26,6 +27,18 @@ export interface TurnSpec {
   // 'verify' reads and runs commands but edits nothing: a reviewer or tester in a throwaway checkout of the head under review.
   toolProfile: 'write' | 'verify' | 'read-only' | 'none';
   platform: { url: string; tokenFile: string } | null;
+  // External tools the team connected (remote MCP servers over HTTP), each with its token in a private file of the turn when there is one.
+  // Only an engine whose `mcp` capability is 'http' is given any.
+  tools?: { name: string; url: string; tokenFile: string | null }[];
+}
+
+// The engine's MCP server map for a turn: the platform and the connected tools, each token read from its private file here, never from argv.
+export function mcpServers(spec: TurnSpec): Record<string, { url: string; headers?: { Authorization: string } }> {
+  const bearer = (file: string) => ({ Authorization: `Bearer ${readFileSync(file, 'utf8').trim()}` });
+  const servers: Record<string, { url: string; headers?: { Authorization: string } }> = {};
+  for (const tool of spec.tools ?? []) if (tool.name !== 'platform') servers[tool.name] = { url: tool.url, ...(tool.tokenFile ? { headers: bearer(tool.tokenFile) } : {}) };
+  if (spec.platform) servers.platform = { url: spec.platform.url, headers: bearer(spec.platform.tokenFile) };
+  return servers;
 }
 
 // What an adapter's parser yields: the step as the platform stores it, plus what stays on the worker. `target` is the path an edit
