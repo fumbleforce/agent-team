@@ -71,8 +71,8 @@ test('a report that names nothing is not logged: the refusal says what a report 
     assert.equal(update.error, false);
     assert.equal(update.data.state, 'in_progress');
     assert.equal((await db.selectFrom('turns').select('summary').where('id', '=', claimed.turnId).executeTakeFirstOrThrow()).summary, 'CK-31: added the retry guard in checkout.ts; npm test passes.');
-    // A finish that brings no engine summary of its own does not erase the report the agent wrote.
-    await turns.finish(claimed.turnId, 'w1', claimed.leaseToken, { state: 'completed' });
+    // No engine summary erases the report the agent wrote — not even a generic one.
+    await turns.finish(claimed.turnId, 'w1', claimed.leaseToken, { state: 'completed', summary: 'Implemented and tested.' });
     assert.equal((await db.selectFrom('turns').select('summary').where('id', '=', claimed.turnId).executeTakeFirstOrThrow()).summary, 'CK-31: added the retry guard in checkout.ts; npm test passes.');
   } finally { await coordinator.close(); }
 });

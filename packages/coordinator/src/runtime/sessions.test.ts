@@ -143,7 +143,7 @@ test('a work turn without a report gets one continuation, then the task is block
 });
 
 test('a continuation is whoever holds the task now: a task reassigned mid-turn is not requeued for the old owner', async () => {
-  const { storage, db, claim, work, runTurn, taskId, agent } = await boot();
+  const { storage, db, claim, work, runTurn, taskId } = await boot();
   try {
     await work();
     const hung = (await claim())!;
