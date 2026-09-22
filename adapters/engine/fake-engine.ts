@@ -27,7 +27,7 @@ emit({ type: 'session', session: resumed ?? flag('--session') ?? 'fake-session-1
 emit({ type: 'step', kind: 'think', title: `Planning the ${process.argv[2] ?? 'work'} turn`, ...(resumed ? { body: `Resumed ${resumed}` } : {}) });
 if (has('hang')) setInterval(() => {}, 1000);
 else if (has('limit')) { emit({ type: 'limit' }); process.exit(1); }
-else if (has('crash')) process.exit(3);
+else if (has('crash')) { process.stderr.write('Error: MCP server "platform" failed to start\n'); process.exit(3); }
 else {
   const file = scenarioValue('write'), shell = scenarioValue('shell'), leak = scenarioValue('leak'), stray = scenarioValue('stray'), size = Number(scenarioValue('output') ?? 0), turnDir = flag('--turn-dir');
   const write = (target: string, text: string) => { if (target.includes('/')) mkdirSync(target.slice(0, target.lastIndexOf('/')), { recursive: true }); writeFileSync(target, text); };

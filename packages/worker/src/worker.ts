@@ -6,7 +6,7 @@ import { publish as publishChange, type Exec } from '../../../adapters/scm/publi
 import { SCM_GATES } from '../../../adapters/scm/gates.ts';
 import { deliver as gate, type Approvals, type DeliveryConfig } from './deliver/gate.ts';
 import { capturePage, type CaptureFn } from './capture.ts';
-import { executeTurn, turnDirectory } from './execute.ts';
+import { executeTurn, turnDirectory, type TurnResult } from './execute.ts';
 import { clearRun, identifyRun, recordRun, sweepOrphans } from './orphans.ts';
 import { createRedactor } from './redact.ts';
 import { createTracer, type StepArtifact } from './trace.ts';
@@ -27,6 +27,13 @@ const defaultDeliver: DeliverFn = input => {
   if (!scm) throw new Error(`Unknown SCM "${input.scm}"`);
   return gate({ ...input, scm });
 };
+
+// What the coordinator takes as a turn's summary (FinishBody: 2000). Redaction can grow a short secret into its mark, so the cap is enforced on the final text:
+// a failed or timed-out turn keeps its end, where the cause and the stderr tail live, anything else keeps its headline.
+export function finishSummary(text: string | null, state: TurnResult['state']): string | null {
+  if (!text) return null;
+  return state === 'failed' || state === 'timed_out' ? text.slice(-2000) : text.slice(0, 2000);
+}
 
 
 export interface WorkerConfig {
@@ -217,7 +224,7 @@ export function createWorker(config: WorkerConfig) {
       await tracer.finish();
       if (stream.length) await artifact({ seq: STREAM_ARTIFACT_SEQ, kind: 'stream', body: stream.map(line => `${line}\n`).join(''), mime: 'text/plain; charset=utf-8', truncated: streamCut }).catch(() => {});
       await flush();
-      const summary = result.summary ? redact(result.summary) : null;
+      const summary = finishSummary(result.summary ? redact(result.summary) : null, result.state);
       // The diff gate: whatever tool made a change, a path outside the write scope means nothing is published or reviewed.
       // Overlays the turn left as they were written are setup, not the agent's change.
       const setup = worktree ? await untouchedOverlays(worktree.path) : [];

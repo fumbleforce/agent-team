@@ -59,7 +59,7 @@ export function AgentPage({ id, me, projects }: { id: string; me: Me; projects: 
             <SectionLabel>Recent turns</SectionLabel>
             {data.turns.map(turn => (
               // Each turn names the task it belongs to: a turn read alone still says what it was on.
-              <ListRow key={turn.id} active={turn.id === latest} onClick={() => setPicked(turn.id)} title={[KIND[turn.kind] ?? turn.kind, turn.task_key].filter(Boolean).join(' · ')} note={turn.summary ?? ''} aside={<Chip tone={STATE[turn.state] ?? 'neutral'}>{STATE_WORD[turn.state] ?? turn.state}</Chip>} />
+              <ListRow key={turn.id} active={turn.id === latest} onClick={() => setPicked(turn.id)} title={[KIND[turn.kind] ?? turn.kind, turn.task_key].filter(Boolean).join(' · ')} note={turn.summary?.split('\n')[0] ?? ''} aside={<Chip tone={STATE[turn.state] ?? 'neutral'}>{STATE_WORD[turn.state] ?? turn.state}</Chip>} />
             ))}
             {data.turns.length === 0 && <Text size="small" tone="muted">No turns yet.</Text>}
           </Card>
