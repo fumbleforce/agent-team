@@ -1,0 +1,77 @@
+{
+  "at": "2026-09-21T14:11:22.445Z",
+  "arm": "solo",
+  "engine": "claude",
+  "model": null,
+  "results": [
+    {
+      "task": "campaign-brief",
+      "arm": "solo",
+      "engine": "claude",
+      "model": null,
+      "score": 0.8333333333333334,
+      "notes": [
+        "missing: plans week by week"
+      ],
+      "state": "done",
+      "turns": 1,
+      "costUsd": 0.76,
+      "tokens": 162805,
+      "ms": 67494
+    },
+    {
+      "task": "five-step-change",
+      "arm": "solo",
+      "engine": "claude",
+      "model": null,
+      "score": 1,
+      "notes": [],
+      "state": "in_review",
+      "turns": 1,
+      "costUsd": 0.85,
+      "tokens": 326190,
+      "ms": 92233
+    },
+    {
+      "task": "flawed-brief",
+      "arm": "solo",
+      "engine": "claude",
+      "model": null,
+      "score": 1,
+      "notes": [],
+      "state": "canceled",
+      "turns": 1,
+      "costUsd": 0.27,
+      "tokens": 94594,
+      "ms": 15914,
+      "questioned": true
+    },
+    {
+      "task": "one-file-fix",
+      "arm": "solo",
+      "engine": "claude",
+      "model": null,
+      "score": 1,
+      "notes": [],
+      "state": "in_review",
+      "turns": 1,
+      "costUsd": 0.3,
+      "tokens": 94999,
+      "ms": 19568
+    },
+    {
+      "task": "seeded-defect",
+      "arm": "solo",
+      "engine": "claude",
+      "model": null,
+      "score": 1,
+      "notes": [],
+      "state": "in_review",
+      "turns": 1,
+      "costUsd": 0.64,
+      "tokens": 178265,
+      "ms": 71494,
+      "seededCaught": true
+    }
+  ]
+}

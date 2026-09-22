@@ -36,6 +36,7 @@ export function fakeAws(state: State = {}) {
     if (service === 'ssm' && action === 'delete-parameter') { delete state.parameters[flag('--name')]; return {}; }
     if (service === 'iam') {
       const name = flag('--role-name') || flag('--instance-profile-name');
+      if (action === 'list-policies') { if (state.denyListPolicies) throw new Error('AccessDenied: not authorized to perform iam:ListPolicies'); return { Policies: (state.boundaries ?? []).map((Arn: string) => ({ Arn })) }; }
       if (action === 'get-role') { if (!state.roles.has(name)) throw notFound('NoSuchEntity'); return { Role: state.roleDetails?.[name] ?? {} }; }
       if (action === 'create-role') { if (state.requireBoundary && !args.includes('--permissions-boundary')) throw new Error('AccessDenied: not authorized to perform iam:CreateRole'); state.roles.add(name); (state.roleDetails ??= {})[name] = args.includes('--permissions-boundary') ? { PermissionsBoundary: { PermissionsBoundaryArn: flag('--permissions-boundary') } } : {}; return {}; }
       if (action === 'list-attached-role-policies') return { AttachedPolicies: state.legacyPolicy?.has(name) ? [{ PolicyArn: 'arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore' }] : [] };

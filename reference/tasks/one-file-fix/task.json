@@ -1,0 +1,6 @@
+{
+  "title": "Make slug() turn spaces into dashes",
+  "brief": "slug.js lowercases only. Make slug(\"Hello World\") return \"hello-world\": runs of whitespace become one dash, and the result has no dash at either end. Add slug.test.js using node:test, and make `npm test` pass.",
+  "kind": "change",
+  "stands_for": "a one-file fix"
+}

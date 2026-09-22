@@ -1,11 +1,11 @@
 import type { z } from 'zod';
-import { CostRules, DelegationRules, LibraryAgent, ProjectSettings, Role, RoutingRules, TeamTemplate } from '@agent-team/protocol';
+import { CostRules, DelegationRules, LibraryAgent, ProjectSettings, Role, RoutingRules, TeamTemplate, WayOfWorking } from '@agent-team/protocol';
 import type { ExpressionBuilder } from 'kysely';
 import type { Schema, Tx } from '@agent-team/storage';
 import { HttpError, notFound, type Context } from '../context.ts';
 
 // Every kind of versioned document and the schema that validates it. Adding a kind is one line here.
-export const DOC_KINDS = { role: Role, project_settings: ProjectSettings, team_template: TeamTemplate, library_agent: LibraryAgent, cost_rules: CostRules, routing_rules: RoutingRules, delegation_rules: DelegationRules } as const satisfies Record<string, z.ZodType>;
+export const DOC_KINDS = { role: Role, project_settings: ProjectSettings, team_template: TeamTemplate, library_agent: LibraryAgent, cost_rules: CostRules, routing_rules: RoutingRules, delegation_rules: DelegationRules, way_of_working: WayOfWorking } as const satisfies Record<string, z.ZodType>;
 export type DocKind = keyof typeof DOC_KINDS;
 export type DocOf<K extends DocKind> = z.infer<(typeof DOC_KINDS)[K]>;
 export interface DocScope { type: 'library' | 'org' | 'team' | 'project'; id: string }
@@ -32,6 +32,9 @@ export function createVersionedDocs(context: Context) {
   }
 
   return {
+    // For a caller that changes a document as part of something larger: same validation, versioning and history, in its transaction.
+    writeWithin: write,
+
     async list<K extends DocKind>(kind: K, scope: DocScope): Promise<Stored<K>[]> {
       const rows = await db.selectFrom('versioned_docs').selectAll().where(at(kind, scope)).orderBy('slug').execute();
       return rows.map(row => ({ slug: row.slug, version: row.version, author: row.author, updatedAt: Number(row.updated_at), doc: JSON.parse(row.doc) as DocOf<K> }));

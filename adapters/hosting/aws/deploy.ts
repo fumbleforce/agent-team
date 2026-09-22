@@ -31,7 +31,9 @@ export interface SecretSpec { name: string; generated: boolean; purpose: string;
 export interface DeploymentFacts {
   projectId: string; name: string; checkout: string | null;
   scm: { kind: string; repository: string; host: string };
-  worker: { launcher: string; instanceType: string; setup: string; amiParameter: string | null; provisioning?: { packages: string[]; setup: string[] } };
+  // `lanes` is how much one launched worker runs at once. The default is one working agent per machine: agents share a machine
+  // only when a deployment says so, with the cost and isolation figures to justify it.
+  worker: { launcher: string; instanceType: string; setup: string; amiParameter: string | null; provisioning?: { packages: string[]; setup: string[] }; lanes?: { work: number; bounded: number; deliver: number } };
   ssmPrefix: string; secrets: SecretSpec[];
 }
 // `aws` holds account facts and the ids of created resources, filled in as deploy progresses. `network: 'dedicated'`
@@ -39,7 +41,7 @@ export interface DeploymentFacts {
 export interface Deployment extends DeploymentFacts {
   version: 1; hosting: 'aws'; createdAt: string; toolkit: { repo: string; ref: string } | null;
   aws: { region: string | null; accountId: string | null; vpcId: string | null; subnetId: string | null; securityGroupId: string | null; instanceId: string | null; publicIp: string | null; privateIp: string | null;
-    amiId: string | null; dataVolumeId: string | null; network: 'dedicated' | 'default'; access: 'tunnel' | 'public'; permissionsBoundary: string | null; egressPorts?: number[]; roles: { control: string; worker: string } };
+    amiId: string | null; dataVolumeId: string | null; network: 'dedicated' | 'default'; access: 'tunnel' | 'public'; permissionsBoundary: string | null; egressPorts?: number[]; /* The AWS CLI profile of the account this project deploys into. */ profile?: string | null; roles: { control: string; worker: string } };
 }
 type AwsResult = any; // The CLI's JSON output, a different shape per command.
 export type Aws = (args: string[], options?: { timeoutMs?: number }) => Promise<AwsResult>;
@@ -111,6 +113,14 @@ async function dedicatedNetwork(deployment: Deployment, aws: Aws, log: Log) {
 
 // Account facts: caller identity and region, and for `network: 'default'` the default VPC and
 // subnet. Asks through `prompt` only when there is no default VPC to fall back on.
+// The customer-managed policies this account already attaches to something as a permissions boundary. An account that
+// refuses roles without a boundary has one in use, so this finds it without anybody knowing its ARN. Only reads, and an
+// account that does not let the caller list policies simply yields none.
+export async function boundariesInUse(aws: Aws = defaultAws): Promise<string[]> {
+  try { return ((await aws(['iam', 'list-policies', '--scope', 'Local', '--policy-usage-filter', 'PermissionsBoundary'])).Policies ?? []).map((policy: { Arn: string }) => policy.Arn); }
+  catch { return []; }
+}
+
 export async function discover(deployment: Deployment, { aws = defaultAws, prompt = null, log = quiet }: DeployOptions = {}) {
   let identity: { Account: string };
   try { identity = await aws(['sts', 'get-caller-identity']); } catch { throw new DeployError('AWS credentials are missing or expired', 'Run `aws login` (or `aws sso login`) and try again.'); }
@@ -241,10 +251,23 @@ export async function network(deployment: Deployment, { aws = defaultAws, myIp, 
   return deployment;
 }
 
+// What the control plane needs to start a worker for queued work: where, from which image, as whom. Known once the network,
+// the roles and the image parameter exist; null for a deployment whose workers are not launched by the control plane.
+export function launcherSettings(deployment: Deployment): Record<string, unknown> | null {
+  if (deployment.worker.launcher !== 'ec2' || !deployment.worker.amiParameter) return null;
+  return {
+    region: deployment.aws.region, subnetId: deployment.aws.subnetId, securityGroupId: deployment.aws.securityGroupId,
+    instanceProfile: deployment.aws.roles.worker, instanceType: deployment.worker.instanceType,
+    ami: `ssm:${deployment.worker.amiParameter}`, ssmPrefix: deployment.ssmPrefix, tags: { 'agent-team:project': deployment.projectId },
+    workerConfig: { lanes: deployment.worker.lanes ?? { work: 1, bounded: 2, deliver: 1 } },
+  };
+}
+
 // User data for the control-plane host: the shared script with this deployment's values exported ahead of it.
 export function controlPlaneUserData(deployment: Deployment, { template = shellTemplate('control-plane-user-data.sh') }: { template?: string } = {}) {
   const quote = (value: string) => `'${value.replace(/'/g, `'\\''`)}'`;
-  const head = ['#!/bin/bash', `export TOOLKIT_REPO=${quote(deployment.toolkit?.repo ?? TOOLKIT_REPO)} TOOLKIT_REF=${quote(deployment.toolkit?.ref ?? 'main')} SSM_PREFIX=${quote(deployment.ssmPrefix)}`];
+  const launcher = launcherSettings(deployment);
+  const head = ['#!/bin/bash', `export TOOLKIT_REPO=${quote(deployment.toolkit?.repo ?? TOOLKIT_REPO)} TOOLKIT_REF=${quote(deployment.toolkit?.ref ?? 'main')} SSM_PREFIX=${quote(deployment.ssmPrefix)} LAUNCHER_B64=${quote(launcher ? Buffer.from(JSON.stringify(launcher)).toString('base64') : '')}`];
   return `${head.join('\n')}\n${lf(template).replace(/^#!.*\n/, '')}`;
 }
 

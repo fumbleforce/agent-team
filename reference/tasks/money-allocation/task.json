@@ -1,0 +1,6 @@
+{
+  "title": "Invoices in any currency, split without losing a cent",
+  "brief": "The billing module only handles EUR and does its sums in floating point. Make it correct for any currency. (1) money.js: money(amount, currency) takes the amount as a decimal string such as '12.50' and keeps it exactly, in minor units; currencies differ in how many decimals they have (JPY has none, EUR two, KWD three), and an amount with more decimals than its currency allows is an error, not something to round silently. (2) allocate(amount, weights) splits an amount by weights so that the parts ALWAYS add up to the amount exactly, never a cent more or less, whatever the weights; parts stay in input order. (3) invoice.js: total(lines), totalTax(lines, rate) and splitByShare(invoice, shares) must work for every currency and refuse to mix currencies. report.js is an existing caller and must keep working: summary() prints the currency code and the amount with that currency's decimals, as in 'EUR 12.50', 'JPY 1200', 'KWD 1.250'. (4) tax.js: taxOn(price, rate) is computed per line and rounded half to even at the currency's precision. Keep the public function names. Add tests and make `npm test` pass.",
+  "kind": "change",
+  "stands_for": "a change across several files where the obvious implementation is subtly wrong"
+}

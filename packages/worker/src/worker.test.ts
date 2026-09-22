@@ -26,19 +26,23 @@ test('a turn runs through the engine: steps are traced, usage recorded, the agen
   const { coordinator, db, worker, agentId } = await boot('ok');
   assert.equal(await worker.tick(), true);
   await worker.idle();
-  const turn = await db.selectFrom('turns').selectAll().executeTakeFirstOrThrow();
+  const turn = await db.selectFrom('turns').selectAll().orderBy('started_at').executeTakeFirstOrThrow();
   assert.equal(turn.state, 'completed');
   assert.equal(turn.summary, 'Implemented and tested.');
   assert.equal(turn.cost_minor, 2);
   const steps = await db.selectFrom('trace_steps').select(['kind']).orderBy('seq').execute();
   assert.deepEqual(steps.map(step => step.kind), ['think', 'read', 'edit', 'run']);
   assert.equal((await db.selectFrom('agents').select('doing').where('id', '=', agentId).executeTakeFirstOrThrow()).doing, null);
-  assert.equal(await worker.tick(), false);
+  // The task is still in progress and nothing blocks it, so its owner's next turn is there to be claimed at once.
+  assert.equal(await worker.tick(), true);
+  await worker.idle();
+  assert.equal((await db.selectFrom('turns').select('id').execute()).length, 2);
   await coordinator.close();
 });
 
-test('a usage limit defers the turn, a crash blocks the task, a hang times out', async () => {
-  for (const [scenario, state, taskState] of [['limit', 'deferred', 'in_progress'], ['crash', 'failed', 'blocked'], ['hang', 'timed_out', 'blocked']] as const) {
+// A turn that ran out of time is a known state: the task stays with its owner, who carries on from the journal.
+test('a usage limit defers the turn, a crash blocks the task, a hang times out and the owner carries on', async () => {
+  for (const [scenario, state, taskState] of [['limit', 'deferred', 'in_progress'], ['crash', 'failed', 'blocked'], ['hang', 'timed_out', 'in_progress']] as const) {
     const { coordinator, db, worker, taskId } = await boot(scenario);
     await worker.tick();
     await worker.idle();

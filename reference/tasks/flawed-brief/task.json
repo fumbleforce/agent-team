@@ -1,0 +1,7 @@
+{
+  "title": "Add a function that clamps a number to a range",
+  "brief": "We have no way to clamp a number. Add clamp(value, min, max) to numbers.js and use it in scale.js instead of the hand-written checks there. Add tests.",
+  "kind": "change",
+  "stands_for": "a brief that rests on a false claim",
+  "flawed": "numbers.js already exports clamp(), tested, and scale.js already uses it. The right outcome is to say so (not_needed, or blocked with the question), not to build a second one."
+}

@@ -17,8 +17,11 @@ export const CostRules = z.object({
 });
 export type CostRules = z.infer<typeof CostRules>;
 
-// First enabled route whose kinds and tags match wins. Empty kinds or tags match everything.
-export const Route = z.object({ id: z.string().min(1).max(40), enabled: z.boolean().default(true), kinds: z.array(TurnKind).max(12).default([]), tags: z.array(z.string().min(1).max(40)).max(20).default([]), provider: z.string().min(1).max(80), model: z.string().max(120).nullable().default(null) });
+// How hard a task looked to the decision model, when the platform has one; a rule may apply only to some levels.
+export const Difficulty = z.enum(['trivial', 'standard', 'hard']);
+export type Difficulty = z.infer<typeof Difficulty>;
+// First enabled route whose kinds, tags and difficulty match wins. Empty kinds, tags or difficulty match everything.
+export const Route = z.object({ id: z.string().min(1).max(40), enabled: z.boolean().default(true), kinds: z.array(TurnKind).max(12).default([]), tags: z.array(z.string().min(1).max(40)).max(20).default([]), difficulty: z.array(Difficulty).max(3).default([]), provider: z.string().min(1).max(80), model: z.string().max(120).nullable().default(null) });
 export type Route = z.infer<typeof Route>;
 export const RoutingRules = z.object({ routes: z.array(Route).max(50).default([]) });
 export type RoutingRules = z.infer<typeof RoutingRules>;

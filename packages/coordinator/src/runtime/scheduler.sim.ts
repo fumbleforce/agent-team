@@ -4,6 +4,7 @@ import { createStorage } from '@agent-team/storage';
 import { newId, type TurnKind } from '@agent-team/protocol';
 import { createContext } from '../context.ts';
 import { seedDemo } from '../demo/seed.ts';
+import { checkInvariants } from './invariants.ts';
 import { WORKER_FRESH_MS } from './scheduler.ts';
 import { createTurns, LEASE_MS, type Claimed } from './turns.ts';
 
@@ -70,6 +71,7 @@ for (const seed of SEEDS) test(`seeded run ${seed}: invariants hold and every ta
       // 9.2, read back from the database after every claim.
       const running = await db.selectFrom('turns').select(['id', 'agent_id', 'lane', 'task_id', 'access', 'provider_id', 'lease_until']).where('state', '=', 'running').execute();
       const unique = (keys: string[], what: string) => assert.equal(new Set(keys).size, keys.length, `${what} (seed ${seed}, step clock ${clock})`);
+      assert.deepEqual(await checkInvariants({ storage, now: () => clock }), [], `the rules read back from the data (seed ${seed})`);
       unique(running.map(row => `${row.agent_id}/${row.lane}`), 'one running turn per agent and lane');
       unique(running.filter(row => row.access === 'write' && row.task_id).map(row => row.task_id!), 'one writer per task');
       for (const [id, max] of [['alpha', 2], ['beta', 1]] as const) assert.ok(running.filter(row => row.provider_id === id).length <= max, `provider ${id} over its concurrency`);

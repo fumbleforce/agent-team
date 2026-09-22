@@ -63,20 +63,22 @@ Things to know:
 
 ## Command line
 
-`agent-team` below is `node bin/agent-team.ts` in this checkout, or the linked command from the section above. `agent-team --help` prints the list.
+`agent-team` below is `node bin/agent-team.ts` in this checkout, or the linked command from the section above. `agent-team --help` prints the list. In a terminal a command asks for what it was not given rather than stopping; every question has a flag, and without a terminal (a script, CI) nothing is asked and the flags decide.
 
 | Command | What it does |
 | --- | --- |
 | `up [checkout] [--engine NAME] [--port N]` | Starts the coordinator and one worker on this machine for a checkout (default: the current folder) and registers it as a project. The engine defaults to the manifest's, then `claude`; the port to 4310. State lives in `~/.config/agent-team/local/<folder name>`. Ctrl+C stops both; a second Ctrl+C ends them without waiting for a running turn. |
-| `connect <link> [checkout] [--engine NAME]` | Pairs this machine with a project made in the app, using the single-use link from its Get started page, then works for it. The machine's token is stored under `~/.config/agent-team/workers/<project>`, never typed. |
-| `work [checkout]` | Works again for the project this checkout was connected to. |
+| `connect [link] [checkout] [--engine NAME]` | Pairs this machine with a project made in the app, using the single-use link the app's guide gives (it asks for the link when you leave it out), then works for it. The machine's token is stored under `~/.config/agent-team/workers/<project>`, never typed. |
+| `work [checkout]` | Works again for the project this checkout was connected to. In a folder that is not connected yet it asks for a link and connects first. |
 | `demo` | Serves a sample organization on an in-memory database with a fake engine. Nothing is kept. |
-| `setup-link [--url URL]` | Prints a one-time link for creating the owner account on a coordinator that has none (default `http://127.0.0.1:4310`). Needs the machine token in `AGENT_TEAM_TOKEN`. |
-| `migrate --config FILE` | Brings the database named in a coordinator config up to date. |
-| `backup --config FILE --out FILE` | Copies that database into one file while it is in use. Never overwrites; SQLite only, a Postgres server is backed up with its own tools. |
-| `deploy aws [--plan\|--apply] [--only STEP] [--skip STEP] [--permissions-boundary ARN]` | Plans (the default, changes nothing) or applies the AWS deployment. See below. |
+| `setup-link [--url URL]` | Prints a one-time link for creating the owner account on a coordinator that has none. Without `AGENT_TEAM_TOKEN` set it means the local project's coordinator and uses its token; with it, the coordinator at `--url` (default `http://127.0.0.1:4310`). |
+| `scorecard [--project SLUG] [--days N] [--json]` | The figures of [docs/ROADMAP.md](docs/ROADMAP.md) for a project, from its coordinator: autonomy, speed, delivery, what the team changed about itself, observability and safety. A figure with nothing to count says so. The same figures are the Scorecard tab of a project. |
+| `migrate [--config FILE]` | Brings a database up to date: the one named in a coordinator config, or without one the local project's (this folder's, else the only one, else it asks). |
+| `backup [--config FILE] [--out FILE]` | Copies a database, chosen the same way, into one file while it is in use; the file is named after the project and the date unless you say otherwise. Never overwrites; SQLite only, a Postgres server is backed up with its own tools. |
+| `init aws [checkout] [--region R] [--profile P] [--permissions-boundary ARN] [--toolkit-ref COMMIT] [--instance-type T] [--setup CMD] [--force]` | Sets up an AWS deployment for a project: asks what it cannot work out from the manifest or the git remote, writes the deployment file, then offers the plan and the apply. |
+| `deploy aws [--plan\|--apply] [--only STEP] [--skip STEP] [--permissions-boundary ARN]` | Plans, which changes nothing, then applies on a yes; `--apply` applies at once. With nothing set up yet it offers `init aws`. See below. |
 | `status aws` | Shows what the AWS deployment has recorded and the control plane's state. |
-| `destroy aws [--yes] [--roles] [--data] [--secrets]` | Lists what would be deleted; deletes only with `--yes`. |
+| `destroy aws [--yes] [--roles] [--data] [--secrets]` | Lists what would be deleted and deletes it after a yes, or with `--yes`. |
 | `call <tool> [json]` | Calls a platform tool from inside a turn, for engines that cannot mount the tool endpoint. Not for people. |
 
 The config directory is `AGENT_TEAM_CONFIG_DIR` when set, else `~/.config/agent-team`.
@@ -85,42 +87,34 @@ The config directory is `AGENT_TEAM_CONFIG_DIR` when set, else `~/.config/agent-
 
 This puts the coordinator on one small EC2 host and bakes an image that disposable workers start from. [adapters/hosting/aws/README.md](adapters/hosting/aws/README.md) has the detail: every step, the IAM boundaries, and the by-hand and Fargate routes.
 
-You need the AWS CLI signed in to the target account, and its [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) to reach the host afterwards. The commands use the AWS CLI's own credentials, so choose the account the usual way (`export AWS_PROFILE=...`).
+You need the AWS CLI signed in to the target account, and its [Session Manager plugin](https://docs.aws.amazon.com/systems-manager/latest/userguide/session-manager-working-with-install-plugin.html) to reach the host afterwards. The commands use the AWS CLI's own credentials; `init aws` records which profile is this project's, so you choose the account once.
 
-1. **Push first.** The hosts do not get this checkout: they clone the toolkit from its repository at the `main` branch, so commits that are not pushed are not deployed. Set `"toolkit": { "repo": "...", "ref": "<commit>" }` in the file below to pin a commit or use a fork.
+1. **Push first.** The hosts do not get this checkout: they clone the toolkit from its repository at the `main` branch, so commits that are not pushed are not deployed.
 
-2. **Describe the deployment** in `~/.config/agent-team/aws-deployment.json`. It never holds a secret value, only the names:
+2. **Set it up.** In the project's folder:
 
-   ```json
-   {
-     "projectId": "example",
-     "name": "Example",
-     "checkout": null,
-     "region": "eu-central-1",
-     "scm": { "kind": "github", "repository": "owner/name", "host": "github.com" },
-     "worker": { "launcher": "ec2", "instanceType": "c6i.2xlarge", "setup": "npm ci", "amiParameter": "/agent-team/example/worker-ami" },
-     "ssmPrefix": "/agent-team/example",
-     "secrets": [
-       { "name": "AGENT_TEAM_TOKEN", "generated": true, "scope": "control", "purpose": "machine token" },
-       { "name": "GH_TOKEN", "generated": false, "purpose": "source host token", "adapter": "github" }
-     ]
-   }
+   ```sh
+   agent-team init aws
    ```
 
-3. **Plan.** This only reads (who you are, and the default network if you chose it) and prints what each step would create:
+   It asks for what it cannot work out, with its best guess as the default: the project's name and repository (from `.agent-team.json` when there is one, else from the `origin` remote, so a project needs no manifest), the region and the AWS CLI profile of the account, the worker size, the command that sets a fresh clone up, and the toolkit commit the hosts run. It writes `.agent-team/aws-deployment.json` inside the project, which never holds a secret value, only the names. A deployment belongs to its project: five projects in five AWS accounts each have their own file, and `deploy`, `status` and `destroy` act on the project whose folder you are in and cannot reach another's. The file records the AWS CLI profile of that project's account (it asks, offering `AWS_PROFILE`), and every later call uses it whatever the shell has exported; once something exists, commands refuse to run with credentials for a different account. Commit the file so teammates can manage the deployment, or ignore it; agents never see it. Then it offers the plan, and after the plan the apply, so this one command can take you all the way; say no at either point and carry on later with the steps below.
+
+   Every question has a flag that answers it ahead of time (`--region`, `--profile`, `--instance-type`, `--setup`, `--toolkit-ref`), which is also how it runs without a terminal. It will not write over an existing file without a yes (or `--force`), and never over one that records resources already created.
+
+3. **Plan.** This only reads (who you are, the default network if you chose it, and whether the account uses permissions boundaries) and prints what each step would create. Some locked-down accounts refuse new roles that do not carry a permissions boundary; you do not need to know its ARN, because the plan finds the boundary the account already uses and asks whether to attach it to the two roles. Without a terminal it names it, and `--permissions-boundary ARN` records it. In a terminal it then asks whether to apply; anything but a yes changes nothing.
 
    ```sh
    agent-team deploy aws
    ```
 
-4. **Apply.** Secrets that are not generated are read from environment variables of the same name and stored in Parameter Store; a value already stored is left alone.
+4. **Apply.** Secrets that are not generated are read from environment variables of the same name and stored in Parameter Store; a value already stored is left alone, and one that is in neither place is asked for, typed without being shown.
 
    ```sh
    export GH_TOKEN=...
    agent-team deploy aws --apply
    ```
 
-   The steps are `secrets`, `network`, `iam`, `controlPlane`, `image`, `verify`. The file is saved after each, so after a failure run the same command again and it continues. `--only iam,controlPlane` or `--skip image` run a part; the image bake is the slow step. In an account that only allows roles with a permissions boundary, add `--permissions-boundary arn:aws:iam::<account>:policy/<name>`.
+   The steps are `secrets`, `network`, `iam`, `controlPlane`, `image`, `verify`. The file is saved after each, so after a failure run the same command again and it continues. `--only iam,controlPlane` or `--skip image` run a part; the image bake is the slow step.
 
 5. **Open it.** The host has no public port. Forward 4310 with the command `deploy` prints at the end:
 
@@ -135,11 +129,11 @@ You need the AWS CLI signed in to the target account, and its [Session Manager p
 
    ```sh
    agent-team status aws
-   agent-team destroy aws            # lists what would go, deletes nothing
-   agent-team destroy aws --yes      # instances, images, security group, the dedicated network
+   agent-team destroy aws            # lists what would go (instances, images, security group, the dedicated network), deletes after a yes
+   agent-team destroy aws --yes      # the same without the question
    ```
 
-   The data volume (the database), the secrets and the roles stay unless you add `--data`, `--secrets` and `--roles`.
+   The data volume (the database), the secrets and the roles stay unless you add `--data`, `--secrets` and `--roles`. Deleting the database is confirmed by typing the project's id.
 
 A test deploy costs money while it exists: a `t3.small` and its volume all the time, a larger instance during the image bake, and each worker while it runs.
 
@@ -185,12 +179,26 @@ Provider names appear only under `adapters/`. `npm run lint` enforces that, the 
 - **Storage.** SQLite through Node's built-in driver by default. Postgres (and so Supabase) when the coordinator's `storage` is `{ "kind": "postgres", "url": "..." }` and `pg` is installed.
 - **Sign-in.** Passwords, plus OpenID Connect when the organization's settings name an issuer. The first owner is created through the one-time setup link; others join by invitation with an organization role (owner, admin, member, viewer) and per-project access.
 - **Project manifest.** `.agent-team.json` in the project's repository names the source host (`scm.kind`), the tracker (`tracker.kind` with its settings), `delivery` (repository, base branch, required checks, whether merging is authorized) and a `ceiling` that caps what any role may be granted. The worker reads the ceiling from the committed file at the base commit, so it wins even over the coordinator.
-- **Credentials** stay in the environment of the process that uses them and are referred to by variable name: tracker tokens (`GITHUB_ISSUES_TOKEN` or `GH_TOKEN`, `LINEAR_API_KEY`), chat (`AGENT_TEAM_SLACK_APP_TOKEN` for inbound), optional embeddings (`AGENT_TEAM_EMBEDDINGS_URL`). `AGENT_TEAM_TOKEN` is the machine token workers present.
+- **Credentials** stay in the environment of the process that uses them and are referred to by variable name: tracker tokens (`GITHUB_ISSUES_TOKEN` or `GH_TOKEN`, `LINEAR_API_KEY`), chat (`AGENT_TEAM_SLACK_APP_TOKEN` for inbound), optional embeddings (`AGENT_TEAM_EMBEDDINGS_URL`), the optional decision model that reads reports and sizes tasks for the PM (`TYPESAFE_API_KEY`, or the `OPENROUTER_API_KEY` already entered for models, which serves it too; the coordinator alone uses it, no worker sees it). `AGENT_TEAM_TOKEN` is the machine token workers present.
 - **Binding.** The coordinator binds loopback or a tailnet address. It refuses every other address unless `AGENT_TEAM_PUBLIC_BIND=1`.
 
 ## Hosting
 
 `adapters/hosting/local` is what `up` uses. `systemd` prints and installs units for a persistent private host. `fly` and `aws` run the same single-port control plane from `adapters/hosting/shared/controlPlane.ts`; see the README in each folder.
+
+## Measuring the team
+
+`agent-team scorecard` shows where a project stands against the targets of the roadmap. The rows that compare the team with one model working alone come from the reference tasks in `reference/tasks`: a fixed set of work, each with a check the agents never see.
+
+```sh
+npm run reference -- run --arm team --engine claude            # the team, with its reviews
+npm run reference -- run --arm solo --engine claude            # one seat alone, no review
+npm run reference -- run --arm team --without Cleo             # the team without a seat: does the seat earn its place?
+npm run reference -- run --arm team --seat-model Cleo=qwen/qwen3-coder,Rune=deepseek/deepseek-chat
+npm run reference -- report                                    # quality and cost of the team against solo, defects caught, wrong briefs questioned
+```
+
+A run spends real model usage unless `--engine fake`, so it is never part of `npm test`. Results are written to `reference/results`.
 
 ## Development
 

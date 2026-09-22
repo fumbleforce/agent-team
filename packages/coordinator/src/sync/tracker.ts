@@ -62,7 +62,7 @@ export function approvalStatus(config: Ideation, issue: TrackerIssue | undefined
 }
 
 const titleKey = (title: string) => title.trim().normalize('NFKC').toLowerCase();
-const ideaBody = (proposal: IdeaProposal, marker: string) => ([['Problem', proposal.problem], ['Benefit', proposal.benefit], ['Scope', proposal.scope], ['Success criteria', proposal.successCriteria.map(line => `- ${line}`).join('\n')], ['Size', `${proposal.effort} (relative scope, not a time estimate)`], ['Evidence', proposal.evidence.map(line => `- ${line}`).join('\n')], ['Why now', proposal.whyNow]] as const).map(([heading, body]) => `## ${heading}\n${body}`).join('\n\n') + `\n\n${marker}`;
+const ideaBody = (proposal: IdeaProposal, marker: string) => ([['Problem', proposal.problem], ['Benefit', proposal.benefit], ['Scope', proposal.scope], ['Success criteria', proposal.successCriteria.map(line => `- ${line}`).join('\n')], ['Size', `${proposal.effort} (relative scope, not a time estimate)`], ['Evidence', proposal.evidence.map(line => `- ${line}`).join('\n')], ...(proposal.measure ? [['Would show it worked', `Scorecard figure ${proposal.measure.figure} going ${proposal.measure.expect}`]] : []), ['Why now', proposal.whyNow]] as const).map(([heading, body]) => `## ${heading}\n${body}`).join('\n\n') + `\n\n${marker}`;
 
 // What this platform wrote over there says so, and is never read back in as somebody's comment.
 const ORIGIN = /<!-- agent-team:[\w-]+ -->/;

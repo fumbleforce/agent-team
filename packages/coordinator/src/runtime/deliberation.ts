@@ -1,4 +1,4 @@
-import { FEEDBACK_WINDOW_MS, MAX_REVIEWERS, needsRevision, newId, quorum, type Conclusion, type FeedbackBlock, type MessageKind, type Proposal } from '@agent-team/protocol';
+import { ADVICE_WINDOW_MS, FEEDBACK_WINDOW_MS, MAX_ADVISERS, MAX_REVIEWERS, needsRevision, newId, quorum, type Conclusion, type FeedbackBlock, type MessageKind, type Proposal } from '@agent-team/protocol';
 import type { z } from 'zod';
 import type { Revision } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
@@ -50,6 +50,12 @@ export function createDeliberation(context: Context, turns: Turns) {
       const message = participant.message_id ? await tx.selectFrom('messages').select('payload').where('id', '=', participant.message_id).executeTakeFirst() : null;
       blocks.push({ stance: participant.stance ?? 'neutral', blocking: participant.is_blocking, conditions: ((JSON.parse(message?.payload ?? '{}') as { conditions?: unknown[] }).conditions ?? []).length });
     }
+    // Advice has no revision and no separate decision turn: its owner reads the feedback in its next work turn and decides by what it does.
+    if (row.kind === 'advice') {
+      await tx.updateTable('deliberations').set({ state: 'decided' }).where('id', '=', deliberationId).execute();
+      if (row.task_id) await tx.updateTable('tasks').set({ state: 'in_progress', updated_at: now() }).where('id', '=', row.task_id).where('state', '=', 'awaiting_decision').execute();
+      return events.append(tx, [{ type: 'deliberation.advised', actorKind: 'system', projectId: row.project_id, threadId: row.thread_id, taskId: row.task_id, agentId: row.proposer_agent_id, payload: { deliberationId, answered: answered.length, asked: participants.length } }]);
+    }
     const revise = !row.revised && needsRevision(blocks);
     await tx.updateTable('deliberations').set({ state: revise ? 'revising' : 'deciding' }).where('id', '=', deliberationId).execute();
     return events.append(tx, [{ type: revise ? 'deliberation.revision_requested' : 'deliberation.feedback_closed', actorKind: 'system', projectId: row.project_id, threadId: row.thread_id, payload: { deliberationId, next: revise ? row.proposer_agent_id : row.decider_agent_id } }]);
@@ -57,20 +63,29 @@ export function createDeliberation(context: Context, turns: Turns) {
 
   async function wake(deliberationId: string) {
     const row = await db.selectFrom('deliberations').selectAll().where('id', '=', deliberationId).executeTakeFirstOrThrow();
+    // The owner of advice carries on with its task, feedback in hand.
+    if (row.kind === 'advice' && row.state === 'decided' && row.task_id) {
+      await turns.enqueue({ agentId: row.proposer_agent_id, projectId: row.project_id, kind: 'work', taskId: row.task_id, dedupeKey: `advice:${deliberationId}` });
+      return;
+    }
     const next = row.state === 'revising' ? { agentId: row.proposer_agent_id, kind: 'revise' as const } : row.state === 'deciding' && row.decider_agent_id ? { agentId: row.decider_agent_id, kind: 'conclude' as const } : null;
     if (next) await turns.enqueue({ ...next, projectId: row.project_id, threadId: row.thread_id, taskId: row.task_id, dedupeKey: `${next.kind}:${deliberationId}` });
   }
 
   return {
-    async propose(turn: { agent_id: string; project_id: string; task_id: string | null }, threadId: string, input: Proposal) {
+    async propose(turn: { agent_id: string; project_id: string; task_id: string | null }, threadId: string, input: Omit<Proposal, 'decides'> & { decides?: Proposal['decides'] }) {
       const result = await storage.transaction(async tx => {
         if (turn.task_id && await tx.selectFrom('deliberations').select('id').where('task_id', '=', turn.task_id).where('state', 'in', ['open', 'revising', 'deciding']).executeTakeFirst()) throw conflict('This task already has an open deliberation');
         const project = await tx.selectFrom('projects').select(['team_id', 'parent_id']).where('id', '=', turn.project_id).executeTakeFirstOrThrow();
         const teamId = project.team_id ?? (project.parent_id ? (await tx.selectFrom('projects').select('team_id').where('id', '=', project.parent_id).executeTakeFirst())?.team_id ?? null : null);
         const pm = teamId ? await tx.selectFrom('agents').select('id').where('team_id', '=', teamId).where('is_pm', '=', true).where('status', '=', 'active').executeTakeFirst() : null;
-        const reviewers = await selectReviewers(tx, turn.project_id, turn.agent_id, pm?.id ?? null, input.reviewers);
+        const advice = input.decides === 'me';
+        if (advice && !turn.task_id) throw conflict('Advice is asked on a task of your own');
+        // For advice the PM is a colleague like any other and may be asked; nobody is excluded as the decider, because the asker decides.
+        const reviewers = (await selectReviewers(tx, turn.project_id, turn.agent_id, advice ? null : pm?.id ?? null, input.reviewers)).slice(0, advice ? MAX_ADVISERS : MAX_REVIEWERS);
+        if (advice && reviewers.length === 0) throw conflict('Nobody is there to ask; decide it yourself and say why in your report');
         const id = newId(now());
-        await tx.insertInto('deliberations').values({ id, project_id: turn.project_id, thread_id: threadId, kind: 'design', task_id: turn.task_id, question: input.question, proposer_agent_id: turn.agent_id, decider_agent_id: pm?.id ?? null, state: reviewers.length ? 'open' : 'deciding', revised: false, blocking: input.urgency === 'blocking', feedback_deadline: now() + FEEDBACK_WINDOW_MS[input.urgency], extended: false, created_at: now() }).execute();
+        await tx.insertInto('deliberations').values({ id, project_id: turn.project_id, thread_id: threadId, kind: advice ? 'advice' : 'design', task_id: turn.task_id, question: input.question, proposer_agent_id: turn.agent_id, decider_agent_id: advice ? turn.agent_id : pm?.id ?? null, state: reviewers.length ? 'open' : 'deciding', revised: false, blocking: input.urgency === 'blocking', feedback_deadline: now() + (advice ? ADVICE_WINDOW_MS : FEEDBACK_WINDOW_MS[input.urgency]), extended: false, created_at: now() }).execute();
         for (const agentId of reviewers) await tx.insertInto('deliberation_participants').values({ deliberation_id: id, agent_id: agentId, state: 'pending', stance: null, is_blocking: false, message_id: null }).execute();
         await post(tx, threadId, turn.agent_id, 'proposal', `${input.question}\n\n${input.summary}`, { deliberationId: id, ...input });
         if (input.urgency === 'blocking' && turn.task_id) await tx.updateTable('tasks').set({ state: 'awaiting_decision', updated_at: now() }).where('id', '=', turn.task_id).execute();

@@ -1,0 +1,21 @@
+{
+  "at": "2026-09-21T14:21:42.403Z",
+  "arm": "solo",
+  "engine": "claude",
+  "model": null,
+  "results": [
+    {
+      "task": "money-allocation",
+      "arm": "solo",
+      "engine": "claude",
+      "model": null,
+      "score": 1,
+      "notes": [],
+      "state": "in_review",
+      "turns": 1,
+      "costUsd": 1.08,
+      "tokens": 193705,
+      "ms": 130444
+    }
+  ]
+}

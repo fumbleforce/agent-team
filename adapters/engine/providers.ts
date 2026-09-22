@@ -30,6 +30,22 @@ export interface ProviderEntry {
 const OPENCODE = 'npm install -g opencode-ai', perMillion = (price: string | undefined) => (price && Number(price) > 0 ? `$${(Number(price) * 1_000_000).toFixed(2)}` : null);
 const pick = (names: string[]): ModelChoice[] => names.map(id => ({ id, name: id }));
 
+// Model families whose weights are published, by the names their vendors and routers use. A model run on this machine counts too.
+const OPEN_WEIGHT = /(^|[/:_-])(llama|qwen|qwq|deepseek|mistral|mixtral|ministral|codestral|devstral|gemma|glm|kimi|minimax|gpt-oss|phi|olmo|nemotron|granite|command-r|yi|hermes|starcoder|falcon)/i;
+// The family a model belongs to, as far as its name tells: models of one family tend to share blind spots, so two seats that
+// check the same work should not both run on it. The vendor prefix of a routed name ("vendor/model") is dropped first.
+export function modelFamily(model: string | null): string | null {
+  if (!model) return null;
+  const name = model.toLowerCase().split('/').at(-1)!;
+  const family = /^(claude|gpt|o\d|gemini|llama|qwen|qwq|deepseek|mistral|mixtral|ministral|codestral|devstral|gemma|glm|kimi|minimax|phi|olmo|nemotron|granite|command|grok|yi|hermes)/.exec(name)?.[1];
+  if (!family) return name.split(/[-:_.\d]/)[0] || null;
+  if (/^o\d$/.test(family) || family === 'gpt') return 'gpt';
+  if (['mistral', 'mixtral', 'ministral', 'codestral', 'devstral'].includes(family)) return 'mistral';
+  if (family === 'qwq') return 'qwen';
+  return family;
+}
+export const isOpenWeight = (model: string | null, providerKind: string | null): boolean => providerKind === 'local' || (model !== null && OPEN_WEIGHT.test(model));
+
 export const PROVIDERS: ProviderEntry[] = [
   {
     kind: 'claude-subscription', title: 'Claude subscription', billing: 'subscription', engine: 'claude', install: 'npm install -g @anthropic-ai/claude-code',

@@ -5,7 +5,7 @@ import { AppShell, BarRow, PageHeader, Sidebar } from '../../patterns';
 import { Button, Card, Checkbox, ColumnChart, Field, Input, LinkButton, Meter, SectionLabel, Select, StatTile, Text } from '../../ui';
 
 interface CostRules { dailyCap: { enabled: boolean; fallbackProvider: string | null }; budgetWarn: { enabled: boolean; percent: number }; windowPause: { enabled: boolean; percent: number } }
-interface Route { id: string; enabled: boolean; kinds: string[]; tags: string[]; provider: string; model: string | null }
+interface Route { id: string; enabled: boolean; kinds: string[]; tags: string[]; difficulty: string[]; provider: string; model: string | null }
 interface RoutingRules { routes: Route[] }
 interface Budget { scope: string; scopeId: string; amountMinor: number }
 interface RulesDoc<T> { version: number; doc: T }
@@ -13,19 +13,21 @@ interface ProviderRow { id: string; name: string; models: string[] }
 
 // The kinds of turn an agent takes, in the words a person would use for them.
 const KIND_WORDS: Record<string, string> = { work: 'work on a task', review: 'a review', feedback: 'feedback on a proposal', revise: 'revising a proposal', conclude: 'deciding a proposal', triage: 'sorting what was raised', reply: 'a reply to a message', retro: 'the weekly retro', ideate: 'ideas for what to do next', publish: 'publishing a change', deliver: 'delivering a change', capture: 'a capture of the product' };
+// How hard a task looked to the decision model, in a person's words.
+const DIFFICULTY_WORDS: Record<string, string> = { trivial: 'looks trivial', standard: 'looks ordinary', hard: 'looks hard' };
 const list = (words: string[]) => (words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} or ${words.at(-1)}`);
 // A rule read aloud: when it applies, then where the turn runs.
-const ruleWords = (route: Route) => `When a turn is ${route.kinds.length ? list(route.kinds.map(kind => KIND_WORDS[kind] ?? kind)) : 'of any kind'}${route.tags.length ? ` and the task is tagged ${list(route.tags)}` : ''}`;
+const ruleWords = (route: Route) => `When a turn is ${route.kinds.length ? list(route.kinds.map(kind => KIND_WORDS[kind] ?? kind)) : 'of any kind'}${route.tags.length ? ` and the task is tagged ${list(route.tags)}` : ''}${route.difficulty?.length ? ` and the task ${list(route.difficulty.map(level => DIFFICULTY_WORDS[level] ?? level))}` : ''}`;
 
 // Routing rules in plain words: list, switch on and off, remove, and add one from four choices.
 function RoutingEditor({ routes, providers, canEdit, onSave }: { routes: Route[]; providers: ProviderRow[]; canEdit: boolean; onSave(routes: Route[]): void }) {
-  const [kind, setKind] = useState(''), [tag, setTag] = useState(''), [providerId, setProviderId] = useState(''), [model, setModel] = useState('');
+  const [kind, setKind] = useState(''), [tag, setTag] = useState(''), [difficulty, setDifficulty] = useState(''), [providerId, setProviderId] = useState(''), [model, setModel] = useState('');
   const provider = providers.find(item => item.id === providerId);
   const named = (ref: string) => providers.find(item => item.id === ref || item.name === ref)?.name ?? 'a provider that is no longer set up';
   const add = () => {
     if (!provider) return;
-    onSave([...routes, { id: crypto.randomUUID().slice(0, 8), enabled: true, kinds: kind ? [kind] : [], tags: tag.trim() ? [tag.trim().toLowerCase()] : [], provider: provider.id, model: model || null }]);
-    setKind(''); setTag(''); setProviderId(''); setModel('');
+    onSave([...routes, { id: crypto.randomUUID().slice(0, 8), enabled: true, kinds: kind ? [kind] : [], tags: tag.trim() ? [tag.trim().toLowerCase()] : [], difficulty: difficulty ? [difficulty] : [], provider: provider.id, model: model || null }]);
+    setKind(''); setTag(''); setDifficulty(''); setProviderId(''); setModel('');
   };
   return (
     <div className="flex flex-col gap-2.5">
@@ -38,11 +40,14 @@ function RoutingEditor({ routes, providers, canEdit, onSave }: { routes: Route[]
       ))}
       {routes.length === 0 && <Text size="small" tone="muted">No rules yet.</Text>}
       {canEdit && providers.length > 0 && (
-        <form className="grid grid-cols-1 items-start gap-2.5 md:grid-cols-2 xl:grid-cols-5" onSubmit={event => { event.preventDefault(); add(); }}>
+        <form className="grid grid-cols-1 items-start gap-2.5 md:grid-cols-2 xl:grid-cols-6" onSubmit={event => { event.preventDefault(); add(); }}>
           <Field label="When a turn is" help="Leave on any kind to match every turn.">
             <Select value={kind} onChange={event => setKind(event.target.value)}><option value="">any kind of turn</option>{Object.entries(KIND_WORDS).map(([value, words]) => <option key={value} value={value}>{words}</option>)}</Select>
           </Field>
           <Field label="And the task is tagged"><Input value={tag} maxLength={40} placeholder="any tag" onChange={event => setTag(event.target.value)} /></Field>
+          <Field label="And the task" help="How hard it looked to the decision model, when one read it.">
+            <Select value={difficulty} onChange={event => setDifficulty(event.target.value)}><option value="">looks any way</option>{Object.entries(DIFFICULTY_WORDS).map(([value, words]) => <option key={value} value={value}>{words}</option>)}</Select>
+          </Field>
           <Field label="Use this provider">
             <Select value={providerId} required onChange={event => { setProviderId(event.target.value); setModel(''); }}><option value="">Choose a provider</option>{providers.map(item => <option key={item.id} value={item.id}>{item.name}</option>)}</Select>
           </Field>

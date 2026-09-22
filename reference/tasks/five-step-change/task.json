@@ -1,0 +1,6 @@
+{
+  "title": "A small inventory module with five parts",
+  "brief": "Build inventory.js as an ES module, in five parts, committing after each: (1) createInventory() returns an object with add(sku, quantity) and count(sku); (2) remove(sku, quantity) that throws RangeError when there is not enough stock and leaves the stock unchanged; (3) reserve(sku, quantity) and release(sku, quantity), where reserved stock cannot be removed or reserved again and available(sku) is the count less what is reserved; (4) toJSON() and a static fromJSON(data) that restores counts and reservations; (5) inventory.test.js with node:test covering all of it, and `npm test` passing. Quantities must be positive integers everywhere; anything else throws TypeError.",
+  "kind": "change",
+  "stands_for": "a change that needs five or more work turns"
+}

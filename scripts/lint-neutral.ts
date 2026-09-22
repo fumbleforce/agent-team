@@ -5,7 +5,7 @@ import path from 'node:path';
 // so a new provider is a new adapter and not an edit to the platform.
 const root = path.dirname(import.meta.dirname);
 const roots = ['packages', 'blueprints'];
-const terms = ['github', 'gitlab', 'linear', 'fly', 'tailscale', 'opencode', 'claude', 'codex', 'myntbase', 'manti', 'hubro', 'stockapp', 'anthropic', 'bedrock', 'gh', 'glab', 'supabase'];
+const terms = ['github', 'gitlab', 'linear', 'fly', 'tailscale', 'opencode', 'claude', 'codex', 'myntbase', 'manti', 'hubro', 'stockapp', 'anthropic', 'bedrock', 'gh', 'glab', 'supabase', 'typesafe', 'jev'];
 const pattern = new RegExp(`\\b(${terms.join('|')})\\b`, 'i');
 // Generic English uses of otherwise-provider words, and imports of the adapters themselves.
 const benign = [/\bon the fly\b/i, /\blinear(ly)? (time|scan|search)\b/i, /adapters\//];

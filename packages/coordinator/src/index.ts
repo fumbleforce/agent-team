@@ -1,4 +1,4 @@
-export { startCoordinator, validBind, type CoordinatorConfig } from './server.ts';
+export { startCoordinator, validBind, type CoordinatorConfig, type LauncherFactory } from './server.ts';
 export { createApp, type AppType } from './http/app.ts';
 export { createContext, type Context } from './context.ts';
 export { seedDemo, DEMO_LOGIN } from './demo/seed.ts';

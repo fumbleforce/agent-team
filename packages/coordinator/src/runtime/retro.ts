@@ -1,3 +1,4 @@
+import { createScorecard, formatFigure } from './scorecard.ts';
 import { newId } from '@agent-team/protocol';
 import type { Context } from '../context.ts';
 import { staffingSeat } from './staffing.ts';
@@ -24,6 +25,26 @@ export function createRetro(context: Context, turns: Turns) {
     return [...byAgent.values()];
   }
 
+  // What the retro is held over, besides who did how much: the figures of the scorecard that miss their target, and the ideas
+  // finished this week with the figure each said it would move. An idea that did not move its figure is said so, so the team
+  // learns which of its ideas were worth having.
+  const scorecard = createScorecard(context);
+  async function scorecardLines(projectId: string, since: number): Promise<string[]> {
+    const week = now() - since;
+    const [before, during] = await Promise.all([scorecard.compute(projectId, { from: since - week, to: since }), scorecard.compute(projectId, { from: since, to: now() })]);
+    const missed = during.figures.filter(figure => figure.met === false).map(figure => `- ${figure.id} ${figure.measure}: ${formatFigure(figure)} (target ${figure.target})`);
+    const ideas = await db.selectFrom('tasks').select(['key', 'title', 'brief']).where('project_id', '=', projectId).where('state', '=', 'done').where('updated_at', '>=', since).where('brief', 'like', '%Agent-Team idea:%').execute();
+    const outcomes = ideas.map(idea => {
+      const named = /Scorecard figure ([A-Z]\d{1,2}) going (up|down)/.exec(idea.brief);
+      if (!named) return `- ${idea.key} ${idea.title}: named no figure, so nothing says whether it was worth it`;
+      const was = before.figures.find(figure => figure.id === named[1]), is = during.figures.find(figure => figure.id === named[1]);
+      if (!was || !is || was.value === null || is.value === null) return `- ${idea.key} ${idea.title}: ${named[1]} could not be measured before and after`;
+      const moved = named[2] === 'up' ? is.value > was.value : is.value < was.value;
+      return `- ${idea.key} ${idea.title}: ${named[1]} went from ${formatFigure(was)} to ${formatFigure(is)}, expected ${named[2]}: ${moved ? 'it moved as said' : 'it did not move as said'}`;
+    });
+    return [...(missed.length ? ['Figures of the scorecard that miss their target:', ...missed] : []), ...(outcomes.length ? ['Ideas of ours finished this week, and the figure each named:', ...outcomes] : [])];
+  }
+
   return {
     async ensureSchedule(projectId: string, intervalMs = WEEK_MS) {
       await db.insertInto('schedules').values({ id: newId(now()), project_id: projectId, kind: 'retro', interval_ms: intervalMs, next_at: now() + intervalMs, last_at: null }).onConflict(oc => oc.columns(['project_id', 'kind']).doNothing()).execute();
@@ -36,11 +57,12 @@ export function createRetro(context: Context, turns: Turns) {
         const subprojects = await db.selectFrom('projects').select('id').where('parent_id', '=', schedule.project_id).execute();
         const figures = await stats([schedule.project_id, ...subprojects.map(row => row.id)], Number(schedule.last_at ?? Number(schedule.next_at) - Number(schedule.interval_ms)));
         const thread = await db.selectFrom('threads').select('id').where('project_id', '=', schedule.project_id).where('kind', '=', 'discussion').executeTakeFirst();
+        const measured = figures.length ? await scorecardLines(schedule.project_id, Number(schedule.last_at ?? Number(schedule.next_at) - Number(schedule.interval_ms))).catch(() => []) : [];
         const published = await storage.transaction(async tx => {
           await tx.updateTable('schedules').set({ last_at: now(), next_at: now() + Number(schedule.interval_ms) }).where('id', '=', schedule.id).execute();
           if (!thread || figures.length === 0) return [];
           const lines = figures.map(item => `- ${item.name}: ${item.turns} turns, ${item.failed} failed, ${(item.costMinor / 100).toFixed(2)} spent, ${Math.round(item.busyMs / 60_000)} min busy`);
-          await tx.insertInto('messages').values({ id: newId(now()), thread_id: thread.id, author_kind: 'system', author_id: null, kind: 'system', body: `Weekly retro. This week:\n${lines.join('\n')}`, payload: JSON.stringify({ retro: true, figures }), created_at: now() }).execute();
+          await tx.insertInto('messages').values({ id: newId(now()), thread_id: thread.id, author_kind: 'system', author_id: null, kind: 'system', body: `Weekly retro. This week:\n${[...lines, ...measured].join('\n')}`, payload: JSON.stringify({ retro: true, figures }), created_at: now() }).execute();
           return events.append(tx, [{ type: 'retro.opened', actorKind: 'system', projectId: schedule.project_id, threadId: thread.id, payload: { seats: figures.length } }, { type: 'message.posted', actorKind: 'system', projectId: schedule.project_id, threadId: thread.id, payload: { kind: 'system' } }]);
         });
         events.published(published);

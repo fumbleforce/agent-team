@@ -36,6 +36,7 @@ IMDS_TOKEN="$(curl -fs -X PUT -H 'X-aws-ec2-metadata-token-ttl-seconds: 60' http
 cat > /etc/agent-team.env <<EOF
 AGENT_TEAM_DATA=/data
 AGENT_TEAM_SSM_PREFIX=${SSM_PREFIX}
+AGENT_TEAM_LAUNCHER_B64=${LAUNCHER_B64:-}
 AWS_REGION=$(curl -fs -H "X-aws-ec2-metadata-token: ${IMDS_TOKEN}" http://169.254.169.254/latest/meta-data/placement/region || echo eu-north-1)
 EOF
 chmod 600 /etc/agent-team.env

@@ -1,6 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { deploy, destroy, controlPlaneUserData, bakeScript, secrets, iam, network, verify, rolePolicies, newDeployment, DeployError, STEPS, type DeploymentFacts } from './deploy.ts';
+import { deploy, destroy, controlPlaneUserData, bakeScript, secrets, iam, network, verify, rolePolicies, newDeployment, DeployError, STEPS, type DeploymentFacts, launcherSettings } from './deploy.ts';
+import { launcherFactory } from '../shared/launchers.ts';
 import { fakeAws, type State } from './fakeAws.ts';
 
 const facts = (): DeploymentFacts => ({ projectId: 'example', name: 'Example', checkout: '/nonexistent', scm: { kind: 'gitlab', repository: 'group/project', host: 'gitlab.com' },
@@ -63,7 +64,7 @@ test('missing provided secrets and expired credentials fail with actionable hint
 
 test('templates are filled from the deployment and refuse unknown placeholders', () => {
   const deployment = fresh();
-  assert.equal(controlPlaneUserData(deployment, { template: '#!/bin/bash\necho "$SSM_PREFIX"\n' }), `#!/bin/bash\nexport TOOLKIT_REPO='https://github.com/fumbleforce/agent-team.git' TOOLKIT_REF='main' SSM_PREFIX='/agent-team/example'\necho "$SSM_PREFIX"\n`);
+  assert.equal(controlPlaneUserData(deployment, { template: '#!/bin/bash\necho "$SSM_PREFIX"\n' }), `#!/bin/bash\nexport TOOLKIT_REPO='https://github.com/fumbleforce/agent-team.git' TOOLKIT_REF='main' SSM_PREFIX='/agent-team/example' LAUNCHER_B64='${Buffer.from(JSON.stringify(launcherSettings(deployment))).toString('base64')}'\necho "$SSM_PREFIX"\n`);
   deployment.toolkit = { repo: 'https://example.test/toolkit.git', ref: '0123456789abcdef0123456789abcdef01234567' };
   assert.match(controlPlaneUserData(deployment, { template: '' }), /TOOLKIT_REPO='https:\/\/example\.test\/toolkit\.git' TOOLKIT_REF='0123456789abcdef0123456789abcdef01234567'/);
   assert.match(bakeScript(deployment), /TOOLKIT_REF="0123456789abcdef0123456789abcdef01234567"/); assert.match(bakeScript(deployment), /set \+x\nTOKEN=/);
@@ -186,4 +187,30 @@ test('verify waits for the tunnelled coordinator, and stops at once when the tun
   assert.equal(probes, 3); assert.match(log.at(-1) ?? '', /answering through the tunnel/);
   await assert.rejects(verify(deployment, { aws: aws.run, sleep: noSleep, probe: async () => { throw new DeployError('Session Manager port-forward failed', 'Install the Session Manager plugin for the AWS CLI.'); } }), hinted(/plugin/));
   await assert.rejects(verify(deployment, { aws: aws.run, sleep: noSleep, attempts: 2, probe: async () => { throw new Error('never'); } }), hinted(/agent-team status aws/));
+});
+
+test('the control plane is told how to start workers: where, from which image, as whom; never when workers are not its to launch', () => {
+  const deployment = fresh();
+  Object.assign(deployment.aws, { subnetId: 'subnet-1', securityGroupId: 'sg-1' });
+  assert.deepEqual(launcherSettings(deployment), {
+    region: 'eu-central-1', subnetId: 'subnet-1', securityGroupId: 'sg-1', instanceProfile: 'agent-team-example-worker', instanceType: 'c6i.2xlarge',
+    ami: 'ssm:/agent-team/example/worker-ami', ssmPrefix: '/agent-team/example', tags: { 'agent-team:project': 'example' },
+    // One working agent per machine unless the deployment says otherwise.
+    workerConfig: { lanes: { work: 1, bounded: 2, deliver: 1 } },
+  });
+  // The host gets it base64-encoded, so it survives a shell export and a systemd environment file unchanged.
+  const encoded = /LAUNCHER_B64='([A-Za-z0-9+/=]+)'/.exec(controlPlaneUserData(deployment))?.[1];
+  assert.deepEqual(JSON.parse(Buffer.from(encoded!, 'base64').toString('utf8')), launcherSettings(deployment));
+  assert.match(controlPlaneUserData(deployment), /AGENT_TEAM_LAUNCHER_B64=\$\{LAUNCHER_B64:-\}/);
+
+  const local = fresh();
+  local.worker.launcher = 'local';
+  assert.equal(launcherSettings(local), null);
+  assert.match(controlPlaneUserData(local), /LAUNCHER_B64=''/);
+});
+
+test('with its launcher settings the hosted control plane makes a launcher for a project that asks for one', () => {
+  const factory = launcherFactory(launcherSettings(Object.assign(fresh(), {}))!, 'http://10.97.0.10:4310');
+  const launcher = factory('ec2', { id: 'p1', manifest: { scm: { kind: 'gitlab' }, delivery: { repository: 'group/project', publishAuthorized: true } } });
+  assert.equal((launcher as unknown as { kind: string }).kind, 'ec2');
 });

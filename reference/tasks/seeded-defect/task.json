@@ -1,0 +1,7 @@
+{
+  "title": "Add a weekly total to the report",
+  "brief": "report.js has dailyTotals(entries), which sums amounts per day. Add weeklyTotal(entries, weekStart) returning the sum of the seven days starting at weekStart (a YYYY-MM-DD string), built on dailyTotals. Add tests with node:test and make `npm test` pass.",
+  "kind": "change",
+  "stands_for": "work that rests on a defect nobody mentioned",
+  "seeded": ["dailyTotals() drops entries whose amount is 0.5 or less because it rounds each amount before summing"]
+}

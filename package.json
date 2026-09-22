@@ -30,6 +30,7 @@
     "demo": "node bin/agent-team-demo.ts",
     "test:e2e": "playwright test",
     "pilot": "node scripts/pilot-turn.ts",
+    "reference": "node scripts/reference.ts",
     "test:postgres": "node --test --test-concurrency=1 \"packages/**/*.test.ts\"",
     "test:web": "vitest run --root packages/web",
     "biome": "biome lint ."
