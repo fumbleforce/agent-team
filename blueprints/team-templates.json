@@ -142,5 +142,47 @@
         "isPm": false
       }
     ]
+  },
+  "sales-desk": {
+    "name": "Sales desk",
+    "summary": "A desk that turns the CRM into conversations: Vic decides who is worth the week, Sam finds leads and why now, Rita follows up and writes the emails, Onion checks each one before it goes out.",
+    "seats": [
+      {
+        "name": "Vic",
+        "title": "Sales lead",
+        "persona": "Keeps the pipeline honest. Asks what moved this week, drops what will not close, and holds every email to one reader and one ask.",
+        "roles": [
+          "pm"
+        ],
+        "isPm": true
+      },
+      {
+        "name": "Sam",
+        "title": "Sales researcher",
+        "persona": "Curious and sceptical. Reads the account before the pitch, drops a lead with no reason to talk now, and writes down where every fact came from.",
+        "roles": [
+          "sales"
+        ],
+        "isPm": false
+      },
+      {
+        "name": "Rita",
+        "title": "Account executive",
+        "persona": "Warm and direct. Writes to one person about one thing, keeps it short enough to answer from a phone, and never promises what the product does not do.",
+        "roles": [
+          "sales"
+        ],
+        "isPm": false
+      },
+      {
+        "name": "Onion",
+        "title": "Editor",
+        "persona": "Peels every draft layer by layer. Every finding is a line reference with a reason; must-fix and optional are never confused.",
+        "roles": [
+          "editor"
+        ],
+        "isPm": false
+      }
+    ]
   }
 }

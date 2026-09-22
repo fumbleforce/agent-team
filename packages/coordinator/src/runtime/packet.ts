@@ -1,4 +1,4 @@
-import { Role, type TurnKind } from '@agent-team/protocol';
+import { Charter, Role, type TurnKind } from '@agent-team/protocol';
 import { teamIdOf } from '../repos/issueTasks.ts';
 import { DESK_RULE, goingOn, wearsDesk } from './desk.ts';
 import type { Tx } from '@agent-team/storage';
@@ -8,6 +8,8 @@ import { wayOfWorking } from './wayOfWorking.ts';
 import { latestRead, readLines } from './decisions.ts';
 import { skillsPart } from './skills.ts';
 import { toolsPart } from './agentTools.ts';
+import { DELIVERABLES, DELIVERABLES_REVIEW, DELIVERABLES_WORK, roundPart } from './deliverables.ts';
+import { ORG_ROLE, ORG_RULE } from './orgPlans.ts';
 
 export interface Packet { system: string; prompt: string }
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
@@ -165,6 +167,12 @@ async function documentUnderReview(tx: Tx, taskId: string): Promise<{ path: stri
   return revision ? { path: ref.path, rev: ref.rev, title: page?.title ?? ref.path, body: revision.body } : null;
 }
 
+function charterPart(manifest: string | undefined): string | null {
+  const charter = manifest ? Charter.safeParse((JSON.parse(manifest) as { charter?: unknown }).charter) : null;
+  if (!charter?.success) return null;
+  return `# What this team owns\n${charter.data.area}${charter.data.outcomes.length ? `\n${charter.data.outcomes.map(item => `- ${item}`).join('\n')}` : ''}`;
+}
+
 // Everything a turn starts from, built deterministically from stored state: no model, no hidden context.
 export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: string; projectId: string; taskId: string | null; threadId: string | null }): Promise<Packet> {
   const system = await systemFor(tx, turn.agentId, turn.projectId);
@@ -174,10 +182,19 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
   const parts: string[] = [(way.instructions as Record<string, string | undefined>)[turn.kind] ?? TASK_RULES[turn.kind]];
   // Whoever staffs the team is told so wherever it can act on it.
   if (['reply', 'retro', 'triage', 'work', 'conclude'].includes(turn.kind) && await staffs(tx, turn.agentId)) parts.push(STAFFING_RULE);
+  // The chief of staff answers the owner about the organisation, not about a task of its own.
+  if (turn.kind === 'reply' && await tx.selectFrom('agent_roles').select('agent_id').where('agent_id', '=', turn.agentId).where('role_slug', '=', ORG_ROLE).executeTakeFirst()) parts[0] = ORG_RULE;
   if (turn.taskId) {
     const task = await tx.selectFrom('tasks').select(['key', 'title', 'brief', 'state', 'journal', 'assignee_agent_id', 'result_kind']).where('id', '=', turn.taskId).executeTakeFirst();
     if (task) parts.push(`# Task ${task.key}: ${task.title}\n${clip(task.brief || '(no brief)', 2000)}`);
     if (task?.result_kind === 'document' && turn.kind === 'work') parts.push(DOCUMENT_WORK);
+    if (task?.result_kind === DELIVERABLES) {
+      // A round of deliverables has no checkout and no commit: its owner hands them in, and its reviewer judges them as they read.
+      if (turn.kind === 'work') parts.push(DELIVERABLES_WORK);
+      if (turn.kind === 'review') parts[0] = DELIVERABLES_REVIEW;
+      const round = await roundPart(tx, turn.taskId, turn.kind === 'review');
+      if (round) parts.push(round);
+    }
     if (task?.result_kind === 'document' && turn.kind === 'review') {
       const document = await documentUnderReview(tx, turn.taskId);
       // There is no checkout to read and no commit to judge: the instructions for reviewing a change do not apply.
@@ -221,6 +238,9 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
     }
     // Whoever triages or is asked to add work names an owner, so it needs to know who there is and what they do.
     const pm = turn.kind === 'reply' ? (await tx.selectFrom('agents').select('is_pm').where('id', '=', turn.agentId).executeTakeFirst())?.is_pm : false;
+    // A team that was given an area owns it: its PM reads what it is and what it should show for it, wherever it gives out work.
+    const charter = turn.kind === 'triage' || pm ? charterPart((await tx.selectFrom('projects').select('manifest').where('id', '=', turn.projectId).executeTakeFirst())?.manifest) : null;
+    if (charter) parts.push(charter);
     if (turn.kind === 'triage' || pm) {
       const teamId = await teamIdOf(tx, turn.projectId);
       const team = teamId ? await tx.selectFrom('agents').select(['id', 'name', 'title', 'is_pm']).where('team_id', '=', teamId).where('status', '=', 'active').orderBy('sort').execute() : [];

@@ -1,5 +1,7 @@
 import { createDuties } from '../runtime/duties.ts';
 import { createDocuments } from '../runtime/documents.ts';
+import { createDeliverables, DELIVERABLES } from '../runtime/deliverables.ts';
+import { createOrgPlans } from '../runtime/orgPlans.ts';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import { isToolName, MAX_TOOL_CALLS_PER_TURN, PermissionGrant, permits, RATE_LIMITS, TOOLS, type ToolInput, type ToolName, type ToolOutput, type TurnKind } from '@agent-team/protocol';
@@ -50,6 +52,8 @@ export function createMcp(context: Context, deps: McpDeps) {
   const actions = createActions(context, turns);
   const documents = createDocuments(context, turns);
   const duties = createDuties(context, turns);
+  const deliverables = createDeliverables(context, turns);
+  const orgPlans = createOrgPlans(context, turns);
 
   async function authenticate(header: string | undefined): Promise<Turn | null> {
     const match = /^Bearer (turn\.([0-9a-f-]{36})\.[\w-]+)$/.exec(header ?? '');
@@ -133,7 +137,10 @@ export function createMcp(context: Context, deps: McpDeps) {
       const kind = (await db.selectFrom('tasks').select('result_kind').where('id', '=', turn.task_id).executeTakeFirst())?.result_kind;
       if (kind === 'document' && input.state === 'ready_for_review' && !input.document) throw new ToolError('The result of this task is a document: write it with knowledge.write, then pass its path as `document`.');
       if (kind !== 'document' && input.document) throw new ToolError('This task ends in a change, not a document; leave `document` out.');
-      const state = input.state === 'ready_for_review' ? (input.document ? 'in_progress' : 'in_review') : input.state === 'blocked' ? 'blocked' : input.state === 'not_needed' ? 'canceled' : 'in_progress';
+      // A round of deliverables is handed in as a whole, once what it asks for is in.
+      const handingIn = kind === DELIVERABLES && input.state === 'ready_for_review';
+      if (handingIn && !(await db.selectFrom('deliverables').select('id').where('task_id', '=', turn.task_id).where('state', '=', 'submitted').executeTakeFirst())) throw new ToolError('Nothing is handed in yet: hand in each deliverable with deliverable.submit, then report ready_for_review.');
+      const state = input.state === 'ready_for_review' ? (input.document || handingIn ? 'in_progress' : 'in_review') : input.state === 'blocked' ? 'blocked' : input.state === 'not_needed' ? 'canceled' : 'in_progress';
       const published = await storage.transaction(async tx => {
         // The journal is the owner's own record of where the task stands; the next turn starts from it on whatever worker runs it.
         const journal = JSON.stringify({ standing: input.summary, next: input.next ?? null, open: input.open ?? null, turnId: turn.id, at: now() });
@@ -152,9 +159,15 @@ export function createMcp(context: Context, deps: McpDeps) {
       events.published(published);
       // A task that ends in a document hands in the page it wrote; from here it is reviewed at that revision.
       if (input.state === 'ready_for_review' && input.document) return { state: (await documents.submit(turn, input.document)).state };
+      if (handingIn) return deliverables.handIn(turn);
       return { state };
     },
     'document.review': async (turn, input) => documents.review(turn, input),
+    'deliverable.submit': async (turn, input) => deliverables.submit(turn, input),
+    'deliverable.review': async (turn, input) => deliverables.review(turn, input.verdicts),
+    'org.review': async (_turn, input) => orgPlans.review(input.days),
+    'org.plan': async (turn, input) => { await threadInProject(turn, input.threadId); return orgPlans.propose(turn, input); },
+    'org.handover': async (_turn, input) => orgPlans.handover(await orgPlans.teamBySlug(input.team), input.wants),
     'notebook.write': async (turn, input) => {
       await db.updateTable('agents').set({ notebook: input.text.trim() || null }).where('id', '=', turn.agent_id).execute();
       return { saved: true };

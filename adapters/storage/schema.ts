@@ -91,8 +91,9 @@ export interface ProposalsTable { id: string; project_id: string; category: stri
 export interface ProposalVotesTable { proposal_id: string; agent_id: string; stance: string; note: string }
 
 export interface TrialsTable { id: string; project_id: string; proposal_id: string | null; kind: string; target: string; before: string; after: string; measure: string; expect: string; baseline: number | null; started_at: Ms; ends_at: Ms; state: string; result: number | null; verdict: string | null; judged_at: Ms | null }
-export interface DutiesTable { id: string; project_id: string; agent_id: string; title: string; brief: string; result_kind: Generated<string>; every_ms: Ms; next_at: Ms; last_task_id: string | null; active: Generated<boolean>; created_at: Ms }
-export interface ProposalsSchema { proposals: ProposalsTable; proposal_votes: ProposalVotesTable; trials: TrialsTable; duties: DutiesTable }
+export interface DutiesTable { id: string; project_id: string; agent_id: string; title: string; brief: string; result_kind: Generated<string>; every_ms: Ms; next_at: Ms; last_task_id: string | null; active: Generated<boolean>; created_at: Ms; deliverable_kind: Generated<string | null>; target: Generated<number | null>; round_at: Generated<Ms | null> }
+export interface DeliverablesTable { id: string; project_id: string; task_id: string; duty_id: string | null; kind: string; title: string; body: string; link: string | null; fields: Generated<string>; author_agent_id: string; state: string; reviewer_agent_id: string | null; note: string | null; outcome_ref: string | null; created_at: Ms; decided_at: Ms | null }
+export interface ProposalsSchema { proposals: ProposalsTable; proposal_votes: ProposalVotesTable; trials: TrialsTable; duties: DutiesTable; deliverables: DeliverablesTable }
 
 export interface IssuesTable { id: string; project_id: string; number: number; title: string; body: string; state: string; priority: string; source: string; owner_agent_id: string | null; author_user_id: string | null; thread_id: string; attachment_id: string | null; created_at: Ms; closed_at: Ms | null }
 

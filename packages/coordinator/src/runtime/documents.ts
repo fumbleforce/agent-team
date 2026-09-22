@@ -27,23 +27,23 @@ export function parseRef(raw: string | null): DocumentRef | null {
   try { return JSON.parse(raw) as DocumentRef; } catch { return null; }
 }
 
+// Seats of the team, other than the author, that wear a reviewing role: as many as the team's way of working says (two as shipped); with none, the PM judges it.
+export async function reviewersFor(tx: Tx, projectId: string, authorId: string | null, most?: number): Promise<string[]> {
+  const project = await tx.selectFrom('projects').select(['team_id', 'parent_id']).where('id', '=', projectId).executeTakeFirstOrThrow();
+  const teamId = project.team_id ?? (project.parent_id ? (await tx.selectFrom('projects').select('team_id').where('id', '=', project.parent_id).executeTakeFirst())?.team_id : null);
+  if (!teamId) return [];
+  const seats = await tx.selectFrom('agents').leftJoin('agent_roles', 'agent_roles.agent_id', 'agents.id').select(['agents.id', 'agents.is_pm', 'agent_roles.role_slug'])
+    .where('agents.team_id', '=', teamId).where('agents.status', '=', 'active').orderBy('agents.sort').execute();
+  const others = seats.filter(seat => seat.id !== authorId);
+  const { knobs } = await wayOfWorking(tx, projectId);
+  const reviewing = [...new Set(others.filter(seat => seat.role_slug && REVIEWING_ROLES.includes(seat.role_slug)).map(seat => seat.id))].slice(0, most ?? knobs.documentReviewers);
+  if (reviewing.length) return reviewing;
+  const pm = others.find(seat => seat.is_pm);
+  return pm ? [pm.id] : [];
+}
+
 export function createDocuments(context: Context, turns: Turns) {
   const { storage, events, now } = context;
-
-  // Seats of the team, other than the author, that wear a reviewing role: as many as the team's way of working says (two as shipped); with none, the PM judges it.
-  async function reviewersFor(tx: Tx, projectId: string, authorId: string | null): Promise<string[]> {
-    const project = await tx.selectFrom('projects').select(['team_id', 'parent_id']).where('id', '=', projectId).executeTakeFirstOrThrow();
-    const teamId = project.team_id ?? (project.parent_id ? (await tx.selectFrom('projects').select('team_id').where('id', '=', project.parent_id).executeTakeFirst())?.team_id : null);
-    if (!teamId) return [];
-    const seats = await tx.selectFrom('agents').leftJoin('agent_roles', 'agent_roles.agent_id', 'agents.id').select(['agents.id', 'agents.is_pm', 'agent_roles.role_slug'])
-      .where('agents.team_id', '=', teamId).where('agents.status', '=', 'active').orderBy('agents.sort').execute();
-    const others = seats.filter(seat => seat.id !== authorId);
-    const { knobs } = await wayOfWorking(tx, projectId);
-    const reviewing = [...new Set(others.filter(seat => seat.role_slug && REVIEWING_ROLES.includes(seat.role_slug)).map(seat => seat.id))].slice(0, knobs.documentReviewers);
-    if (reviewing.length) return reviewing;
-    const pm = others.find(seat => seat.is_pm);
-    return pm ? [pm.id] : [];
-  }
 
   return {
     // The owner says the document is ready: the page as it reads now is what gets reviewed.

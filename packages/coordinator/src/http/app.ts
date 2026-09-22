@@ -28,6 +28,8 @@ import { deskOf } from '../runtime/desk.ts';
 import { createWorkload } from '../runtime/workload.ts';
 import { createScorecard } from '../runtime/scorecard.ts';
 import { createDuties } from '../runtime/duties.ts';
+import { createDeliverables } from '../runtime/deliverables.ts';
+import { createOrgPlans } from '../runtime/orgPlans.ts';
 import { isOpenWeight, modelFamily } from '../../../../adapters/engine/providers.ts';
 import { SCM_KINDS, scmAdapter } from '../../../../adapters/scm/index.ts';
 import { TRACKER_KINDS } from '../../../../adapters/tracker/index.ts';
@@ -49,7 +51,7 @@ import { createSessions } from '../runtime/sessions.ts';
 import { createTraceStore } from '../runtime/traceStore.ts';
 import { createVersionedDocs } from '../repos/versionedDocs.ts';
 import { AttachHandoffBody, ConnectionBody, createIntegrations, HandoffBody, HandoffResultBody } from '../repos/integrations.ts';
-import { ClaimBody, FinishBody, GitAdminBody, LeaseBody, TaskStatesBody, SessionBody, StepArtifactKind, STREAM_ARTIFACT_SEQ, CreateIssueBody, RegisterProjectBody, CreateProjectBody, SeatProviderBody, StepsBody } from '@agent-team/protocol';
+import { ClaimBody, FinishBody, GitAdminBody, LeaseBody, TaskStatesBody, SessionBody, StepArtifactKind, STREAM_ARTIFACT_SEQ, CreateIssueBody, RegisterProjectBody, CreateProjectBody, SeatProviderBody, StepsBody, DeliverableTarget } from '@agent-team/protocol';
 
 type Env = { Variables: { viewer: Viewer } };
 const MIME: Record<string, string> = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript', '.css': 'text/css', '.svg': 'image/svg+xml', '.woff2': 'font/woff2', '.json': 'application/json', '.png': 'image/png' };
@@ -62,7 +64,7 @@ export function createApp(context: Context) {
   const deliberation = createDeliberation(context, turns);
   const reviews = createReviews(context, turns), workload = createWorkload(context, turns);
   const scorecard = createScorecard(context, { openWeight: isOpenWeight, modelFamily });
-  const duties = createDuties(context, turns);
+  const duties = createDuties(context, turns), deliverables = createDeliverables(context, turns), orgPlans = createOrgPlans(context, turns);
   let chased = 0;
   const retro = createRetro(context, turns);
   // Semantic search is on when an embeddings endpoint is named; otherwise search is lexical.
@@ -215,7 +217,7 @@ export function createApp(context: Context) {
   app.post('/worker/turns/:id/finish', async c => { const input = await body(c, FinishBody); const finished = await turns.finish(c.req.param('id'), input.workerId, input.leaseToken, input.outcome);
     // A work turn that reported ready_for_review hands its head to the reviewers.
     // A task that ends in a document is reviewed at the document's revision, which its owner handed in; there is no commit to review.
-    const endsInChange = finished.reviewTaskId ? (await context.storage.db.selectFrom('tasks').select('result_kind').where('id', '=', finished.reviewTaskId).executeTakeFirst())?.result_kind !== 'document' : false;
+    const endsInChange = finished.reviewTaskId ? (await context.storage.db.selectFrom('tasks').select('result_kind').where('id', '=', finished.reviewTaskId).executeTakeFirst())?.result_kind === 'change' : false;
     if (finished.reviewTaskId && endsInChange && input.outcome.headSha) await reviews.request(finished.reviewTaskId, input.outcome.headSha);
     // A verdict recorded in this turn counts only now, and only if the head the worker verified is the task's head.
     await reviews.verify(c.req.param('id'), { start: input.outcome.headShaStart, end: input.outcome.headShaEnd });
@@ -394,9 +396,34 @@ export function createApp(context: Context) {
   app.get('/api/projects/:slug/duties', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ items: await duties.list(project.id) }); });
   app.post('/api/projects/:slug/duties', async c => {
     const { project } = await projectFor(c, 'project.configure');
-    const input = z.object({ title: z.string().trim().min(3).max(120), brief: z.string().trim().min(1).max(2000), ownerAgentId: z.string(), everyHours: z.number().int().min(0).max(24 * 31), result: z.enum(['change', 'document']).default('document') }).parse(await c.req.json());
+    const input = z.object({ title: z.string().trim().min(3).max(120), brief: z.string().trim().min(1).max(2000), ownerAgentId: z.string(), everyHours: z.number().int().min(0).max(24 * 31), result: z.enum(['change', 'document']).default('document'), deliverable: DeliverableTarget.optional() }).parse(await c.req.json());
     return c.json(await duties.set(project.id, input));
   });
+  // What the team delivered: each counted duty's round so far, and what was handed in lately. The owner may judge one by hand.
+  app.get('/api/projects/:slug/deliverables', async c => { const { project } = await projectFor(c, 'project.read'); return c.json({ rounds: await deliverables.progress([project.id]), items: await deliverables.recent(project.id) }); });
+  app.post('/api/projects/:slug/deliverables/:id/decide', async c => {
+    const { project } = await projectFor(c, 'project.decide');
+    const input = await body(c, z.object({ verdict: z.enum(['pass', 'changes']), note: z.string().trim().max(400).optional() }));
+    await deliverables.decide(c.get('viewer').userId, project.id, c.req.param('id'), input.verdict, input.note || null);
+    return c.json({ ok: true });
+  });
+
+  // The organisation's own conversation: each owner or admin talks to the chief of staff in private, and applies the plans it proposes.
+  app.get('/api/org/chat', async c => {
+    allow(c, 'org.members');
+    const home = await orgPlans.ensureHome();
+    const seat = await context.storage.db.selectFrom('agents').select(['id', 'name', 'title', 'initials', 'tint']).where('id', '=', home.agentId).executeTakeFirstOrThrow();
+    return c.json({ seat, ...await controls.direct(c.get('viewer').userId, home.agentId, home.projectId) });
+  });
+  app.post('/api/org/chat', async c => {
+    allow(c, 'org.members');
+    const home = await orgPlans.ensureHome();
+    return c.json(await controls.say(c.get('viewer').userId, home.agentId, home.projectId, (await body(c, z.object({ body: z.string().trim().min(1).max(4000) }))).body));
+  });
+  const planFor = async (c: Hc<Env>) => { allow(c, 'org.members'); const plan = await orgPlans.get(c.req.param('id')!); const thread = await workspace.thread(plan.threadId); if (thread.owner_user_id !== c.get('viewer').userId) throw forbidden(); return plan; };
+  app.get('/api/org/plans/:id', async c => c.json(await planFor(c)));
+  app.post('/api/org/plans/:id/apply', async c => { await planFor(c); return c.json(await orgPlans.apply(c.get('viewer').userId, c.req.param('id'))); });
+  app.post('/api/org/plans/:id/dismiss', async c => { await planFor(c); await orgPlans.dismiss(c.get('viewer').userId, c.req.param('id')); return c.json({ ok: true }); });
   app.get('/api/projects/:slug/scorecard', async c => { const { project } = await projectFor(c, 'project.read'); return c.json(await scorecardFor(project.id, c.req.query('days'))); });
   app.get('/api/projects/:slug/feed', async c => { const { project } = await projectFor(c, 'project.read'); return c.json(await workload.feed(project.id)); });
   // Who answers the owner for this project: its front desk when it has one. The app offers to talk to them, by voice too.

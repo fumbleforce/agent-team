@@ -10,7 +10,7 @@ export async function teamIdOf(tx: Tx, projectId: string): Promise<string | null
 }
 
 // A task that starts on the platform rather than in a tracker or an issue. Its key counts up within the project.
-export async function newTask(tx: Tx, input: { projectId: string; title: string; brief: string; tag?: string | null; resultKind?: 'change' | 'document'; ownerId: string | null; authorAgentId: string | null; actor: Pick<EventDraft, 'actorKind' | 'agentId' | 'userId' | 'turnId'>; now: number }): Promise<{ taskId: string; key: string; events: EventDraft[] }> {
+export async function newTask(tx: Tx, input: { projectId: string; title: string; brief: string; tag?: string | null; resultKind?: 'change' | 'document' | 'deliverables'; ownerId: string | null; authorAgentId: string | null; actor: Pick<EventDraft, 'actorKind' | 'agentId' | 'userId' | 'turnId'>; now: number }): Promise<{ taskId: string; key: string; events: EventDraft[] }> {
   const taskId = newId(input.now);
   const made = await tx.selectFrom('tasks').select(eb => eb.fn.countAll<number>().as('n')).where('project_id', '=', input.projectId).where('key', 'like', 'TASK-%').executeTakeFirstOrThrow();
   const lowest = await tx.selectFrom('tasks').select(eb => eb.fn.max('priority').as('n')).where('project_id', '=', input.projectId).executeTakeFirst();

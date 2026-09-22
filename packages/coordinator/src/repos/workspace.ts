@@ -5,6 +5,7 @@ import { HttpError, notFound, type Context } from '../context.ts';
 import { canSeeProject, type Viewer } from '../auth/rbac.ts';
 import { indexMessage } from '../knowledge/indexing.ts';
 import { moveTask } from '../runtime/taskMoves.ts';
+import { ORG_KIND } from '../runtime/orgPlans.ts';
 
 interface Blueprint { slug: string; name: string; seats: { name: string; title: string; isPm?: boolean; roles: string[]; persona: string }[] }
 const defaultTeam = (): Blueprint => JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'default-team.json'), 'utf8'));
@@ -25,7 +26,7 @@ export function createWorkspace(context: Context) {
     async projectTree(viewer: Viewer) {
       const projects = (await db.selectFrom('projects').leftJoin('teams', 'teams.id', 'projects.team_id')
         .select(['projects.id', 'projects.slug', 'projects.name', 'projects.kind', 'projects.parent_id', 'projects.status', 'projects.team_id', 'teams.name as team_name'])
-        .where('projects.status', '!=', 'archived').orderBy('projects.sort').execute())
+        .where('projects.status', '!=', 'archived').where('projects.kind', '!=', ORG_KIND).orderBy('projects.sort').execute())
         .filter(project => canSeeProject(viewer, project.parent_id ?? project.id));
       const counts = await db.selectFrom('tasks').select(['project_id', 'state']).select(eb => eb.fn.countAll<number>().as('n')).where('state', 'in', [...OPEN_STATES]).groupBy(['project_id', 'state']).execute();
       const seats = await db.selectFrom('agents').select('team_id').select(eb => eb.fn.countAll<number>().as('n')).where('status', '!=', 'retired').groupBy('team_id').execute();

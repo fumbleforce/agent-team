@@ -3,6 +3,8 @@ import { Conclusion, FeedbackBlock, Proposal, Revision } from '../deliberation.t
 import { MessageKind, type TurnKind } from '../enums.ts';
 import { PermissionGrant } from '../permissions.ts';
 import { ProposalInput, ProposalVote, StaffingDecision } from '../proposals.ts';
+import { Charter, OrgPlan } from '../orgPlan.ts';
+import { DeliverableSubmission, DeliverableTarget } from '../deliverables.ts';
 
 const Words = (max: number) => z.string().min(1).max(max * 8);
 const ALL: readonly TurnKind[] = ['work', 'review', 'feedback', 'revise', 'conclude', 'triage', 'reply', 'retro', 'ideate'];
@@ -27,10 +29,10 @@ export type RateClass = keyof typeof RATE_LIMITS;
 export const MAX_TOOL_CALLS_PER_TURN = 200;
 
 // A graded key of the grant and the least value that allows the tool; null needs no grant beyond the turn kind.
-export type ToolPermission = 'issues:comment' | 'issues:edit' | 'comms:post' | 'staffing:decide' | null;
+export type ToolPermission = 'issues:comment' | 'issues:edit' | 'comms:post' | 'staffing:decide' | 'org:plan' | null;
 export function permits(grants: PermissionGrant, permission: ToolPermission): boolean {
   if (permission === null) return true;
-  const [key, least] = permission.split(':') as ['issues' | 'comms' | 'staffing', string];
+  const [key, least] = permission.split(':') as ['issues' | 'comms' | 'staffing' | 'org', string];
   const order: readonly string[] = PermissionGrant.shape[key].unwrap().options;
   return order.indexOf(grants[key]) >= order.indexOf(least);
 }
@@ -191,8 +193,8 @@ export const TOOLS = {
     permission: null, turnKinds: ['retro'], mutating: true, rateClass: 'once',
   }),
   'duty.set': tool({
-    description: 'PM only. Give a teammate a standing duty: something that comes round (every morning, every Monday) and that they own without being asked, such as watching the checks, reading what users reported, or reviewing a campaign\'s figures. Each time it comes round it opens a task for them, unless the last one is still open. Say what done looks like each time in the brief. everyHours 0 ends the duty.',
-    input: z.object({ title: z.string().trim().min(3).max(120), brief: z.string().trim().min(1).max(2000), ownerAgentId: z.string(), everyHours: z.number().int().min(0).max(24 * 31), result: z.enum(['change', 'document']).default('document') }),
+    description: 'PM only. Give a teammate a standing duty: something that comes round (every morning, every Monday) and that they own without being asked, such as watching the checks, reading what users reported, or reviewing a campaign\'s figures. Each time it comes round it opens a task for them, unless the last one is still open. Say what done looks like each time in the brief. With a deliverable it asks for a number of them each time (4 records, 3 messages to send, 2 changes merged) and counts those a teammate approved. everyHours 0 ends the duty.',
+    input: z.object({ title: z.string().trim().min(3).max(120), brief: z.string().trim().min(1).max(2000), ownerAgentId: z.string(), everyHours: z.number().int().min(0).max(24 * 31), result: z.enum(['change', 'document']).default('document'), deliverable: DeliverableTarget.optional() }),
     output: z.object({ dutyId: z.string().nullable(), state: z.string() }),
     permission: null, turnKinds: ['triage', 'reply', 'conclude', 'retro'], mutating: true, rateClass: 'few',
   }),
@@ -267,6 +269,44 @@ export const TOOLS = {
     input: z.object({ destination: z.string().min(1).max(40), title: z.string().min(1).max(200), summary: z.string().max(4000).default(''), context: z.record(z.string(), z.unknown()).default({}), taskId: z.string().optional() }),
     output: z.object({ handoffId: z.string() }),
     permission: 'comms:post', turnKinds: ['work', 'conclude', 'triage'], mutating: true, rateClass: 'rare',
+  }),
+  'deliverable.submit': tool({
+    description: 'Hand in one deliverable of the task of this turn: a card for the board, a record (a lead, a person to contact, a follow-up), a message ready to send, a piece of material (a deck, a poster) or a campaign set up and not launched. Write it so someone can act on it as it stands: the body is the thing itself, the link is where it lives outside the platform. Hand in each one as soon as it is ready; when you have handed in what the task asks for, call task.update with ready_for_review and a teammate reviews them all. Nothing you hand in is sent or published by itself.',
+    input: DeliverableSubmission,
+    output: z.object({ deliverableId: z.string(), handedIn: z.number().int(), target: z.number().int() }),
+    permission: null, turnKinds: ['work'], mutating: true, rateClass: 'write',
+  }),
+  'deliverable.review': tool({
+    description: 'Judge the deliverables under review, as they read in your packet: one verdict per deliverable, in one call. pass means it can go out as it stands; changes means it cannot, and the note says what is wrong. A rejected one does not count; its author is told why.',
+    input: z.object({ verdicts: z.array(z.object({ deliverableId: z.string(), verdict: z.enum(['pass', 'changes']), note: z.string().trim().min(1).max(400) })).min(1).max(50) }),
+    output: z.object({ approved: z.number().int(), rejected: z.number().int(), target: z.number().int(), state: z.string() }),
+    permission: null, turnKinds: ['review'], mutating: true, rateClass: 'once',
+  }),
+  'org.review': tool({
+    description: 'The organisation as it stands: every team with what it is for, its seats and their roles, its standing duties with what each should deliver and how far today is, what it is connected to and what it spent; and what can be brought in: the agent library, team templates, the role library, the tools that can be connected and the models there are. Read it before you plan.',
+    input: z.object({ days: z.number().int().min(1).max(60).default(7) }),
+    output: z.object({
+      teams: z.array(z.object({ team: z.string(), name: z.string(), charter: Charter.nullable(), seats: z.array(z.object({ agentId: z.string(), name: z.string(), title: z.string(), roles: z.array(z.string()), status: z.string(), isPm: z.boolean() })),
+        duties: z.array(z.object({ title: z.string(), owner: z.string(), everyHours: z.number(), deliverable: DeliverableTarget.nullable(), today: z.number() })), connected: z.array(z.string()), openTasks: z.number(), spentMinor: z.number() })),
+      library: z.array(z.object({ slug: z.string(), name: z.string(), title: z.string(), roles: z.array(z.string()), summary: z.string() })),
+      templates: z.array(z.object({ slug: z.string(), name: z.string(), summary: z.string(), seats: z.array(z.string()) })),
+      roles: z.array(z.object({ slug: z.string(), summary: z.string() })),
+      integrations: z.array(z.object({ integration: z.string(), title: z.string(), summary: z.string() })),
+      models: z.array(z.object({ providerId: z.string(), provider: z.string(), models: z.array(z.string()) })),
+    }),
+    permission: 'org:plan', turnKinds: ['reply'], mutating: false, rateClass: 'few',
+  }),
+  'org.plan': tool({
+    description: 'Put one plan in front of the owner: the changes to the organisation that do what they asked, in the order they are made. Nothing changes until the owner applies it; they see each step in plain words and apply or dismiss the whole plan. A step can name a team an earlier step creates by the $name it gave it, and a seat an earlier step brings in by its name. One plan per request; a new plan replaces the one still waiting in this thread.',
+    input: OrgPlan.extend({ threadId: z.string() }),
+    output: z.object({ planId: z.string(), steps: z.number().int() }),
+    permission: 'org:plan', turnKinds: ['reply'], mutating: true, rateClass: 'rare',
+  }),
+  'org.handover': tool({
+    description: 'Give a team a request or an area of responsibility to run with: its PM gets it in the team\'s discussion and decides what work it becomes. Use it for what a team does, not for who is on it.',
+    input: z.object({ team: z.string().min(1).max(63), wants: Words(120) }),
+    output: z.object({ messageId: z.string(), passedTo: z.string() }),
+    permission: 'org:plan', turnKinds: ['reply'], mutating: true, rateClass: 'few',
   }),
 } as const;
 

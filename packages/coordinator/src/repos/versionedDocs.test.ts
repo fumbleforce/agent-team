@@ -15,7 +15,7 @@ test('shipped roles are valid, seeded once, versioned on save, and revertible', 
   await storage.migrate();
   const docs = createVersionedDocs(createContext({ storage, machineToken: 'x'.repeat(24) }));
   await docs.seed('role', LIBRARY, shipped);
-  assert.deepEqual((await docs.list('role', LIBRARY)).map(role => role.slug), ['designer', 'developer', 'editor', 'front-desk', 'hr', 'ideation', 'marketer', 'pm', 'researcher', 'reviewer', 'tester', 'writer']);
+  assert.deepEqual((await docs.list('role', LIBRARY)).map(role => role.slug), ['chief-of-staff', 'designer', 'developer', 'editor', 'front-desk', 'hr', 'ideation', 'marketer', 'pm', 'researcher', 'reviewer', 'sales', 'tester', 'writer']);
 
   const tester = await docs.get('role', LIBRARY, 'tester');
   assert.deepEqual(tester.doc.permissions.codeWrite, { paths: ['test', 'tests', 'e2e'] });

@@ -42,7 +42,7 @@ test('a work turn lists its tools, posts to discussion and reports on its task; 
   try {
     const list = await rpc('tools/list');
     // Without a role nothing graded is granted, so the issue and handoff tools are not even listed.
-    assert.deepEqual(list.json.result.tools.map((tool: any) => tool.name).sort(), ['agent.mention', 'cost.status', 'deliberation.propose', 'discussion.post', 'knowledge.propose_memory', 'knowledge.read', 'knowledge.search', 'knowledge.write', 'notebook.write', 'proposal.create', 'proposal.vote', 'skill.read', 'task.claim', 'task.handoff', 'task.list', 'task.update', 'test.report', 'thread.read']);
+    assert.deepEqual(list.json.result.tools.map((tool: any) => tool.name).sort(), ['agent.mention', 'cost.status', 'deliberation.propose', 'deliverable.submit', 'discussion.post', 'knowledge.propose_memory', 'knowledge.read', 'knowledge.search', 'knowledge.write', 'notebook.write', 'proposal.create', 'proposal.vote', 'skill.read', 'task.claim', 'task.handoff', 'task.list', 'task.update', 'test.report', 'thread.read']);
     assert.equal(list.json.result.tools[0].inputSchema.type, 'object');
     const post = await rpc('tools/call', { name: 'discussion.post', arguments: { threadId, body: 'Taking CK-31.', kind: 'claim' } });
     assert.equal(post.json.result.isError, undefined);

@@ -13,6 +13,8 @@ export const PermissionGrant = z.object({
   deploy: z.enum(['none', 'allowed']).default('none'),
   // Who is on the team: hiring, retiring and reshaping seats, inside what the owner allows.
   staffing: z.enum(['none', 'decide']).default('none'),
+  // The organisation above the teams: which teams there are, what each is for, who sits on them. A seat with it only proposes; the owner applies.
+  org: z.enum(['none', 'plan']).default('none'),
   secrets: z.array(z.string().max(80)).max(40).default([]),
   spendDailyCapMinor: z.number().int().min(0).default(0),
   delegate: z.boolean().default(false),
@@ -20,7 +22,7 @@ export const PermissionGrant = z.object({
 export type PermissionGrant = z.infer<typeof PermissionGrant>;
 type Scope = PermissionGrant['repoRead'];
 
-const ORDER = { shell: ['none', 'restricted', 'full'], browser: ['none', 'allowed'], issues: ['none', 'comment', 'edit'], comms: ['none', 'mirror', 'post'], deploy: ['none', 'allowed'], staffing: ['none', 'decide'] } as const;
+const ORDER = { shell: ['none', 'restricted', 'full'], browser: ['none', 'allowed'], issues: ['none', 'comment', 'edit'], comms: ['none', 'mirror', 'post'], deploy: ['none', 'allowed'], staffing: ['none', 'decide'], org: ['none', 'plan'] } as const;
 type Ordered = keyof typeof ORDER;
 const rank = (key: Ordered, value: string) => (ORDER[key] as readonly string[]).indexOf(value);
 const pick = (key: Ordered, a: string, b: string, most: boolean) => ((rank(key, a) >= rank(key, b)) === most ? a : b);
@@ -49,7 +51,7 @@ export function join(grants: PermissionGrant[]): PermissionGrant {
     repoRead: joinScope(a.repoRead, b.repoRead), codeWrite: joinScope(a.codeWrite, b.codeWrite),
     shell: pick('shell', a.shell, b.shell, true) as PermissionGrant['shell'], browser: pick('browser', a.browser, b.browser, true) as PermissionGrant['browser'],
     issues: pick('issues', a.issues, b.issues, true) as PermissionGrant['issues'], comms: pick('comms', a.comms, b.comms, true) as PermissionGrant['comms'],
-    deploy: pick('deploy', a.deploy, b.deploy, true) as PermissionGrant['deploy'], staffing: pick('staffing', a.staffing, b.staffing, true) as PermissionGrant['staffing'], secrets: [...new Set([...a.secrets, ...b.secrets])],
+    deploy: pick('deploy', a.deploy, b.deploy, true) as PermissionGrant['deploy'], staffing: pick('staffing', a.staffing, b.staffing, true) as PermissionGrant['staffing'], org: pick('org', a.org, b.org, true) as PermissionGrant['org'], secrets: [...new Set([...a.secrets, ...b.secrets])],
     spendDailyCapMinor: Math.max(a.spendDailyCapMinor, b.spendDailyCapMinor), delegate: a.delegate || b.delegate,
   }), NO_PERMISSIONS);
 }
@@ -60,7 +62,7 @@ export function meet(a: PermissionGrant, b: PermissionGrant): PermissionGrant {
     repoRead: meetScope(a.repoRead, b.repoRead), codeWrite: meetScope(a.codeWrite, b.codeWrite),
     shell: pick('shell', a.shell, b.shell, false) as PermissionGrant['shell'], browser: pick('browser', a.browser, b.browser, false) as PermissionGrant['browser'],
     issues: pick('issues', a.issues, b.issues, false) as PermissionGrant['issues'], comms: pick('comms', a.comms, b.comms, false) as PermissionGrant['comms'],
-    deploy: pick('deploy', a.deploy, b.deploy, false) as PermissionGrant['deploy'], staffing: pick('staffing', a.staffing, b.staffing, false) as PermissionGrant['staffing'], secrets: a.secrets.filter(name => b.secrets.includes(name)),
+    deploy: pick('deploy', a.deploy, b.deploy, false) as PermissionGrant['deploy'], staffing: pick('staffing', a.staffing, b.staffing, false) as PermissionGrant['staffing'], org: pick('org', a.org, b.org, false) as PermissionGrant['org'], secrets: a.secrets.filter(name => b.secrets.includes(name)),
     spendDailyCapMinor: Math.min(a.spendDailyCapMinor, b.spendDailyCapMinor), delegate: a.delegate && b.delegate,
   };
 }
