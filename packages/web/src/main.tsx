@@ -14,7 +14,7 @@ import { AuthPage, MembersPage } from './features/settings/SettingsPages';
 import { ProposalsPage } from './features/proposals/ProposalsPage';
 import { NeedsYouPage } from './features/needs/NeedsYouPage';
 import { WelcomePage } from './features/welcome/WelcomePage';
-import { startStream } from './data/stream';
+import { startStream, useStream } from './data/stream';
 import { useResource } from './data/useResource';
 import { Gallery } from './dev/Gallery';
 import { ProjectPage } from './features/project/ProjectPage';
@@ -23,7 +23,7 @@ import { CommandPalette } from './patterns';
 import './tokens.css';
 
 const SCREENS = [{ href: '/welcome', label: 'Get started' }, { href: '/needs-you', label: 'Needs you' }, { href: '/org', label: 'Organization' }, { href: '/roles', label: 'Roles' }, { href: '/proposals', label: 'Team proposals' }, { href: '/costs', label: 'Costs' }, { href: '/settings/members', label: 'Members', note: 'settings' }, { href: '/settings/auth', label: 'Sign-in', note: 'settings' }, { href: '/audit', label: 'Audit log' }];
-const PROJECT_TABS = ['Tasks', 'Issues', 'Product', 'Tests', 'Workload', 'Scorecard', 'Knowledge', 'Team', 'Integrations'];
+const PROJECT_TABS = ['Tasks', 'Issues', 'Product', 'Tests', 'Workload', 'Deliverables', 'Scorecard', 'Knowledge', 'Team', 'Integrations'];
 
 // Ctrl or Cmd + K. Pages and project screens are those of the project in the address bar.
 function Palette({ projects, agents }: { projects: ProjectNode[]; agents: Agent[] }) {
@@ -40,6 +40,8 @@ function Signed() {
   const tree = useResource<{ projects: ProjectNode[] }>(me.data ? '/api/projects' : null);
   useEffect(() => { if (me.data) startStream(me.data.seq); }, [me.data]);
   const agents = useResource<{ agents: Agent[] }>(me.data ? '/api/agents' : null);
+  // A team started from the organisation's chat appears without a reload.
+  useStream(event => event.type === 'project.registered', () => { tree.reload(); agents.reload(); });
   if (me.error?.status === 401) return <Redirect to="/login" />;
   if (!me.data || !tree.data) return null;
   const first = tree.data.projects[0];

@@ -17,6 +17,10 @@
 | Work that ends in a document | Built and tested through the tools: written as a knowledge page, reviewed at its revision, sent back or accepted, done without a branch or a merge. Never run on a real engine |
 | The team changing how it works | Built and tested: role texts, turn instructions and three numbers of the process change as trials judged by a figure of the scorecard, kept or put back by themselves; off until the owner turns it on. What a change needs before it merges is not among what can be changed |
 | Standing duties | Built and tested: a recurring responsibility of a seat opens its task when it comes round |
+| Deliverables | Built and tested on the scripted engine: a duty may ask for a number of cards, records, messages to send, pieces of material, campaigns or merged changes a round; one teammate judges a round in one review turn; an approved card goes on the board and an approved message waits as a handoff for a person to send |
+| Chief of staff | Built and tested on the scripted engine, not yet run on a real engine: an org-level seat in a hidden home project turns a request into a plan of steps (start a team, hire, set a duty with deliverables, connect a tool, hand over an area); the owner applies or dismisses it in the chat on the organisation pages |
+| Teams without a repository | Built and tested: a worker with desks on (the default for `up`) serves them in a scratch folder |
+| Connected tools in turns | Built and tested with a fake MCP server: a tool connected in the app (HubSpot, any MCP server) reaches the turns of the seats whose roles it names, with its sealed token; not yet run against HubSpot itself |
 | Scorecard, reference tasks, safety rules read back from data | Built. The scorecard is served, printed (`agent-team scorecard`) and shown as a project tab; the reference tasks and their hidden checks run on the fake engine in the tests. No reference run has been made on a real engine, so no figure of the roadmap has a baseline |
 | Roles, graded permissions, committed ceiling, write-scope gate | Built and tested |
 | Team proposals, delegation bounds, weekly retro | Built and tested |

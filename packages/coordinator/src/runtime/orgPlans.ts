@@ -71,13 +71,13 @@ export function createOrgPlans(context: Context, turns: Turns) {
   // Every step of a plan, in order, inside the transaction it is given. Returns what each step did in plain words, and the events.
   async function run(tx: Tx, plan: OrgPlan, actor: { actorKind: 'user'; userId: string } | { actorKind: 'agent'; agentId: string }) {
     const known = await teams(tx);
-    const made = new Map<string, { id: string; name: string }>();
-    const lines: string[] = [], drafts: EventDraft[] = [], started: { projectId: string; name: string; charter: Charter }[] = [];
+    const made = new Map<string, { id: string; name: string; slug: string }>();
+    const lines: string[] = [], drafts: EventDraft[] = [], started: { projectId: string; name: string; charter: Charter }[] = [], setUp: { team: string; name: string; tool: string }[] = [];
     const who = actor.actorKind === 'user' ? { actorKind: 'user' as const, userId: actor.userId } : { actorKind: 'agent' as const, agentId: actor.agentId };
     const team = (ref: string) => {
       const found = ref.startsWith('$') ? made.get(ref) : known.find(row => row.slug === ref);
       if (!found) throw refuse(ref.startsWith('$') ? `${ref} is not made by an earlier step of this plan` : `There is no team called ${ref}`);
-      return { id: found.id, name: found.name };
+      return { id: found.id, name: found.name, slug: found.slug };
     };
     const seatOf = async (agentId: string) => {
       const row = await tx.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'agents.name', 'agents.status', 'projects.id as project_id', 'projects.name as team', 'projects.kind']).where('agents.id', '=', agentId).where('projects.parent_id', 'is', null).executeTakeFirst();
@@ -98,7 +98,7 @@ export function createOrgPlans(context: Context, turns: Turns) {
         throw error;
       }
     }
-    return { lines, drafts, started };
+    return { lines, drafts, started, setUp };
 
     async function apply(step: OrgChange): Promise<string> {
       switch (step.kind) {
@@ -125,7 +125,7 @@ export function createOrgPlans(context: Context, turns: Turns) {
             await stampTemplate(tx, now, id, { slug: 'custom', version: 1, name: `${step.name} team`, seats }, 'create');
             names = seats.map(seat => seat.name);
           }
-          made.set(step.ref, { id, name: step.name });
+          made.set(step.ref, { id, name: step.name, slug });
           started.push({ projectId: id, name: step.name, charter: step.charter });
           drafts.push({ type: 'project.registered', ...who, projectId: id, payload: { slug } }, { type: 'settings.changed', category: 'audit', ...who, projectId: id, payload: { what: 'project.created', slug } });
           return `Start a team called ${step.name}${from}: ${names.join(', ')}. It owns ${step.charter.area}.`;
@@ -194,6 +194,7 @@ export function createOrgPlans(context: Context, turns: Turns) {
           const { teamId } = await teamOf(tx, target.id);
           const users = step.roles.length && teamId ? (await tx.selectFrom('agents').innerJoin('agent_roles', 'agent_roles.agent_id', 'agents.id').select('agents.name').distinct().where('agents.team_id', '=', teamId).where('agents.status', '=', 'active').where('agent_roles.role_slug', 'in', step.roles).orderBy('agents.name').execute()).map(row => row.name) : [];
           const named = users.length > 1 ? `${users.slice(0, -1).join(', ')} and ${users.at(-1)}` : users[0];
+          setUp.push({ team: target.slug, name: target.name, tool: entry.title });
           return `Connect ${entry.title} to ${target.name}${named ? `, for ${named}` : ''}. You paste its token afterwards.`;
         }
         case 'link_teams': {
@@ -222,8 +223,8 @@ export function createOrgPlans(context: Context, turns: Turns) {
   async function plan(id: string) {
     const row = await db.selectFrom('proposals').selectAll().where('id', '=', id).where('category', '=', 'organisation').executeTakeFirst();
     if (!row) throw notFound('Plan');
-    const stored = JSON.parse(row.change) as { threadId: string; plan: unknown; steps: string[]; outcome?: string[] };
-    return { row, threadId: stored.threadId, plan: OrgPlan.parse(stored.plan), steps: stored.steps, outcome: stored.outcome ?? null };
+    const stored = JSON.parse(row.change) as { threadId: string; plan: unknown; steps: string[]; outcome?: string[]; setUp?: { team: string; name: string; tool: string }[] };
+    return { row, threadId: stored.threadId, plan: OrgPlan.parse(stored.plan), steps: stored.steps, outcome: stored.outcome ?? null, setUp: stored.setUp ?? [] };
   }
 
   // A plan is posted in the thread it was asked in; the note says what came of it once it is applied or dismissed.
@@ -313,7 +314,7 @@ export function createOrgPlans(context: Context, turns: Turns) {
 
     async get(id: string) {
       const found = await plan(id);
-      return { id, title: found.row.title, why: found.row.why, steps: found.steps, state: found.row.state, outcome: found.outcome, note: found.row.resolution_note, threadId: found.threadId, projectId: found.row.project_id };
+      return { id, title: found.row.title, why: found.row.why, steps: found.steps, state: found.row.state, outcome: found.outcome, setUp: found.setUp, note: found.row.resolution_note, threadId: found.threadId, projectId: found.row.project_id };
     },
 
     async apply(userId: string, id: string) {
@@ -321,7 +322,7 @@ export function createOrgPlans(context: Context, turns: Turns) {
       if (found.row.state !== 'waiting') throw refuse(`This plan is already ${found.row.state}`);
       const result = await storage.transaction(async tx => {
         const done = await run(tx, found.plan, { actorKind: 'user', userId });
-        const claimed = await tx.updateTable('proposals').set({ state: 'applied', resolved_by_user: userId, resolved_at: now(), change: JSON.stringify({ threadId: found.threadId, plan: found.plan, steps: found.steps, outcome: done.lines }) }).where('id', '=', id).where('state', '=', 'waiting').executeTakeFirst();
+        const claimed = await tx.updateTable('proposals').set({ state: 'applied', resolved_by_user: userId, resolved_at: now(), change: JSON.stringify({ threadId: found.threadId, plan: found.plan, steps: found.steps, outcome: done.lines, setUp: done.setUp }) }).where('id', '=', id).where('state', '=', 'waiting').executeTakeFirst();
         if (Number(claimed.numUpdatedRows) !== 1) throw refuse('This plan was applied or dismissed in the meantime');
         return { ...done, published: await events.append(tx, [{ type: 'org.plan_applied', category: 'audit', actorKind: 'user', userId, projectId: found.row.project_id, payload: { planId: id, title: found.plan.title, steps: done.lines.length } }, ...done.drafts]) };
       });
@@ -329,7 +330,7 @@ export function createOrgPlans(context: Context, turns: Turns) {
       await note(found.threadId, found.row.project_id, `Applied: ${found.plan.title}.`, { orgPlan: id, applied: true });
       // A team given an area hears so where it reads, and its PM starts on it.
       for (const item of result.started) await handover(item.projectId, `${item.name} now owns ${item.charter.area}.${item.charter.outcomes.length ? ` What it should show for it: ${item.charter.outcomes.join('; ')}.` : ''} Put the first work for it on the board.`);
-      return { lines: result.lines };
+      return { lines: result.lines, setUp: result.setUp };
     },
 
     async dismiss(userId: string, id: string) {

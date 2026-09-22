@@ -147,8 +147,8 @@ export function createDeliverables(context: Context, turns: Turns) {
         const approved = duty.deliverable_kind === 'change'
           ? Number((await db.selectFrom('tasks').select(eb => eb.fn.countAll<number>().as('n')).where('project_id', '=', duty.project_id).where('result_kind', '=', 'change').where('state', '=', 'done').where('updated_at', '>=', since).executeTakeFirst())?.n ?? 0)
           : duty.last_task_id ? (await counts(db, duty.last_task_id)).approved : 0;
-        const task = duty.last_task_id ? await db.selectFrom('tasks').select(['key', 'state']).where('id', '=', duty.last_task_id).executeTakeFirst() : null;
-        return { dutyId: duty.id, projectId: duty.project_id, title: duty.title, owner: duty.owner, kind: duty.deliverable_kind as DeliverableKind, target: Number(duty.target), approved, since, everyHours: Number(duty.every_ms) / 3600_000, task: task ? { key: task.key, state: task.state } : null };
+        const task = duty.last_task_id ? await db.selectFrom('tasks').select(['id', 'key', 'state']).where('id', '=', duty.last_task_id).executeTakeFirst() : null;
+        return { dutyId: duty.id, projectId: duty.project_id, title: duty.title, owner: duty.owner, kind: duty.deliverable_kind as DeliverableKind, target: Number(duty.target), approved, since, everyHours: Number(duty.every_ms) / 3600_000, task: task ? { id: task.id, key: task.key, state: task.state } : null };
       }));
     },
 

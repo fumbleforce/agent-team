@@ -16,6 +16,7 @@ import { TeamTab } from './TeamTab';
 import { TeamExtras } from '../org/TeamExtras';
 import { MilestoneStrip } from '../settings/ProjectSettingsPage';
 import { ScorecardTab } from './ScorecardTab';
+import { DeliverablesTab } from './DeliverablesTab';
 import { WorkloadTab } from './WorkloadTab';
 
 const COLUMNS = [
@@ -26,7 +27,7 @@ const COLUMNS = [
   { key: 'done', name: 'Done', tone: 'idle' },
 ] as const;
 // A project that is not code has checks rather than tests: the same page under the word its team uses.
-const tabsFor = (kind: string) => ['Tasks', 'Product', kind === 'repo' ? 'Tests' : 'Checks', 'Workload', 'Scorecard', 'Knowledge', 'Team'];
+const tabsFor = (kind: string) => ['Tasks', 'Product', kind === 'repo' ? 'Tests' : 'Checks', 'Workload', 'Deliverables', 'Scorecard', 'Knowledge', 'Team'];
 const links = (slug: string) => [{ href: '/proposals', label: 'Team proposals' }, { href: '/costs', label: 'Costs' }, { href: `/p/${slug}/integrations`, label: 'Integrations' }, { href: '/roles', label: 'Roles' }, { href: `/settings/project/${slug}`, label: 'Project settings' }];
 
 function Discussion({ threadId, view, me }: { threadId: string; view: ProjectView; me: Me }) {
@@ -79,6 +80,7 @@ export function ProjectPage({ slug, tab, pageId = null, me, projects }: { slug: 
         : tab === 'product' ? <ProductTab slug={slug} navigate={navigate} />
         : tab === 'tests' || tab === 'checks' ? <ChecksTab slug={slug} code={data.project.kind === 'repo'} />
         : tab === 'workload' ? <WorkloadTab slug={slug} />
+        : tab === 'deliverables' ? <DeliverablesTab slug={slug} />
         : tab === 'scorecard' ? <ScorecardTab slug={slug} />
         : tab === 'team' ? <TeamTab roster={data.roster} onChanged={view.reload}><TeamExtras slug={slug} roster={data.roster} onChanged={view.reload} /></TeamTab>
         : <div className="p-5"><Text tone="muted">This view arrives in a later phase of docs/SPEC.md.</Text></div>}
