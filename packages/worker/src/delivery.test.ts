@@ -50,6 +50,10 @@ test('work is published, reviewed at its head by three agents, then merged by th
   assert.equal(afterWork.pr_url, PR);
   assert.match(afterWork.head_sha ?? '', /^[0-9a-f]{40}$/);
   assert.ok(calls.some(call => call.includes('push')) && !calls.flat().includes('--force'));
+  // Named after its task, whatever the agent said at the end of its turn; that goes in the body, said to be its report.
+  const created = calls.find(call => call.includes('create'))!;
+  assert.equal(created[created.indexOf('--title') + 1], 'GH-7: Fix it');
+  assert.match(created[created.indexOf('--body') + 1]!, /^The author's report at the end of its turn:/);
 
   // Reviews were requested at that head; the three reviewers record their verdicts through the platform.
   const review = (name: string, kind: 'tester' | 'reviewer' | 'pm') => reviews.record({ id: `turn-${name}`, agent_id: agents[name]!, task_id: taskId, kind: 'review' }, { kind, verdict: 'pass', headSha: afterWork.head_sha!, summary: 'ok', findings: [] });

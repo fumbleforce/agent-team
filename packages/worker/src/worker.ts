@@ -12,6 +12,11 @@ import { createRedactor } from './redact.ts';
 import { createTracer, type StepArtifact } from './trace.ts';
 import { cappedBy, changedPaths, committedCeiling, ensureReviewWorktree, ensureWorktree, headSha, publishAuthorized, removeReviewWorktrees, reviewedTasks, untouchedOverlays, worktreeFor, type AdminHooks, type ReviewWorktree, type Worktree } from './worktree.ts';
 
+// A change is named after its task, the same way whichever path opens it. What an agent said at the end of its turn is a report to
+// the team ("ready for review, commit abc on the branch"), not a name for the change, so it never becomes the title.
+export const changeTitle = (taskKey: string | null, taskTitle: string | null | undefined): string => (taskKey && taskTitle ? `${taskKey}: ${taskTitle}` : taskTitle || taskKey || 'Change from the team').slice(0, 200);
+export const changeBody = (report: string | null): string => (report ? `The author's report at the end of its turn:\n\n${report}` : '');
+
 export interface DeliveryFacts { taskKey: string; title?: string; headSha: string; prUrl: string | null; manifest: { scm?: { kind?: string }; delivery?: DeliveryConfig }; approvals: Approvals }
 export interface DeliveryResult { state: 'merged' | 'blocked'; reason: string; mergeAttempted: boolean; mergeCommit?: string; waiting?: boolean }
 export type DeliverFn = (input: { config: DeliveryConfig; scm: string; prUrl: string; approvals: () => Promise<Approvals>; worktree: string; branch: string }) => Promise<DeliveryResult>;
@@ -42,7 +47,7 @@ export interface WorkerConfig {
   // the committed manifest authorizes publishing, runs every turn from its packet and pushes the branch at the end of every turn.
   ephemeral?: boolean;
 }
-interface Claimed { /* Keys entered in the app that this turn's engine reads, by variable name. Held in memory for the turn only. */ secrets?: Record<string, string>; review?: { headSha: string; reviewer: string } | null; turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; effort?: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
+interface Claimed { /* Keys entered in the app that this turn's engine reads, by variable name. Held in memory for the turn only. */ secrets?: Record<string, string>; review?: { headSha: string; reviewer: string } | null; turnId: string; leaseToken: string; leaseMs: number; kind: TurnKind; agentId: string; projectId: string; taskId: string | null; taskKey: string | null; taskTitle?: string | null; packet: { system: string; prompt: string }; grants: PermissionGrant; engine: string | null; model: string | null; effort?: string | null; capture?: { url: string; viewport: Viewport } | null; resume?: { sessionId: string; prompt: string; baseSha: string | null } | null }
 interface Lease { workerId: string; leaseToken: string }
 // What one turn shares with its heartbeat: whether it is inside an operation on the checkout's shared git state right now.
 interface TurnState { adminOpen: boolean }
@@ -113,7 +118,7 @@ export function createWorker(config: WorkerConfig) {
     const approvals = async () => (await call<DeliveryFacts>(`/worker/turns/${turn.turnId}/delivery`, lease)).approvals;
     // Approved but never published (the worker had nowhere to push at the time): the change is opened now, from the approved branch.
     let prUrl = facts.prUrl;
-    if (!prUrl && config.publish) prUrl = (await publishChange(config.publish.scm, { worktree: worktree.path, repository: config.publish.repository, branch: worktree.branch, base: config.publish.base, title: `${facts.taskKey}: ${facts.title ?? facts.taskKey}`.slice(0, 200), body: '' }, config.publish.exec).catch((error: Error) => { console.error(`Publish failed: ${error.message}`); return null; }))?.url ?? null;
+    if (!prUrl && config.publish) prUrl = (await publishChange(config.publish.scm, { worktree: worktree.path, repository: config.publish.repository, branch: worktree.branch, base: config.publish.base, title: changeTitle(facts.taskKey, facts.title), body: '' }, config.publish.exec).catch((error: Error) => { console.error(`Publish failed: ${error.message}`); return null; }))?.url ?? null;
     const delivery = await Promise.resolve().then(() => (prUrl ? (config.deliver ?? defaultDeliver)({ config: facts.manifest.delivery!, scm, prUrl, approvals, worktree: worktree.path, branch: worktree.branch }) : Promise.reject(new Error('No change was published for this task, and this worker has nowhere to publish to'))))
       .catch((error: Error): DeliveryResult => ({ state: 'blocked', reason: error.message, mergeAttempted: false }));
     // A check that has not finished is no verdict: the delivery goes back to the queue and is tried again in a few minutes.
@@ -222,9 +227,8 @@ export function createWorker(config: WorkerConfig) {
         return;
       }
       // Publishing is worker code: after a completed work turn the branch is pushed and a draft change opened or reused.
-      const title = `${turn.taskKey ?? ''} ${summary?.split('\n')[0]?.slice(0, 80) ?? ''}`.trim();
       const published = worktree && config.publish && result.state === 'completed'
-        ? await publishChange(config.publish.scm, { worktree: worktree.path, repository: config.publish.repository, branch: worktree.branch, base: config.publish.base, title, body: summary ?? '' }, config.publish.exec)
+        ? await publishChange(config.publish.scm, { worktree: worktree.path, repository: config.publish.repository, branch: worktree.branch, base: config.publish.base, title: changeTitle(turn.taskKey, turn.taskTitle), body: changeBody(summary) }, config.publish.exec)
           .catch((error: Error) => { console.error(`Publish failed: ${error.message}`); return null; })
         : null;
       // On a disposable host whatever is not pushed is gone with the host, so the branch is pushed however the turn ended, never with force.
