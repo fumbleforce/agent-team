@@ -21,7 +21,7 @@ test('an empty project has a scorecard of unmeasured figures, never zeros that r
   try {
     const card = await createScorecard(coordinator.context).compute('no-such-project');
     const byId = Object.fromEntries(card.figures.map(item => [item.id, item]));
-    for (const id of ['A1', 'A2', 'P1', 'P3', 'P5', 'D1', 'O2', 'T3']) {
+    for (const id of ['A1', 'A2', 'P1', 'P3', 'P5', 'D1', 'O2', 'T3', 'C1', 'C2', 'C3']) {
       assert.equal(byId[id]!.value, null, id);
       assert.equal(byId[id]!.met, null, id);
       assert.equal(formatFigure(byId[id]!), 'not measured');

@@ -25,7 +25,7 @@ export interface ProvidersTable { id: string; name: string; kind: string; engine
 export interface VersionedDocsTable { kind: string; slug: string; scope_type: string; scope_id: string; version: number; doc: Json; author: string; updated_at: Ms }
 export interface VersionedDocHistoryTable { id: Generated<number>; kind: string; slug: string; scope_type: string; scope_id: string; version: number; doc: Json; author: string; note: string | null; created_at: Ms }
 
-export interface TasksTable { id: string; project_id: string; key: string; source: string; title: string; brief: string; tag: string | null; priority: number; milestone_id: string | null; state: string; assignee_agent_id: string | null; author_agent_id: string | null; branch: string | null; head_sha: string | null; pr_url: string | null; blocked_reason: string | null; created_at: Ms; updated_at: Ms; journal: Generated<string | null>; result_kind: Generated<string>; result_ref: Generated<string | null> }
+export interface TasksTable { id: string; project_id: string; key: string; source: string; title: string; brief: string; tag: string | null; priority: number; milestone_id: string | null; state: string; assignee_agent_id: string | null; author_agent_id: string | null; branch: string | null; head_sha: string | null; pr_url: string | null; blocked_reason: string | null; created_at: Ms; updated_at: Ms; journal: Generated<string | null>; result_kind: Generated<string>; result_ref: Generated<string | null>; difficulty: Generated<string | null> }
 
 export interface ThreadsTable { id: string; project_id: string | null; kind: string; subject_type: string | null; subject_id: string | null; title: string; visibility: string; owner_user_id: string | null; created_at: Ms }
 export interface MessagesTable { id: string; thread_id: string; seq: Generated<number>; author_kind: string; author_id: string | null; kind: string; body: string; payload: Json; created_at: Ms }
@@ -72,7 +72,10 @@ export interface DeliberationsTable { id: string; project_id: string; thread_id:
 export interface DeliberationParticipantsTable { deliberation_id: string; agent_id: string; state: string; stance: string | null; is_blocking: boolean; message_id: string | null }
 export interface DecisionsTable { id: string; project_id: string; thread_id: string; message_id: string; deliberation_id: string | null; kind: string; outcome: string; summary: string; needs_human: boolean; resolved_by_user: string | null; resolved_at: Ms | null; created_at: Ms }
 
-export interface DeliberationSchema { deliberations: DeliberationsTable; deliberation_participants: DeliberationParticipantsTable; decisions: DecisionsTable }
+// What the decision model was asked and answered, with what it cost and, once a seat or a person has decided, whether they agreed.
+export interface MachineDecisionsTable { id: string; project_id: string; task_id: string | null; thread_id: string | null; purpose: string; model: string; questions: Json; answers: Json; confidence: number; input_tokens: number; usd_micro: number; applied: Generated<boolean>; judged_at: Ms | null; overturned_at: Ms | null; overturned_by: string | null; created_at: Ms }
+
+export interface DeliberationSchema { deliberations: DeliberationsTable; deliberation_participants: DeliberationParticipantsTable; decisions: DecisionsTable; machine_decisions: MachineDecisionsTable }
 
 export interface ApprovalsTable { id: string; task_id: string; kind: string; agent_id: string; turn_id: string; head_sha: string; verdict: string; findings: Json; summary: string; state: string; created_at: Ms }
 export interface MergeQueueTable { id: string; project_id: string; task_id: string; head_sha: string; state: string; reason: string | null; created_at: Ms; finished_at: Ms | null }

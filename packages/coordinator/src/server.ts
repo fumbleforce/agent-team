@@ -8,6 +8,8 @@ import { serve, type ServerType } from '@hono/node-server';
 import { DEFAULT_PORT, packageRoot } from '@agent-team/protocol';
 import { createStorage, type StorageConfig } from '@agent-team/storage';
 import { createContext, type ArtifactsConfig, type Context } from './context.ts';
+import type { Decider } from '../../../adapters/decider/contract.ts';
+import { createDecisions } from './runtime/decisions.ts';
 import { createTraceStore } from './runtime/traceStore.ts';
 import { createApp } from './http/app.ts';
 import { createDeliberation } from './runtime/deliberation.ts';
@@ -35,7 +37,7 @@ export type ScmFactory = (kind: string) => Promise<ScmApi | null>;
 // So are the code hosts: review state, test reports and environments are polled only where the host's token is present.
 const adapterScm: ScmFactory = async kind => scmApi(kind);
 
-export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; webRoot?: string | null; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; scm?: ScmFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string; /* Where large step artifacts are kept: `{ kind: 'local', dir }` by default, in a folder under the data directory. */ artifacts?: ArtifactsConfig; /* Days a trace outlives its terminal task; 30 by default. */ traceRetentionDays?: number }
+export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; webRoot?: string | null; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; scm?: ScmFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string; /* Where large step artifacts are kept: `{ kind: 'local', dir }` by default, in a folder under the data directory. */ artifacts?: ArtifactsConfig; /* Days a trace outlives its terminal task; 30 by default. */ traceRetentionDays?: number; /* The model that answers typed questions; by default the one the keys in the environment or the app name, or none. */ decider?: Decider | null }
 
 export const isLoopback = (host: string): boolean => host === '127.0.0.1' || host === '::1' || host === 'localhost';
 
@@ -56,7 +58,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   await storage.migrate();
   const built = path.join(packageRoot(), 'packages', 'web', 'dist');
   const webRoot = config.webRoot === undefined ? (existsSync(built) ? built : null) : config.webRoot;
-  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), local: isLoopback(host), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null, ...(config.env ? { env: config.env } : {}), ...(config.fetch ? { fetch: config.fetch } : {}) });
+  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), local: isLoopback(host), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null, ...(config.env ? { env: config.env } : {}), ...(config.fetch ? { fetch: config.fetch } : {}), ...(config.decider !== undefined ? { decider: config.decider } : {}) });
   await context.secrets.load();
   await createIssues(context, path.join(context.dataDir, 'blobs')).backfillInbox();
   // The shipped role library is seeded once; an owner's edits are never overwritten.
@@ -75,7 +77,9 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const trials = createTrials(context, { openWeight: isOpenWeight, modelFamily });
   // Standing duties open their task when they come round.
   const duties = createDuties(context, turns);
-  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).then(() => checkWake.sweep()).then(() => memory.sweepStale()).then(() => trials.sweep()).then(() => duties.sweep()).catch(error => console.error(error)); }, 15_000);
+  // The decision model's reads are judged once the PM has decided the same thing.
+  const decisions = createDecisions(context);
+  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).then(() => checkWake.sweep()).then(() => memory.sweepStale()).then(() => trials.sweep()).then(() => duties.sweep()).then(() => decisions.sweep()).catch(error => console.error(error)); }, 15_000);
   timer.unref();
 
   const sync = createTrackerSync(context, turns), trackers = config.trackers === undefined ? adapterTrackers : config.trackers;

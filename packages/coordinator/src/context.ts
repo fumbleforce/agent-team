@@ -6,6 +6,8 @@ import { createEventLog, type EventLog } from './events/log.ts';
 import { createArtifacts, type ArtifactOptions } from '../../../adapters/artifacts/index.ts';
 import type { ArtifactStore } from '../../../adapters/artifacts/contract.ts';
 import { createSecretStore, type SecretStore } from './auth/secretStore.ts';
+import { environmentDecider } from '../../../adapters/decider/index.ts';
+import type { Decider } from '../../../adapters/decider/contract.ts';
 
 // Where bodies too large for a database row are kept. `dir` is the local folder; every other option belongs to the named kind.
 export type ArtifactsConfig = { kind?: string; dir?: string } & Omit<ArtifactOptions, 'root' | 'run' | 'env'>;
@@ -20,6 +22,8 @@ export interface Context {
   secrets: SecretStore;
   // How the coordinator reaches other services; replaced in tests.
   fetch: typeof fetch;
+  // The model that answers typed questions (what kind of report, how hard a task). By default it reads its key from `env` on each call, so a key entered in the app counts; null decides nothing this way.
+  decider: Decider | null;
   webRoot: string | null;
   // Where files the coordinator owns live: attachments today.
   dataDir: string;
@@ -36,13 +40,16 @@ export interface Context {
   demoLogin: { email: string; password: string } | null;
 }
 
-export function createContext(options: { storage: StorageAdapter; machineToken: string; webRoot?: string | null; dataDir?: string; artifacts?: ArtifactsConfig; traceRetentionDays?: number; secureCookies?: boolean; trustedHeader?: string | null; local?: boolean; now?: () => number; demoLogin?: Context['demoLogin']; env?: NodeJS.ProcessEnv; fetch?: typeof fetch }): Context {
+// Tests never reach a paid model: under the test runner a context that was not given a decider has none, whatever keys the shell holds.
+const underTest = 'NODE_TEST_CONTEXT' in process.env;
+
+export function createContext(options: { storage: StorageAdapter; machineToken: string; webRoot?: string | null; dataDir?: string; artifacts?: ArtifactsConfig; traceRetentionDays?: number; secureCookies?: boolean; trustedHeader?: string | null; local?: boolean; now?: () => number; demoLogin?: Context['demoLogin']; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; decider?: Decider | null }): Context {
   const now = options.now ?? Date.now;
   const dataDir = options.dataDir ?? mkdtempSync(path.join(os.tmpdir(), 'agent-team-data-'));
   const { kind, dir, ...rest } = options.artifacts ?? {};
   const artifacts = createArtifacts(kind, { ...rest, root: dir ?? path.join(dataDir, 'artifacts') });
-  const env = options.env ?? process.env;
-  return { storage: options.storage, env, fetch: options.fetch ?? fetch, secrets: createSecretStore({ storage: options.storage, dataDir, env, now }), artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, demoLogin: options.demoLogin ?? null };
+  const env = options.env ?? process.env, request = options.fetch ?? fetch;
+  return { storage: options.storage, env, fetch: request, decider: options.decider !== undefined ? options.decider : underTest ? null : environmentDecider(env, request), secrets: createSecretStore({ storage: options.storage, dataDir, env, now }), artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, demoLogin: options.demoLogin ?? null };
 }
 
 export class HttpError extends Error {

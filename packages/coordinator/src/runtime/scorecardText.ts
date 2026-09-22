@@ -8,6 +8,7 @@ const TITLES: Record<Group, string> = {
   delivery: 'Delivery',
   observability: 'Observability',
   safety: 'Safety',
+  decisions: 'The decision model',
 };
 
 // The scorecard as text for a terminal: one line per figure, with whether its target is met and what it was counted over.

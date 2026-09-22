@@ -5,6 +5,7 @@ import type { Tx } from '@agent-team/storage';
 import { failingChecks } from '../checks/wake.ts';
 import { STAFFING_RULE, staffs } from './staffing.ts';
 import { wayOfWorking } from './wayOfWorking.ts';
+import { latestRead, readLines } from './decisions.ts';
 
 export interface Packet { system: string; prompt: string }
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
@@ -221,6 +222,9 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
       const held = team.length ? await tx.selectFrom('tasks').select(['key', 'assignee_agent_id']).where('assignee_agent_id', 'in', team.map(agent => agent.id)).where('state', 'in', ['assigned', 'in_progress', 'awaiting_decision', 'in_review', 'approved', 'merging']).execute() : [];
       const inHand = (id: string) => held.filter(task => task.assignee_agent_id === id).map(task => task.key).join(', ') || 'nothing';
       if (team.length) parts.push(`# The team\n${team.map(agent => `- ${agent.name}, ${agent.title}${agent.is_pm ? ' (the PM)' : ''}: ownerAgentId ${agent.id}, has ${inHand(agent.id)} in hand`).join('\n')}`);
+      // What the decision model read of the thread when this turn was queued: a first look, not a colleague's view, and not binding.
+      const first = turn.kind === 'triage' ? await latestRead(tx, 'triage', { threadId: turn.threadId }) : null;
+      if (first) parts.push(`# First read (a decision model, not a colleague)\n${readLines(first, Object.fromEntries(team.map(agent => [agent.id, `${agent.name} (ownerAgentId ${agent.id})`]))).join('\n')}\nYou decide; this is only a first read.`);
     }
   }
   return { system, prompt: parts.filter(Boolean).join('\n\n') };

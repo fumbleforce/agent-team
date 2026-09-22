@@ -16,6 +16,7 @@ const GROUPS: Record<string, string> = {
   delivery: 'Delivery',
   observability: 'Observability',
   safety: 'Safety',
+  decisions: 'The decision model',
 };
 
 const MINUTE = 60_000;

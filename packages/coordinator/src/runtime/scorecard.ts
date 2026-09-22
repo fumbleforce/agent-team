@@ -1,11 +1,13 @@
 import type { Context } from '../context.ts';
 import { checkInvariants } from './invariants.ts';
+import { SURE, UNSURE } from './decisions.ts';
+import { confidenceOf, type Answer } from '../../../../adapters/decider/contract.ts';
 
 // The scorecard of docs/ROADMAP.md: every figure is added up from what the coordinator already records. A figure that cannot be
 // computed yet (nothing to count, or a record that does not exist yet) has a null value and says why, so an empty baseline is
 // never mistaken for a good one.
 export type Unit = 'share' | 'count' | 'ms' | 'usd' | 'per100' | 'ratio';
-export type Group = 'team-vs-one' | 'self-improving' | 'autonomy' | 'performance' | 'delivery' | 'observability' | 'safety';
+export type Group = 'team-vs-one' | 'self-improving' | 'autonomy' | 'performance' | 'delivery' | 'observability' | 'safety' | 'decisions';
 
 export interface Figure {
   id: string;
@@ -36,7 +38,7 @@ export interface ScorecardOptions {
 }
 
 // Every figure the scorecard computes. A trial names one of them as what it expects to move.
-export const FIGURE_IDS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T7', 'I1', 'I2', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'P1', 'P2', 'P3', 'P4', 'P5', 'D1', 'D2', 'O1', 'O2', 'S1', 'S2', 'S3', 'S4'] as const;
+export const FIGURE_IDS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T7', 'I1', 'I2', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'P1', 'P2', 'P3', 'P4', 'P5', 'D1', 'D2', 'O1', 'O2', 'S1', 'S2', 'S3', 'S4', 'C1', 'C2', 'C3'] as const;
 
 const MINUTE = 60_000;
 const DAY = 24 * 3600_000;
@@ -229,6 +231,12 @@ export function createScorecard(context: Context, options: ScorecardOptions = {}
     const overdue = trialRows.filter(row => row.state === 'running' && Number(row.ends_at) < to - 3600_000).length;
     const perMonth = trialsStarted.length / Math.max(1, (to - from) / (30 * DAY));
 
+    // --- The decision model: what it read, what that cost, and how often the PM chose otherwise when it was sure.
+    const reads = await db.selectFrom('machine_decisions').select(['confidence', 'answers', 'usd_micro', 'judged_at', 'overturned_at']).where('project_id', '=', projectId).where('created_at', '>=', from).where('created_at', '<=', to).execute();
+    const wasSure = (row: typeof reads[number]) => { const answers = JSON.parse(row.answers) as Record<string, Answer>; return [answers.kind, answers.seat].some(answer => answer !== undefined && confidenceOf(answer) >= SURE); };
+    const judgedSure = reads.filter(row => row.judged_at !== null && wasSure(row)).length, overturned = reads.filter(row => row.overturned_at !== null).length;
+    const readsUsd = reads.reduce((sum, row) => sum + row.usd_micro, 0) / 1_000_000;
+
     const figures: Figure[] = [
       figure({ id: 'T1', group: 'team-vs-one', measure: 'Quality against one frontier model alone', value: null, unit: 'ratio', sample: 0, target: '1.0 or more', note: 'Comes from scored reference-task runs: agent-team reference' }),
       figure({ id: 'T2', group: 'team-vs-one', measure: 'Cost against one frontier model alone', value: null, unit: 'ratio', sample: 0, target: '0.3 or less', note: 'Comes from scored reference-task runs: agent-team reference' }),
@@ -258,6 +266,9 @@ export function createScorecard(context: Context, options: ScorecardOptions = {}
       figure({ id: 'S2', group: 'safety', measure: 'Merges without recorded approval at that revision', value: unapproved, unit: 'count', sample: merged.length, target: '0', meets: value => value === 0 }),
       figure({ id: 'S3', group: 'safety', measure: 'Quarantines per 100 turns', value: turns.length === 0 ? null : (opened.length / turns.length) * 100, unit: 'per100', sample: turns.length, target: 'under 1', meets: value => value < 1, note: `Median time until a person released one: ${median(releaseTimes) ?? 'none'} ms` }),
       figure({ id: 'S4', group: 'safety', measure: 'Days an agent spent past its cap', value: overCap, unit: 'count', sample: daily.length, target: '0', meets: value => value === 0 }),
+      figure({ id: 'C1', group: 'decisions', measure: 'Sure reads of the decision model that the PM overturned', value: share(overturned, judgedSure), unit: 'share', sample: judgedSure, target: '10 % or fewer', meets: value => value <= 0.1 }),
+      figure({ id: 'C2', group: 'decisions', measure: 'Cost of a thousand reads of the decision model', value: reads.length === 0 ? null : (readsUsd / reads.length) * 1000, unit: 'usd', sample: reads.length, target: 'shown, not judged', note: `${reads.length} read${reads.length === 1 ? '' : 's'}, $${readsUsd.toFixed(4)} in all${done.length ? `, ${(reads.length / done.length).toFixed(1)} per finished task` : ''}` }),
+      figure({ id: 'C3', group: 'decisions', measure: 'Reads the decision model was unsure of', value: share(reads.filter(row => row.confidence < UNSURE).length, reads.length), unit: 'share', sample: reads.length, target: 'shown, not judged' }),
     ];
     return { projectId, from, to, computedAt: context.now(), figures };
   }

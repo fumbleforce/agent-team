@@ -14,7 +14,7 @@ const provider = (id: string, name = id, windowPct: number | null = null) => ({ 
 const world = (cost: unknown = {}, routing: unknown = {}, over: Partial<Snapshot> = {}): Snapshot => ({
   now: 0, items: [], running: [], rules: { cost: CostRules.parse(cost), routing: RoutingRules.parse(routing) },
   agents: { a: { status: 'active', providerId: 'main', model: 'seat-model', dailyCapMinor: 100, spentTodayMinor: 0, lastStartedAt: 0 } },
-  tasks: { t: { state: 'in_progress', tags: ['billing'], quarantined: false, writerRunning: false, holder: null, sticky: null } },
+  tasks: { t: { state: 'in_progress', tags: ['billing'], difficulty: null, quarantined: false, writerRunning: false, holder: null, sticky: null } },
   providers: { main: provider('main'), cheap: provider('cheap', 'Cheap lane') }, projects: { p: { status: 'active', budgetPct: null, budget: null, warned: false, deliveryBusy: false } }, ...over,
 });
 const over = (snapshot: Snapshot): Snapshot => ({ ...snapshot, agents: { a: { ...snapshot.agents.a!, spentTodayMinor: 100 } } });
@@ -46,6 +46,17 @@ test('routing: first enabled match by kind and tag wins; a work turn stays on it
   sticky.tasks.t!.sticky = { providerId: 'main', model: 'started-on' };
   assert.deepEqual(evaluate(draft('work', 5), sticky).route, { providerId: 'main', model: 'started-on' });
   assert.deepEqual(evaluate(draft('review', 3), sticky).route, { providerId: 'cheap', model: 'small' });
+});
+
+test('routing: a rule for hard work applies only to a task the decision model read as hard', () => {
+  const routes = { routes: [{ id: 'hard', kinds: ['work'], difficulty: ['hard'], provider: 'main', model: 'frontier' }, { id: 'rest', kinds: ['work'], provider: 'cheap' }] };
+  assert.deepEqual(evaluate(draft('work', 5), world({}, routes)).route, { providerId: 'cheap', model: 'cheap-default' }, 'unsized: the rule does not apply');
+  const hard = world({}, routes);
+  hard.tasks.t!.difficulty = 'hard';
+  assert.deepEqual(evaluate(draft('work', 5), hard).route, { providerId: 'main', model: 'frontier' });
+  const trivial = world({}, routes);
+  trivial.tasks.t!.difficulty = 'trivial';
+  assert.deepEqual(evaluate(draft('work', 5), trivial).route, { providerId: 'cheap', model: 'cheap-default' });
 });
 
 test('budget: one notice at the threshold until warned; at 100 % only classes 1 and 2', () => {

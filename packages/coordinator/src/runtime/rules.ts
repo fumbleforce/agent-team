@@ -22,7 +22,7 @@ export function evaluate(draft: TurnDraft, snapshot: Snapshot): Verdict {
   const sticky = draft.kind === 'work' ? task?.sticky : null;
   if (sticky?.providerId && snapshot.providers[sticky.providerId]) route = sticky;
   else for (const rule of routing.routes) {
-    if (!rule.enabled || (rule.kinds.length > 0 && !rule.kinds.includes(draft.kind)) || (rule.tags.length > 0 && !rule.tags.some(tag => task?.tags.includes(tag)))) continue;
+    if (!rule.enabled || (rule.kinds.length > 0 && !rule.kinds.includes(draft.kind)) || (rule.tags.length > 0 && !rule.tags.some(tag => task?.tags.includes(tag))) || (rule.difficulty.length > 0 && !(task?.difficulty && (rule.difficulty as string[]).includes(task.difficulty)))) continue;
     const provider = named(snapshot, rule.provider);
     if (!provider) continue;
     route = { providerId: provider.id, model: rule.model ?? (provider.id === agent?.providerId ? agent.model : provider.models[0] ?? null) };

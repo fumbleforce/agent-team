@@ -30,9 +30,10 @@ import * as continuity from '../migrations/0027_continuity.ts';
 import * as documents from '../migrations/0028_documents.ts';
 import * as trials from '../migrations/0029_trials.ts';
 import * as duties from '../migrations/0030_duties.ts';
+import * as decisions from '../migrations/0031_decisions.ts';
 
 type ContextMigration = { up(db: Kysely<unknown>, context: MigrationContext): Promise<void> };
-const MIGRATIONS: Record<string, ContextMigration> = { '0001_init': init, '0002_runtime': runtime, '0003_costs_knowledge': knowledge, '0004_deliberation': deliberation, '0005_delivery': delivery, '0006_checks': checks, '0007_proposals': proposals, '0008_issues': issues, '0009_integrations': integrations, '0010_product': product, '0011_schedules': schedules, '0012_embeddings': embeddings, '0013_snapshots': snapshots, '0014_mentions': mentions, '0015_rules': rules, '0016_org_auth': orgAuth, '0017_sessions': agentSessions, '0019_gaps': gaps, '0020_artifacts': artifacts, '0021_sync': sync, '0022_search': search, '0023_costs': costs, '0024_runtime_limits': runtimeLimits, '0025_secrets': secrets, '0026_team_default': teamDefault, '0027_continuity': continuity, '0028_documents': documents, '0029_trials': trials, '0030_duties': duties };
+const MIGRATIONS: Record<string, ContextMigration> = { '0001_init': init, '0002_runtime': runtime, '0003_costs_knowledge': knowledge, '0004_deliberation': deliberation, '0005_delivery': delivery, '0006_checks': checks, '0007_proposals': proposals, '0008_issues': issues, '0009_integrations': integrations, '0010_product': product, '0011_schedules': schedules, '0012_embeddings': embeddings, '0013_snapshots': snapshots, '0014_mentions': mentions, '0015_rules': rules, '0016_org_auth': orgAuth, '0017_sessions': agentSessions, '0019_gaps': gaps, '0020_artifacts': artifacts, '0021_sync': sync, '0022_search': search, '0023_costs': costs, '0024_runtime_limits': runtimeLimits, '0025_secrets': secrets, '0026_team_default': teamDefault, '0027_continuity': continuity, '0028_documents': documents, '0029_trials': trials, '0030_duties': duties, '0031_decisions': decisions };
 
 // Forward-only, each in its own transaction, recorded in Kysely's migration table.
 export async function runMigrations(db: Kysely<never> | Kysely<any>, context: MigrationContext, upTo?: string): Promise<void> {

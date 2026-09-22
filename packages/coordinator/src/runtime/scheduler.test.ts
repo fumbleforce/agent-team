@@ -9,7 +9,7 @@ let serial = 0;
 const item = (agentId: string, kind: TurnKind, over: Partial<TurnDraft> = {}): TurnDraft => ({ id: `i${String(serial += 1).padStart(4, '0')}`, agentId, projectId: 'p', kind, lane: laneOf(kind), taskId: null, priorityClass: enqueue({ kind, agentId }, { liveDedupeKeys: new Set() })!.priorityClass, createdAt: T0, ...over });
 const agent = (over: Partial<Snapshot['agents'][string]> = {}) => ({ status: 'active', providerId: 'main', model: 'm1', dailyCapMinor: null, spentTodayMinor: 0, lastStartedAt: 0, ...over });
 const provider = (id: string, over: Partial<Snapshot['providers'][string]> = {}) => ({ id, name: id, status: 'connected', models: [`${id}-model`], limitedUntil: null, running: 0, maxConcurrent: null, windowPct: null, ...over });
-const task = (over: Partial<Snapshot['tasks'][string]> = {}) => ({ state: 'assigned', tags: [], quarantined: false, writerRunning: false, holder: null, sticky: null, ...over });
+const task = (over: Partial<Snapshot['tasks'][string]> = {}) => ({ state: 'assigned', tags: [], difficulty: null, quarantined: false, writerRunning: false, holder: null, sticky: null, ...over });
 const project = (over: Partial<Snapshot['projects'][string]> = {}) => ({ status: 'active', budgetPct: null, budget: null, warned: false, deliveryBusy: false, ...over });
 const world = (over: Partial<Snapshot> = {}): Snapshot => ({ now: T0, items: [], agents: { a: agent(), b: agent() }, tasks: { t: task() }, providers: { main: provider('main'), spare: provider('spare') }, projects: { p: project() }, running: [], rules: { cost: CostRules.parse({}), routing: RoutingRules.parse({}) }, ...over });
 const claim = { workerId: 'w1', free: { work: 1, bounded: 1, deliver: 1 }, projects: ['p'] };

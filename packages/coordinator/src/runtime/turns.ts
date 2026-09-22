@@ -4,6 +4,7 @@ import type { Tx } from '@agent-team/storage';
 import { hashToken, newToken, sameSecret } from '../auth/secrets.ts';
 import { HttpError, type Context } from '../context.ts';
 import { createCosts } from '../costs/costs.ts';
+import { createDecisions } from './decisions.ts';
 import { buildPacket, type Packet } from './packet.ts';
 import { createSessions, STALLED_AFTER, type Resume } from './sessions.ts';
 import { DEFAULT_RULES, type Notice } from './rules.ts';
@@ -29,6 +30,7 @@ export function createTurns(context: Context) {
   const { storage, events, now } = context;
   const costs = createCosts(context);
   const sessions = createSessions(context);
+  const decisions = createDecisions(context);
 
   // Runs at the start of every claim and on a timer. An expired lease means the outcome is unknown:
   // the turn becomes uncertain, is never retried, and the smallest object it could have changed is quarantined.
@@ -90,10 +92,10 @@ export function createTurns(context: Context) {
       const fresh = new Set((await tx.selectFrom('workers').select('id').where('last_seen_at', '>', now() - WORKER_FRESH_MS).execute()).map(row => row.id));
       // Newest first: the first write turn seen per task names the holder of its worktree, the first routed work turn its sticky route.
       const written = await tx.selectFrom('turns').select(['task_id', 'kind', 'worker_id', 'provider_id', 'model']).where('task_id', 'in', taskIds).where('access', '=', 'write').orderBy('started_at', 'desc').orderBy('id', 'desc').execute();
-      for (const task of await tx.selectFrom('tasks').select(['id', 'state', 'tag', 'blocked_reason']).where('id', 'in', taskIds).execute()) {
+      for (const task of await tx.selectFrom('tasks').select(['id', 'state', 'tag', 'difficulty', 'blocked_reason']).where('id', 'in', taskIds).execute()) {
         const mine = written.filter(turn => turn.task_id === task.id), holder = mine[0]?.worker_id, routed = mine.find(turn => turn.kind === 'work' && turn.provider_id !== null);
         // A task held in the backlog (an idea waiting for its owner, say) is not to be worked on, whatever queued it.
-        snapshot.tasks[task.id] = { state: task.state === 'backlog' && task.blocked_reason ? 'blocked' : task.state, tags: task.tag ? [task.tag] : [], quarantined: quarantined.has(task.id), writerRunning: running.some(turn => turn.task_id === task.id && turn.access === 'write'), holder: holder && fresh.has(holder) ? holder : null, sticky: routed ? { providerId: routed.provider_id, model: routed.model } : null };
+        snapshot.tasks[task.id] = { state: task.state === 'backlog' && task.blocked_reason ? 'blocked' : task.state, tags: task.tag ? [task.tag] : [], difficulty: task.difficulty, quarantined: quarantined.has(task.id), writerRunning: running.some(turn => turn.task_id === task.id && turn.access === 'write'), holder: holder && fresh.has(holder) ? holder : null, sticky: routed ? { providerId: routed.provider_id, model: routed.model } : null };
       }
     }
 
@@ -171,10 +173,24 @@ export function createTurns(context: Context) {
     return turn && turn.worker_id === workerId && sameSecret(turn.lease_token_hash, hashToken(leaseToken)) ? turn : null;
   }
 
+  // A task is sized once, before its first work turn: its route sticks from there, so a later read would change nothing.
+  async function sizeUp(taskId: string) {
+    if (!decisions.on()) return null;
+    const task = await storage.db.selectFrom('tasks').select(['title', 'brief', 'difficulty']).where('id', '=', taskId).executeTakeFirst();
+    if (!task || task.difficulty !== null) return null;
+    if (await storage.db.selectFrom('machine_decisions').select('id').where('task_id', '=', taskId).where('purpose', '=', 'difficulty').executeTakeFirst()) return null;
+    return decisions.difficulty(task);
+  }
+
   return {
     claimedBy: (turnId: string, workerId: string, leaseToken: string) => storage.transaction(tx => claimedBy(tx, turnId, workerId, leaseToken)),
     async enqueue(input: { agentId: string; projectId: string; kind: TurnKind; taskId?: string | null; threadId?: string | null; dedupeKey?: string; causeEventId?: string; notBefore?: number; priorityClass?: number; prepare?: (tx: Tx, workItemId: string) => Promise<void> }): Promise<string | null> {
       const id = newId(now());
+      // Before the transaction, since it goes over the network: the decision model's first read of what a triage is about, and how
+      // hard a task looks before its first work turn is routed. Not asked when the same wake is already queued.
+      const taken = input.dedupeKey ? await storage.db.selectFrom('work_items').select('id').where('dedupe_key', '=', input.dedupeKey).where('state', 'in', ['queued', 'leased']).executeTakeFirst() : undefined;
+      const first = !taken && input.kind === 'triage' && input.threadId ? await decisions.triage(input.projectId, input.threadId) : null;
+      const sized = !taken && input.kind === 'work' && input.taskId ? await sizeUp(input.taskId) : null;
       const published = await storage.transaction(async tx => {
         // An agent works for its own team's projects and for those it is on loan to. Work for a paused project is kept and waits at the claim.
         if (!(await effectiveProjects(tx, input.agentId, { whilePaused: true })).includes(input.projectId)) return null;
@@ -182,12 +198,20 @@ export function createTurns(context: Context) {
         const task = input.taskId ? await tx.selectFrom('tasks').select(['state', 'assignee_agent_id']).where('id', '=', input.taskId).executeTakeFirst() : undefined;
         const draft = scheduler.enqueue({ kind: input.kind, agentId: input.agentId, dedupeKey: input.dedupeKey }, { liveDedupeKeys: new Set(live.map(row => row.dedupe_key ?? '')), task: task ? { state: task.state, assigneeAgentId: task.assignee_agent_id } : null });
         if (!draft) return null;
-        await tx.insertInto('work_items').values({ id, agent_id: input.agentId, project_id: input.projectId, kind: input.kind, lane: draft.lane, task_id: input.taskId ?? null, thread_id: input.threadId ?? null, priority_class: input.priorityClass ?? draft.priorityClass, state: 'queued', defer_reason: null, not_before: input.notBefore ?? null, dedupe_key: input.dedupeKey ?? null, cause_event_id: input.causeEventId ?? null, created_at: now() }).execute();
+        // What the model read as urgent is sorted ahead of ordinary triage, never ahead of a reply to a person.
+        const priorityClass = input.priorityClass ?? (first?.urgent ? Math.min(draft.priorityClass, 2) : draft.priorityClass);
+        await tx.insertInto('work_items').values({ id, agent_id: input.agentId, project_id: input.projectId, kind: input.kind, lane: draft.lane, task_id: input.taskId ?? null, thread_id: input.threadId ?? null, priority_class: priorityClass, state: 'queued', defer_reason: null, not_before: input.notBefore ?? null, dedupe_key: input.dedupeKey ?? null, cause_event_id: input.causeEventId ?? null, created_at: now() }).execute();
         // What the turn needs beyond the item itself is written with it, so a claim never sees one without the other.
         await input.prepare?.(tx, id);
+        const reads = [];
+        if (first) reads.push((await decisions.record(tx, first.read, { projectId: input.projectId, threadId: input.threadId ?? null, applied: first.urgent && input.priorityClass === undefined })).event);
+        if (sized) {
+          if (sized.difficulty) await tx.updateTable('tasks').set({ difficulty: sized.difficulty }).where('id', '=', input.taskId!).where('difficulty', 'is', null).execute();
+          reads.push((await decisions.record(tx, sized.read, { projectId: input.projectId, taskId: input.taskId ?? null, applied: sized.difficulty !== null })).event);
+        }
         // Having work again ends the idle period, so the next one is announced.
         await tx.updateTable('agents').set({ idle_at: null }).where('id', '=', input.agentId).where('idle_at', 'is not', null).execute();
-        return events.append(tx, [{ type: 'work_item.queued', actorKind: 'system', projectId: input.projectId, agentId: input.agentId, taskId: input.taskId ?? null, payload: { workItemId: id, kind: input.kind } }]);
+        return events.append(tx, [{ type: 'work_item.queued', actorKind: 'system', projectId: input.projectId, agentId: input.agentId, taskId: input.taskId ?? null, payload: { workItemId: id, kind: input.kind } }, ...reads]);
       });
       if (!published) return null;
       events.published(published);

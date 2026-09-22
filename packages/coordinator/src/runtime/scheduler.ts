@@ -19,7 +19,8 @@ export interface TurnDraft { id: string; agentId: string; projectId: string; kin
 export interface RouteChoice { providerId: string | null; model: string | null }
 export interface SnapAgent { status: string; providerId: string | null; model: string | null; dailyCapMinor: number | null; spentTodayMinor: number; lastStartedAt: number }
 // holder: the live worker whose checkout has the task's worktree. sticky: the route the task's work already ran on.
-export interface SnapTask { state: string; tags: string[]; quarantined: boolean; writerRunning: boolean; holder: string | null; sticky: RouteChoice | null }
+// difficulty: how hard the task looked to the decision model, when one read it; a routing rule may filter on it.
+export interface SnapTask { state: string; tags: string[]; difficulty: string | null; quarantined: boolean; writerRunning: boolean; holder: string | null; sticky: RouteChoice | null }
 export interface SnapProvider { id: string; name: string; status: string; models: string[]; limitedUntil: number | null; running: number; maxConcurrent: number | null; windowPct: number | null }
 // budgetPct is the fullest budget that covers the project; budget names it; warned says it already warned this period.
 // writersRunning counts the project's running work turns against maxWriters (default 1): worktrees do not isolate ports, databases or containers.
