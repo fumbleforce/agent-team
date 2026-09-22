@@ -8,6 +8,10 @@ export { confidenceOf, DeciderError, levelOf } from './contract.ts';
 // key that already runs open-weight models, which serves the same API. Either is read from the environment, where a key
 // entered in the app is placed too, so saving one there is enough.
 export const DECIDER_KEYS = ['TYPESAFE_API_KEY', 'OPENROUTER_API_KEY'] as const;
+// What the app calls the model and each key; the first key is the model's own and is entered where the model is shown,
+// the other belongs to the provider that shares it. The names stay here so the platform stays neutral.
+export const DECIDER_NAME = 'Jev';
+export const DECIDER_KEY_LABELS: Record<(typeof DECIDER_KEYS)[number], { label: string; own: boolean }> = { TYPESAFE_API_KEY: { label: 'TypeSafe key', own: true }, OPENROUTER_API_KEY: { label: 'OpenRouter key', own: false } };
 
 // The decider a set of variables names right now, or none.
 export function deciderFor(env: NodeJS.ProcessEnv, request: typeof fetch): Decider | null {

@@ -1,6 +1,7 @@
 import type { Context as Hc, Hono } from 'hono';
 import { z } from 'zod';
 import { newId, ProviderBody } from '@agent-team/protocol';
+import { DECIDER_KEY_LABELS, DECIDER_KEYS, DECIDER_NAME } from '../../../../adapters/decider/index.ts';
 import { PROVIDERS, providerEntry, type ModelChoice, type ProviderEntry } from '../../../../adapters/engine/providers.ts';
 import { can, type Viewer } from '../auth/rbac.ts';
 import { forbidden, HttpError, notFound, type Context } from '../context.ts';
@@ -173,6 +174,36 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
     });
     events.published(published);
     if (forget) await context.secrets.remove(forget);
+    return c.json({ ok: true });
+  });
+
+  // The decision model: not a provider a seat runs on (it answers typed questions, never a turn), so it is not in the list
+  // above, but it is a service the team uses and the page says whether it is on, on which key, and what it has read so far.
+  // Its own key is entered here; the key it shares with a provider is entered with that provider and turns this on as well.
+  const OWN_KEY = DECIDER_KEYS[0];
+  app.get('/api/decider', async c => {
+    const slug = c.req.query('project'), project = slug ? await db.selectFrom('projects').select('id').where('slug', '=', slug).executeTakeFirst() : undefined;
+    if (slug && !project) throw notFound('Project');
+    const on = context.decider !== null && (context.decider.ready?.() ?? true);
+    // The keys in the order they are tried; the first one present is the one in use.
+    const active = on ? DECIDER_KEYS.find(name => Boolean(context.env[name])) ?? null : null;
+    const keys = DECIDER_KEYS.map(name => ({ ...DECIDER_KEY_LABELS[name], saved: context.secrets.has(name), inEnvironment: Boolean(context.env[name]) && !context.secrets.has(name), active: name === active }));
+    let reads = db.selectFrom('machine_decisions').select(eb => [eb.fn.countAll<number>().as('n'), eb.fn.sum<number>('usd_micro').as('usd_micro'), eb.fn.max<number>('created_at').as('last_at')]);
+    if (project) reads = reads.where('project_id', '=', project.id);
+    const total = await reads.executeTakeFirst(), latest = await (project ? db.selectFrom('machine_decisions').select('model').where('project_id', '=', project.id) : db.selectFrom('machine_decisions').select('model')).orderBy('created_at', 'desc').executeTakeFirst();
+    return c.json({ canEdit: can(c.get('viewer'), 'org.members'), name: DECIDER_NAME, on, source: active ? DECIDER_KEY_LABELS[active].label : null, keys,
+      reads: { count: Number(total?.n ?? 0), usdMicro: Number(total?.usd_micro ?? 0), lastAt: total?.last_at === null || total?.last_at === undefined ? null : Number(total.last_at), model: latest?.model ?? null } });
+  });
+  app.post('/api/decider/key', async c => {
+    const userId = admin(c), input = await parseBody(c, z.object({ key: z.string().trim().min(8).max(400).regex(/^\S+$/, 'That does not look like a key') }));
+    await context.secrets.set(OWN_KEY, input.key, userId);
+    events.published(await storage.transaction(tx => events.append(tx, [{ type: 'decider.key_saved', category: 'audit', actorKind: 'user', userId, payload: { variable: OWN_KEY } }])));
+    return c.json({ ok: true });
+  });
+  app.post('/api/decider/key/remove', async c => {
+    const userId = admin(c);
+    await context.secrets.remove(OWN_KEY);
+    events.published(await storage.transaction(tx => events.append(tx, [{ type: 'decider.key_removed', category: 'audit', actorKind: 'user', userId, payload: { variable: OWN_KEY } }])));
     return c.json({ ok: true });
   });
 

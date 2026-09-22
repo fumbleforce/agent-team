@@ -5,6 +5,7 @@ import { useResource } from '../../data/useResource';
 import { AppShell, Attachment, PageHeader, Sidebar, SidePanel } from '../../patterns';
 import { Button, Card, Chip, Field, SectionLabel, Select, StatusDot, Text, Textarea } from '../../ui';
 import { CATEGORY, ConnectFlow } from './ConnectFlow';
+import { DeciderSection } from './DeciderSection';
 import { ProvidersSection } from './ProvidersSection';
 
 interface Connection { projectScoped: boolean; id: string; kind: string; name: string; category: string; mode: string; status: string; statusDetail: string | null; credentialRef: string | null }
@@ -73,6 +74,7 @@ export function IntegrationsPage({ slug, me, projects }: { slug: string; me: Me;
       <div className="flex min-h-0 grow">
         <div className="flex min-w-0 grow flex-col gap-3 overflow-y-auto px-5 py-3.5">
           <ProvidersSection />
+          <DeciderSection slug={slug} />
           {groups.map(group => (
             <section key={group.key} className="flex flex-col gap-1.5">
               <SectionLabel>{CATEGORY[group.key]}</SectionLabel>
