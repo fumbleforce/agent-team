@@ -23,39 +23,76 @@ async function boot() {
   return { storage, db, reviews: createReviews(context, turns), agents, taskId, turn, verdict };
 }
 
-test('a review asks one agent per role, never the author; all three passing at one head approve and queue the merge', async () => {
+test('a review asks one reviewer, never the author and not the PM; its pass at the head approves and queues the merge under the PM', async () => {
   const { storage, db, reviews, agents, taskId, turn, verdict } = await boot();
+  const teamId = (await db.selectFrom('agents').select('team_id').where('id', '=', agents.Rune!).executeTakeFirstOrThrow()).team_id;
+  await db.insertInto('agents').values({ id: 'bram', team_id: teamId, name: 'Bram', initials: 'BR', tint: '2', title: 'Developer', persona: '', status: 'active', provider_id: null, model: null, daily_cap_minor: null, is_pm: false, doing: null, sort: 9, created_at: 1 }).execute();
+  await db.insertInto('agent_roles').values({ agent_id: 'bram', role_slug: 'developer' }).execute();
   const asked = await reviews.request(taskId, SHA1);
-  assert.deepEqual(asked, [{ kind: 'pm', agentId: agents.Maren }, { kind: 'tester', agentId: agents.Cleo }, { kind: 'reviewer', agentId: agents.Rune }]);
-  assert.equal((await db.selectFrom('work_items').select('kind').where('kind', '=', 'review').execute()).length, 3);
+  assert.deepEqual(asked, [{ kind: 'reviewer', agentId: agents.Rune }]);
+  assert.deepEqual((await db.selectFrom('work_items').select('agent_id').where('kind', '=', 'review').execute()).map(item => item.agent_id), [agents.Rune]);
 
   await assert.rejects(reviews.record(turn('Ada'), verdict('reviewer')), /author/);
-  await assert.rejects(reviews.record(turn('Cleo'), verdict('reviewer')), /do not hold/);
-  await assert.rejects(reviews.record(turn('Cleo', 'work'), verdict('tester')), /review turn/);
-  await assert.rejects(reviews.record(turn('Cleo'), verdict('tester', 'pass', SHA2)), /review that revision/);
+  await assert.rejects(reviews.record({ ...turn('Rune'), agent_id: 'bram' }, verdict('reviewer')), /do not hold/);
+  await assert.rejects(reviews.record(turn('Rune', 'work'), verdict('reviewer')), /review turn/);
+  await assert.rejects(reviews.record(turn('Rune'), verdict('reviewer', 'pass', SHA2)), /review that revision/);
 
-  assert.deepEqual(await reviews.record(turn('Cleo'), verdict('tester')), { approved: false });
-  assert.deepEqual(await reviews.record(turn('Rune'), verdict('reviewer')), { approved: false });
-  assert.deepEqual(await reviews.record(turn('Maren'), verdict('pm')), { approved: true });
+  // An older prompt that still names another kind records the one review.
+  assert.deepEqual(await reviews.record(turn('Rune'), verdict('tester')), { approved: true });
   assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'approved');
   const queued = await db.selectFrom('merge_queue').select(['state', 'head_sha']).executeTakeFirstOrThrow();
   assert.deepEqual([queued.state, queued.head_sha], ['queued', SHA1]);
+  assert.equal((await db.selectFrom('work_items').select('agent_id').where('kind', '=', 'deliver').executeTakeFirstOrThrow()).agent_id, agents.Maren);
   const gate = await reviews.approvalsFor(taskId, SHA1) as Record<string, { verdict: string; sessionId: string }>;
-  assert.deepEqual([gate.tester!.verdict, gate.reviewer!.verdict, gate.pm!.verdict], ['PASS', 'APPROVE', 'APPROVE']);
-  assert.equal(new Set(Object.values(gate).map(item => item.sessionId)).size, 3);
+  assert.deepEqual(Object.keys(gate), ['reviewer']);
+  assert.deepEqual([gate.reviewer!.verdict, gate.reviewer!.sessionId], ['APPROVE', 'turn-Rune']);
+  assert.deepEqual((await reviews.deliveryFor(taskId)).approvalRoles, ['reviewer']);
   await storage.close();
 });
 
-test('requested changes send the task back to its author; a new head makes earlier approvals stale', async () => {
+test('a team made before there was one reviewer has its tester, else its PM, stand in as the one reviewer', async () => {
+  const { storage, db, reviews, agents, taskId } = await boot();
+  await db.updateTable('agent_roles').set({ role_slug: 'tester' }).where('agent_id', '=', agents.Rune!).execute();
+  assert.deepEqual(await reviews.request(taskId, SHA1), [{ kind: 'reviewer', agentId: agents.Rune }]);
+  await db.updateTable('agents').set({ status: 'retired' }).where('id', '=', agents.Rune!).execute();
+  assert.deepEqual(await reviews.request(taskId, SHA2), [{ kind: 'reviewer', agentId: agents.Maren }]);
+  await storage.close();
+});
+
+test('requested changes send the task back to its author; a new head makes the earlier verdict stale', async () => {
   const { storage, db, reviews, agents, taskId, turn, verdict } = await boot();
   await reviews.request(taskId, SHA1);
-  await reviews.record(turn('Cleo'), verdict('tester'));
   await reviews.record(turn('Rune'), verdict('reviewer', 'changes'));
   assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'in_progress');
   assert.equal((await db.selectFrom('work_items').select('agent_id').where('kind', '=', 'work').executeTakeFirstOrThrow()).agent_id, agents.Ada);
 
   await reviews.request(taskId, SHA2);
   assert.deepEqual(await reviews.approvalsFor(taskId, SHA2), {});
-  assert.equal((await db.selectFrom('approvals').select('state').where('state', '=', 'stale').execute()).length, 2);
+  assert.equal((await db.selectFrom('approvals').select('state').where('state', '=', 'stale').execute()).length, 1);
+  await assert.rejects(reviews.record({ ...turn('Rune'), id: 'turn-Rune-2' }, verdict('reviewer', 'pass', SHA1)), /review that revision/);
+  await storage.close();
+});
+
+test('changes asked for at a third revision bring the PM in instead of sending the author round again', async () => {
+  const { storage, db, reviews, agents, taskId, turn, verdict } = await boot();
+  const pmTriage = async () => db.selectFrom('work_items').select('id').where('agent_id', '=', agents.Maren!).where('kind', '=', 'triage').executeTakeFirst();
+  for (const [index, sha] of ['1', '2', '3'].map(digit => digit.repeat(40)).entries()) {
+    await reviews.request(taskId, sha);
+    await db.updateTable('work_items').set({ state: 'done' }).where('kind', '=', 'work').execute();
+    await reviews.record({ ...turn('Rune'), id: `turn-Rune-${index}` }, verdict('reviewer', 'changes', sha));
+    const authorQueued = await db.selectFrom('work_items').select('id').where('agent_id', '=', agents.Ada!).where('kind', '=', 'work').where('state', '=', 'queued').executeTakeFirst();
+    assert.equal(Boolean(authorQueued), index < 2, `round ${index + 1}`);
+  }
+  assert.ok(await pmTriage(), 'the PM is asked to look at the task');
+  assert.match((await db.selectFrom('messages').select('body').orderBy('created_at', 'desc').executeTakeFirstOrThrow()).body, /at three revisions/);
+  await storage.close();
+});
+
+test('only the seat asked to review decides: the PM cannot approve a change beside the reviewer', async () => {
+  const { storage, db, reviews, taskId, turn, verdict } = await boot();
+  await reviews.request(taskId, SHA1);
+  await assert.rejects(reviews.record(turn('Maren'), verdict('pm')), /Another seat reviews this task/);
+  assert.equal((await db.selectFrom('approvals').select('id').execute()).length, 0);
+  assert.deepEqual(await reviews.record(turn('Rune'), verdict('reviewer')), { approved: true });
   await storage.close();
 });

@@ -17,7 +17,7 @@ import { createTurns } from './turns.ts';
 const LIBRARY = { type: 'library' as const, id: '' };
 const blueprint = (name: string) => JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', name), 'utf8')) as Record<string, any>;
 
-// The default team (Maren the PM, Ada, Cleo, Rune) with Toby hired from the library to staff it.
+// The default team (Maren the PM, Ada, Rune) with Toby hired from the library to staff it.
 async function boot() {
   const storage = await createStorage({ kind: 'sqlite', path: ':memory:' });
   await storage.migrate();
@@ -51,24 +51,24 @@ test('a hire inside the limits joins the team at once and is on record with its 
 
   // A seat made for the job wears roles from the library only, and never the PM flag.
   await assert.rejects(proposals.staff(toby, { ...why, change: { kind: 'create_agent', seat: { name: 'Vera', title: 'Release engineer', persona: '', roles: ['wizard'] } } }), /wizard is not in the role library/);
-  const made = await proposals.staff(toby, { ...why, change: { kind: 'create_agent', seat: { name: 'Vera', title: 'Release engineer', persona: 'Ships on Thursdays.', roles: ['developer', 'tester'] } } });
+  const made = await proposals.staff(toby, { ...why, change: { kind: 'create_agent', seat: { name: 'Vera', title: 'Release engineer', persona: 'Ships on Thursdays.', roles: ['developer', 'reviewer'] } } });
   assert.equal((await db.selectFrom('agents').select(['title', 'is_pm']).where('id', '=', made.agentIds[0]!).executeTakeFirstOrThrow()).is_pm, false);
   await storage.close();
 });
 
 test('beyond the limits the same decision waits for the owner, who approves or declines it', async () => {
   const { storage, proposals, agents, toby, projectId, limits } = await boot();
-  await limits({ decides: true, maxSeats: 5 });
+  await limits({ decides: true, maxSeats: 4 });
   const waiting = await proposals.staff(toby, { ...why, change: { kind: 'hire_agent', library: 'gandalf' } });
-  assert.deepEqual([waiting.state, waiting.note, waiting.agentIds], ['needs_owner', 'The team would grow to 6 seats; it may have 5', []]);
+  assert.deepEqual([waiting.state, waiting.note, waiting.agentIds], ['needs_owner', 'The team would grow to 5 seats; it may have 4', []]);
   assert.equal((await agents()).Gandalf, undefined);
   await proposals.decide('user-1', waiting.proposalId, 'approve', null);
   assert.ok((await agents()).Gandalf);
 
   await limits({ decides: false, maxSeats: 20 });
-  const asked = await proposals.staff(toby, { ...why, change: { kind: 'set_status', agentId: (await agents()).Cleo!, status: 'paused' } });
+  const asked = await proposals.staff(toby, { ...why, change: { kind: 'set_status', agentId: (await agents()).Rune!, status: 'paused' } });
   assert.deepEqual([asked.state, asked.note], ['needs_owner', 'The owner decides who is on this team']);
-  await proposals.decide('user-1', asked.proposalId, 'decline', 'Cleo stays');
+  await proposals.decide('user-1', asked.proposalId, 'decline', 'Rune stays');
   assert.equal((await proposals.list([projectId])).find(item => item.id === asked.proposalId)!.state, 'declined');
   await storage.close();
 });
@@ -125,7 +125,7 @@ test('the figures name every seat, the limits and who can be brought in; the sea
   const { storage, proposals, toby, projectId } = await boot();
   const review = await proposals.review(toby, 14);
   assert.deepEqual(review.limits, { decides: true, maxSeats: 8, maxDailyCapMinor: 1500 });
-  assert.deepEqual(review.seats.map(seat => seat.name), ['Maren', 'Ada', 'Cleo', 'Rune', 'Toby']);
+  assert.deepEqual(review.seats.map(seat => seat.name), ['Maren', 'Ada', 'Rune', 'Toby']);
   assert.ok(review.library.some(item => item.slug === 'gandalf') && review.templates.some(item => item.slug === 'research-desk') && review.roles.some(item => item.slug === 'hr'));
   const thread = await storage.db.selectFrom('threads').select('id').where('project_id', '=', projectId).where('kind', '=', 'discussion').executeTakeFirstOrThrow();
   const packet = (agentId: string) => storage.transaction(tx => buildPacket(tx, { kind: 'reply', agentId, projectId, taskId: null, threadId: thread.id }));

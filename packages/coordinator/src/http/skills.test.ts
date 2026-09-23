@@ -17,9 +17,9 @@ test('skills are read by everyone, written and reverted by admins, and each says
     assert.equal(listed.canEdit, false);
     assert.equal(listed.skills.length, 25);
     const unslop = listed.skills.find((skill: { slug: string }) => skill.slug === 'unslop');
-    assert.deepEqual([unslop.always, unslop.usedBy.length, unslop.source.license, unslop.author], [true, 14, 'MIT', 'toolkit']);
+    assert.deepEqual([unslop.always, unslop.usedBy.length, unslop.source.license, unslop.author], [true, 13, 'MIT', 'toolkit']);
     const tdd = (await call('/api/skills/tdd', { cookie: member.cookie })).json;
-    assert.deepEqual([tdd.doc.files.map((file: { path: string }) => file.path), tdd.usedBy, tdd.history.map((row: { note: string }) => row.note)], [['mocking.md', 'tests.md'], ['developer', 'tester'], ['seeded']]);
+    assert.deepEqual([tdd.doc.files.map((file: { path: string }) => file.path), tdd.usedBy, tdd.history.map((row: { note: string }) => row.note)], [['mocking.md', 'tests.md'], ['developer', 'reviewer'], ['seeded']]);
 
     // A member reads but does not write.
     assert.equal((await call('/api/skills/house-style', { cookie: member.cookie, body: { doc: { description: 'Use when writing.', body: 'Say it plainly.' }, expectedVersion: 0 } })).status, 403);

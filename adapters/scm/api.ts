@@ -39,16 +39,25 @@ export function xmlEntries(archive: Buffer): string[] {
 }
 
 function client(label: string, base: string, headers: Record<string, string>, request: typeof fetch) {
-  const call = async (route: string) => {
-    const response = await request(route.startsWith('https://') || route.startsWith('http://') ? route : `${base}${route}`, { headers, signal: AbortSignal.timeout(30_000) }).catch(() => { throw new Error(`${label} network request failed`); });
+  const call = async (route: string, init: { method?: string; body?: unknown; missing?: boolean } = {}) => {
+    const response = await request(route.startsWith('https://') || route.startsWith('http://') ? route : `${base}${route}`, { method: init.method ?? 'GET', headers: init.body === undefined ? headers : { ...headers, 'content-type': 'application/json' }, ...(init.body === undefined ? {} : { body: JSON.stringify(init.body) }), signal: AbortSignal.timeout(30_000) }).catch(() => { throw new Error(`${label} network request failed`); });
+    if (init.missing && response.status === 404) return null;
     if (!response.ok) throw new Error(`${label} HTTP request failed (${response.status})`);
     return response;
   };
+  const parsed = async <T>(response: Response | null): Promise<T> => { const value = response ? await response.json().catch(() => null) as T | null : null; if (value === null) throw new Error(`Invalid ${label} response`); return value; };
   return {
-    async json<T>(route: string): Promise<T> { const parsed = await (await call(route)).json().catch(() => null) as T | null; if (parsed === null) throw new Error(`Invalid ${label} response`); return parsed; },
-    async bytes(route: string): Promise<Buffer> { const data = Buffer.from(await (await call(route)).arrayBuffer().catch(() => { throw new Error(`Invalid ${label} response`); })); if (data.length > MAX_ARCHIVE) throw new Error('Report archive too large'); return data; },
+    async json<T>(route: string): Promise<T> { return parsed<T>(await call(route)); },
+    // A read that may find nothing: null for a 404, never for any other failure.
+    async optional<T>(route: string): Promise<T | null> { const response = await call(route, { missing: true }); return response ? parsed<T>(response) : null; },
+    async optionalText(route: string): Promise<string | null> { const response = await call(route, { missing: true }); return response ? response.text() : null; },
+    async send<T>(method: string, route: string, body: unknown): Promise<T> { return parsed<T>(await call(route, { method, body })); },
+    async bytes(route: string): Promise<Buffer> { const data = Buffer.from(await (await call(route))!.arrayBuffer().catch(() => { throw new Error(`Invalid ${label} response`); })); if (data.length > MAX_ARCHIVE) throw new Error('Report archive too large'); return data; },
   };
 }
+
+// A path in a URL, each segment encoded and the slashes kept.
+const encodePath = (value: string) => value.split('/').map(encodeURIComponent).join('/');
 
 const REPORT_ARTIFACT = /junit|test[-_ ]?(report|result)s?/i;
 interface GithubRun { id: number; head_sha: string; head_branch?: string }
@@ -79,8 +88,8 @@ function githubApi(options: ScmApiOptions): ScmApi | null {
 
     // `mergeable` is null while GitHub still computes it; false means the change conflicts with its base.
     async changeState(repository, url): Promise<ScmChangeState> {
-      const pull = await http.json<{ state?: string; mergeable?: boolean | null; head?: { sha?: string } }>(change(repository, url));
-      return { open: pull.state === 'open', headSha: pull.head?.sha ?? null, conflicting: typeof pull.mergeable === 'boolean' ? !pull.mergeable : null };
+      const pull = await http.json<{ state?: string; merged?: boolean; mergeable?: boolean | null; head?: { sha?: string } }>(change(repository, url));
+      return { open: pull.state === 'open', merged: pull.merged === true, headSha: pull.head?.sha ?? null, conflicting: typeof pull.mergeable === 'boolean' ? !pull.mergeable : null };
     },
 
     // The JUnit artifacts of the finished workflow runs of the branch's newest commit, one suite per artifact.
@@ -116,6 +125,30 @@ function githubApi(options: ScmApiOptions): ScmApi | null {
       }
       return found;
     },
+
+    async readFile(repository, file, ref) {
+      const found = await http.optional<{ content?: string; encoding?: string }>(`${repo(repository)}/contents/${encodePath(file)}?ref=${encodeURIComponent(ref)}`);
+      return found?.content && found.encoding === 'base64' ? Buffer.from(found.content, 'base64').toString('utf8') : null;
+    },
+
+    // A branch from the base's head, the file written on it in one commit, and a pull request back into the base.
+    async proposeFile(repository, input) {
+      const head = await http.json<{ object?: { sha?: string } }>(`${repo(repository)}/git/ref/heads/${encodePath(input.base)}`);
+      if (!head.object?.sha) throw new Error('The base branch has no head');
+      await http.send('POST', `${repo(repository)}/git/refs`, { ref: `refs/heads/${input.branch}`, sha: head.object.sha });
+      const existing = await http.optional<{ sha?: string }>(`${repo(repository)}/contents/${encodePath(input.path)}?ref=${encodeURIComponent(input.base)}`);
+      await http.send('PUT', `${repo(repository)}/contents/${encodePath(input.path)}`, { message: input.title, content: Buffer.from(input.content).toString('base64'), branch: input.branch, ...(existing?.sha ? { sha: existing.sha } : {}) });
+      const pull = await http.send<{ html_url?: string }>('POST', `${repo(repository)}/pulls`, { title: input.title, body: input.body, head: input.branch, base: input.base });
+      if (!pull.html_url) throw new Error('GitHub opened no pull request');
+      return pull.html_url;
+    },
+
+    // What the merge gate matches required checks against: the check runs and the commit statuses of the branch's head.
+    async checkNames(repository, ref) {
+      const runs = await http.json<{ check_runs?: { name?: string }[] }>(`${repo(repository)}/commits/${encodePath(ref)}/check-runs?per_page=100`);
+      const status = await http.json<{ statuses?: { context?: string }[] }>(`${repo(repository)}/commits/${encodePath(ref)}/status`);
+      return [...new Set([...(runs.check_runs ?? []).map(run => run.name), ...(status.statuses ?? []).map(item => item.context)].filter((name): name is string => Boolean(name)))].sort();
+    },
   };
 }
 
@@ -142,7 +175,7 @@ function gitlabApi(options: ScmApiOptions): ScmApi | null {
     async changeState(repository, url): Promise<ScmChangeState> {
       const found = await http.json<{ state?: string; sha?: string; has_conflicts?: boolean; detailed_merge_status?: string }>(change(repository, url));
       const checking = ['unchecked', 'checking', 'preparing', 'approvals_syncing'].includes(found.detailed_merge_status ?? '');
-      return { open: found.state === 'opened', headSha: found.sha ?? null, conflicting: checking || typeof found.has_conflicts !== 'boolean' ? null : found.has_conflicts };
+      return { open: found.state === 'opened', merged: found.state === 'merged', headSha: found.sha ?? null, conflicting: checking || typeof found.has_conflicts !== 'boolean' ? null : found.has_conflicts };
     },
 
     // The pipeline test report is already parsed by the host: one suite per job that uploaded a JUnit report.
@@ -169,6 +202,27 @@ function gitlabApi(options: ScmApiOptions): ScmApi | null {
     async environments(repository): Promise<ScmEnvironment[]> {
       const listed = await http.json<{ name?: string; external_url?: string | null; state?: string }[]>(`${project(repository)}/environments?states=available&per_page=100`);
       return (Array.isArray(listed) ? listed : []).filter(item => item.name && item.external_url).map(item => ({ name: item.name!, url: item.external_url!, branch: null }));
+    },
+
+    async readFile(repository, file, ref) {
+      return http.optionalText(`${project(repository)}/repository/files/${encodeURIComponent(file)}/raw?ref=${encodeURIComponent(ref)}`);
+    },
+
+    // One commit on a new branch from the base, and a merge request back into it.
+    async proposeFile(repository, input) {
+      const existing = await http.optionalText(`${project(repository)}/repository/files/${encodeURIComponent(input.path)}/raw?ref=${encodeURIComponent(input.base)}`);
+      await http.send('POST', `${project(repository)}/repository/commits`, { branch: input.branch, start_branch: input.base, commit_message: input.title, actions: [{ action: existing === null ? 'create' : 'update', file_path: input.path, content: input.content }] });
+      const request = await http.send<{ web_url?: string }>('POST', `${project(repository)}/merge_requests`, { source_branch: input.branch, target_branch: input.base, title: input.title, description: input.body, remove_source_branch: true });
+      if (!request.web_url) throw new Error('GitLab opened no merge request');
+      return request.web_url;
+    },
+
+    // What the merge gate matches required checks against: the job names of the branch's latest pipeline.
+    async checkNames(repository, ref) {
+      const [latest] = await http.json<{ id: number }[]>(`${project(repository)}/pipelines?ref=${encodeURIComponent(ref)}&per_page=1`);
+      if (!latest) return [];
+      const jobs = await http.json<{ name?: string }[]>(`${project(repository)}/pipelines/${latest.id}/jobs?per_page=100`);
+      return [...new Set((Array.isArray(jobs) ? jobs : []).map(job => job.name).filter((name): name is string => Boolean(name)))].sort();
     },
   };
 }

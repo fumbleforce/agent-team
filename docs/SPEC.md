@@ -277,7 +277,7 @@ Every call checks: running turn and live lease; tool allowed for the turn kind; 
 ### 9.8 Worktrees, publish, approvals, merge
 - One work worktree per task, reused across turns, built by the ported runner sequence (container, ancestor validation, base inspection, no-checkout add, sparse exclusions, checkout, exclusion verification, overlays). Review and test worktrees are detached at the head sha with the same exclusions.
 - Publish is worker code: diff gate, push without force, then a new SCM adapter method `publish()` that creates or updates the draft change. Both SCM adapters implement it; `publishInstructions` prose goes away.
-- Approvals are written only by `task.review` in a review turn, by an agent wearing a role with that approval kind, never the author, distinct agents per kind. They become valid when the worker reports verified head shas and go stale on any head change.
+- A change has one approval, the reviewer's: written only by `task.review` in a review turn, by the team's reviewer (who runs the change and checks it against its brief), never the author. The PM agrees the brief at triage and does not review the result. An approval becomes valid when the worker reports the verified head sha and goes stale on any head change.
 - `deliver()` in `packages/worker/src/deliver/deliver.ts` is the only merge path. Its gate logic is carried over unchanged and runs as a leased `deliver` turn, one per project at a time. Its one change: `approvals` becomes a function so the pre-merge re-validation re-reads platform state.
 
 ### 9.9 Failure handling

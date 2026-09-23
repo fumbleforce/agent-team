@@ -70,16 +70,28 @@ test('an expired write turn is uncertain, quarantines its task and is never hand
   await storage.close();
 });
 
-test('a deferred turn returns its item to the queue; a failed one blocks the task', async () => {
+test('a deferred turn returns its item to the queue; a failed one runs once more with its failure in hand, then blocks the task', async () => {
   const { storage, turns, projectId, taskId, agent, tick } = await boot();
+  const state = async () => (await storage.db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state;
   await turns.enqueue({ agentId: agent('Bram'), projectId, kind: 'work', taskId });
   const first = (await turns.claim(worker(projectId)))!;
   await turns.finish(first.turnId, 'w1', first.leaseToken, { state: 'deferred', stopReason: 'rate-limited' });
   assert.equal(await turns.claim(worker(projectId)), null);
   tick(5 * 60_000 + 1);
   const second = (await turns.claim(worker(projectId)))!;
-  await turns.finish(second.turnId, 'w1', second.leaseToken, { state: 'failed', stopReason: 'crashed' });
-  assert.equal((await storage.db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'blocked');
+  await turns.finish(second.turnId, 'w1', second.leaseToken, { state: 'failed', stopReason: 'crashed', summary: 'engine exited: out of memory' });
+  assert.notEqual(await state(), 'blocked', 'one crash is tried again');
+  const third = (await turns.claim(worker(projectId)))!;
+  assert.match(third.packet.prompt, /# Your last turn on this task failed\nIt stopped with crashed: engine exited: out of memory/);
+  await turns.finish(third.turnId, 'w1', third.leaseToken, { state: 'failed', stopReason: 'crashed' });
+  assert.equal(await state(), 'blocked', 'a second failure in a row sets the task aside');
+
+  // What trying again cannot change is not tried again.
+  await storage.db.updateTable('tasks').set({ state: 'in_progress', blocked_reason: null }).where('id', '=', taskId).execute();
+  await turns.enqueue({ agentId: agent('Bram'), projectId, kind: 'work', taskId, dedupeKey: 'again' });
+  const signedOut = (await turns.claim(worker(projectId)))!;
+  await turns.finish(signedOut.turnId, 'w1', signedOut.leaseToken, { state: 'failed', stopReason: 'auth' });
+  assert.equal(await state(), 'blocked');
   await storage.close();
 });
 

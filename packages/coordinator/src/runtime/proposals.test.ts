@@ -16,6 +16,9 @@ async function boot() {
   // A role a proposal names has to be in the role library, as it is on every real start.
   await createVersionedDocs(context).seed('role', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'roles.json'), 'utf8')) as Record<string, unknown>);
   const projectId = await createWorkspace(context).registerProject({ slug: 'shop', name: 'Shop', kind: 'repo', manifest: {} });
+  // A fourth seat, so that a majority is not everyone.
+  const rune = await storage.db.selectFrom('agents').selectAll().where('name', '=', 'Rune').executeTakeFirstOrThrow();
+  await storage.db.insertInto('agents').values({ ...rune, id: 'cleo', name: 'Cleo', initials: 'CL', sort: rune.sort + 1 }).execute();
   const agents = Object.fromEntries((await storage.db.selectFrom('agents').select(['id', 'name']).execute()).map(agent => [agent.name, agent.id])) as Record<string, string>;
   const turn = (name: string) => ({ agent_id: agents[name]!, project_id: projectId });
   return { storage, db: storage.db, proposals: createProposals(context), agents, turn, projectId };

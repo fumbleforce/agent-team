@@ -10,6 +10,7 @@ import { saysNothing } from './reports.ts';
 // A session's input grows with every resumed turn; past this many tokens the next turn starts a new one from a packet.
 export const ROTATE_AT_TOKENS = 120_000;
 const CONTINUE = 'continue:', REQUEUE = 'resume:', CARRY = 'carry:';
+const RETRYABLE = new Set(['crashed', 'context-overflow']);
 // An owner carries on with its own task turn after turn. After this many turns in a row that changed nothing, the PM is brought in instead.
 export const STALLED_AFTER = 3;
 // However busy the turns look, a task that has taken this many of them is looked at by the PM before it takes more: carrying on is
@@ -122,6 +123,16 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
         const item = await tx.selectFrom('work_items').select('dedupe_key').where('id', '=', turn.work_item_id).executeTakeFirst();
         if (item?.dedupe_key?.startsWith(`${CARRY}timeout:`) || !(await stillTheirs(tx, turn))) return { requeued: false, drafts: [] };
         return { requeued: true, drafts: [await queueWork(tx, turn, `${CARRY}timeout:${turn.id}`)] };
+      }
+      // A work turn that failed on its own terms (the engine crashed, the context ran over) runs once more with the failure in its packet;
+      // a second failure in a row sets the task aside. What cannot change by trying again (a sign-in, the worker's setup, a write outside
+      // the task's scope, a push) is not retried. A turn whose outcome is unknown never reaches here: its lease expired instead.
+      if (outcome.state === 'failed' && RETRYABLE.has(outcome.stopReason ?? 'crashed')) {
+        const item = await tx.selectFrom('work_items').select('dedupe_key').where('id', '=', turn.work_item_id).executeTakeFirst();
+        if (item?.dedupe_key?.startsWith(`${CARRY}failed:`) || !(await stillTheirs(tx, turn))) return { requeued: false, drafts: [] };
+        // A session that ran out of room is not resumed: the retry starts from the packet in a new one.
+        if (outcome.stopReason === 'context-overflow' && turn.session_id) await tx.updateTable('agent_sessions').set({ state: 'rotated' }).where('id', '=', turn.session_id).execute();
+        return { requeued: true, drafts: [await queueWork(tx, turn, `${CARRY}failed:${turn.id}`)] };
       }
       // task.update writes the turn's summary; an engine without platform tools reports through its final summary — unless that
       // summary is bare, which is no report at all.

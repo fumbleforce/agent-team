@@ -21,7 +21,7 @@ export const TASK_RULES: Record<TurnKind, string> = {
   conclude: 'Decide the proposal below by calling deliberation.conclude. Name the outcome, state the decision in plain words with owners, and address every against or blocking block in dissent. Escalate when it changes scope, milestones, budget or the team beyond what you may decide.',
   triage: 'Someone raised what is in the thread below. Settle it in this turn by calling triage.decide once. If it is work to do (a defect, a change, a request), the outcome is accept, with ownerAgentId set to the teammate below whose role fits (of several who fit, the one with the least in hand) and a priority: that makes a task on the board and starts them on it, so say who takes it and why in the decision (outside an issue, also give the task a title). When what was raised is several pieces of work, add each with task.create instead and answer with what you added. If it only needs an answer, the outcome is answer and the decision is the answer. Use decline or duplicate when that is what it is, and escalate when only the owner of the project can decide. Open a deliberation instead only when the team really has to weigh in first. Never file a second issue for what was raised here: this thread already is the issue. When the latest message is a workload note from the platform, act on it in this turn: move waiting tasks to a free teammate whose role may do them with task.assign, and when nobody can, ask for a hire the way the note says (say which role, and the evidence: how many tasks wait and for how long); then answer with what you did.',
   reply: 'Answer the message below in the thread with discussion.post. Be factual and brief: a few lines. If it gives you direction for a task of yours listed below, say how you will follow it; your next turn on that task sees the message too. If you are the PM and are asked to put work on the board, do it with task.create (after task.list, so nothing is added twice) and say what you added.',
-  review: 'Review the task below. Your folder is a throwaway checkout of exactly the revision under review: read it, run what you need if you can run commands, and change nothing. Judge whether the change does what the task is for, not whether it follows the wording of the brief, and look for what your role looks for: another colleague looks for the rest, so do not repeat their check. A finding names the file, what goes wrong and how you know; something you only suspect is said as a suspicion. Pass what you would stand behind, not what you could not fault in the time. Then record your verdict with the task.review tool (you do not need the commit id). The verdict is the whole point of this turn: a review that ends without a task.review call counts for nothing and is asked for again, so call it before you write anything else, even when all you can say is what you could not check. Keep it short: a few minutes. If you start a server or a watcher to check something, stop it again before you finish; a command that does not return makes the whole review run out of time.',
+  review: 'Review the task below. Your folder is a throwaway checkout of exactly the revision under review: read it and run it, and change nothing. You are the only review this change gets before it merges. Run the tests and whatever else shows it works, try the input the author did not, and judge whether the change does what the task is for, not whether it follows the wording of the brief. Whether it was worth doing is settled; whether it works and fits the code is yours. A finding names the file, what goes wrong and how you know; something you only suspect is said as a suspicion. Pass what you would stand behind, not what you could not fault in the time. Then record your verdict with the task.review tool (you do not need the commit id). The verdict is the whole point of this turn: a review that ends without a task.review call counts for nothing and is asked for again, so call it before you write anything else, even when all you can say is what you could not check. Keep it short: a few minutes. If you start a server or a watcher to check something, stop it again before you finish; a command that does not return makes the whole review run out of time.',
   retro: 'The weekly retro is open in the thread below, with the figures of this week. Post one note with discussion.post: what went well in a line, and at most three problems with their evidence and a suggestion. If you are the PM, read the notes already there and turn at most three of them into team proposals with proposal.create.',
   ideate: 'The backlog has room. Propose at most three substantial next pieces of work by calling ideas.propose once: each with its problem, benefit, scope, success criteria, size, evidence and why now. Do not repeat what is listed below. Each idea becomes an issue that waits for the owner; nothing is built before the owner approves it.',
   publish: '', deliver: '', capture: '',
@@ -80,6 +80,8 @@ export async function buildResumeDelta(tx: Tx, turn: { agentId: string; projectI
   const task = await tx.selectFrom('tasks').select(['key', 'title', 'brief', 'updated_at', 'journal']).where('id', '=', turn.taskId).executeTakeFirst();
   const journal = journalPart(task?.journal ?? null);
   if (journal) parts.push(journal);
+  const failed = await failurePart(tx, turn.taskId, turn.agentId);
+  if (failed) parts.push(failed);
   const advice = await advicePart(tx, turn.taskId, turn.agentId);
   if (advice) parts.push(advice);
   if (task && Number(task.updated_at) > turn.since && task.brief) parts.push(`# The task as it reads now (it changed since your last turn)\n${task.key}: ${task.title}\n${clip(task.brief, 2000)}`);
@@ -116,6 +118,8 @@ export async function buildResumePacket(tx: Tx, turn: { agentId: string; project
   if ((await tx.selectFrom('tasks').select('result_kind').where('id', '=', turn.taskId).executeTakeFirst())?.result_kind === 'document') parts.push(DOCUMENT_WORK);
   const journal = journalPart(task.journal);
   if (journal) parts.push(journal);
+  const failed = await failurePart(tx, turn.taskId, turn.agentId);
+  if (failed) parts.push(failed);
   const advice = await advicePart(tx, turn.taskId, turn.agentId);
   if (advice) parts.push(advice);
   const handed = await handedOver(tx, turn.taskId);
@@ -135,6 +139,15 @@ export async function buildResumePacket(tx: Tx, turn: { agentId: string; project
 }
 
 // Advice the owner asked for on this task: each colleague's one block, as given. The decision is the owner's.
+// When this agent's last finished turn on the task failed, what it failed with: the turn that follows starts from it.
+async function failurePart(tx: Tx, taskId: string, agentId: string): Promise<string | null> {
+  const last = await tx.selectFrom('turns').select(['state', 'stop_reason', 'summary']).where('task_id', '=', taskId).where('agent_id', '=', agentId).where('kind', '=', 'work').where('finished_at', 'is not', null).orderBy('finished_at', 'desc').limit(1).executeTakeFirst();
+  if (last?.state !== 'failed') return null;
+  return `# Your last turn on this task failed
+It stopped with ${last.stop_reason ?? 'an error'}${last.summary ? `: ${clip(last.summary, 1200)}` : '.'}
+Work out why before you go on. If it cannot be put right from here, call task.update with blocked and say what is needed.`;
+}
+
 async function advicePart(tx: Tx, taskId: string, agentId: string): Promise<string | null> {
   const asked = await tx.selectFrom('deliberations').select(['id', 'question']).where('task_id', '=', taskId).where('kind', '=', 'advice').where('proposer_agent_id', '=', agentId).where('state', '=', 'decided').orderBy('created_at', 'desc').executeTakeFirst();
   if (!asked) return null;
@@ -204,6 +217,8 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
     // The journal is its owner's working record; a reviewer judges the work, not the owner's notes on it.
     const journal = task && turn.kind === 'work' && task.assignee_agent_id === turn.agentId ? journalPart(task.journal) : null;
     if (journal) parts.push(journal);
+    const failed = turn.kind === 'work' ? await failurePart(tx, turn.taskId, turn.agentId) : null;
+    if (failed) parts.push(failed);
     const advice = turn.kind === 'work' ? await advicePart(tx, turn.taskId, turn.agentId) : null;
     if (advice) parts.push(advice);
     const handed = await handedOver(tx, turn.taskId);

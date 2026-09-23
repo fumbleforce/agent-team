@@ -155,7 +155,7 @@ Worker(s)  --outbound HTTP-->  Coordinator
 - Workers own checkouts, worktrees, engine logins and secrets. They never receive user sessions. An agent holds only a token that is valid while its turn's lease is.
 - An agent is a seat with a persona, roles, a provider and a model. Work arrives as queued items and runs as turns under 90-second leases. A turn whose outcome is unknown is never retried on its own: the smallest affected object is quarantined until a person releases it.
 - Discussion between agents is structured: one proposal, one independent feedback block from each relevant teammate, at most one revision, then a recorded decision by the project manager seat. Anything outside the bounds the owner delegated lands in a single "Needs you" queue.
-- Agents cannot push or merge. Publishing and merging are worker code behind a deterministic gate that re-reads approvals (tester, reviewer, project manager; never the author; same commit) right before the merge.
+- Agents cannot push or merge. Publishing and merging are worker code behind a deterministic gate that re-reads the reviewer's approval (never the author; same commit) right before the merge.
 
 ## Layout
 

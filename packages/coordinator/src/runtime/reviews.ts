@@ -1,44 +1,54 @@
 import { newId, type EventDraft } from '@agent-team/protocol';
-import type { Tx } from '@agent-team/storage';
+import type { Db, Tx } from '@agent-team/storage';
 import { HttpError, type Context } from '../context.ts';
 import { moveTask } from './taskMoves.ts';
 import type { Turns } from './turns.ts';
 
-export const APPROVAL_KINDS = ['tester', 'reviewer', 'pm'] as const;
+// Revisions of one task sent back with changes before the PM is brought in.
+export const REVIEW_ROUNDS = 3;
+
+// One review decides: a reviewer who runs the change and checks it against its brief. The PM agreed the brief before the work began,
+// so it does not review the result again. Teams made before there was one reviewer may still have testers and PMs, who stand in for one.
+export const APPROVAL_KINDS = ['reviewer'] as const;
 export type ApprovalKind = (typeof APPROVAL_KINDS)[number];
-const PASSING: Record<ApprovalKind, string> = { tester: 'pass', reviewer: 'pass', pm: 'pass' };
+const REVIEWING_ROLES = ['reviewer', 'tester', 'pm'];
 const SHA = /^[0-9a-f]{40}$/;
 // A verdict given from a worker's turn waits until that worker reports the head its review worktree was verified at; then it
 // is valid, or stale when the head was another one or has moved. Only valid verdicts are ever counted.
 const PENDING = 'pending-verification', LIVE = ['valid', PENDING];
 const refuse = (message: string) => new HttpError(409, 'review', message);
 
-export interface ReviewInput { kind: ApprovalKind; verdict: 'pass' | 'changes' | 'fail'; headSha: string; summary: string; findings: { severity: string; path?: string | undefined; note: string }[] }
+export interface ReviewInput { kind?: string | undefined; verdict: 'pass' | 'changes' | 'fail'; headSha: string; summary: string; findings: { severity: string; path?: string | undefined; note: string }[] }
 
-// Approvals are platform records, written only from a review turn, by an agent wearing that role, never the author,
-// one agent per kind, all at the same head. They replace the coordinator's self-attested verdicts.
+// Approvals are platform records, written only from a review turn, by an agent wearing a reviewing role, never the author,
+// at the head under review. They replace the coordinator's self-attested verdicts.
 export function createReviews(context: Context, turns: Turns) {
   const { storage, events, now } = context;
 
-  async function reviewersFor(tx: Tx, projectId: string, authorId: string | null) {
+  async function reviewersFor(tx: Db | Tx, projectId: string, authorId: string | null) {
     const project = await tx.selectFrom('projects').select(['team_id', 'parent_id']).where('id', '=', projectId).executeTakeFirstOrThrow();
     const teamId = project.team_id ?? (project.parent_id ? (await tx.selectFrom('projects').select('team_id').where('id', '=', project.parent_id).executeTakeFirst())?.team_id : null);
     if (!teamId) return [];
-    const rows = await tx.selectFrom('agents').innerJoin('agent_roles', 'agent_roles.agent_id', 'agents.id').select(['agents.id', 'agent_roles.role_slug']).where('agents.team_id', '=', teamId).where('agents.status', '=', 'active').where('agent_roles.role_slug', 'in', [...APPROVAL_KINDS]).orderBy('agents.sort').execute();
-    const chosen = new Map<ApprovalKind, string>();
-    for (const row of rows) {
-      const kind = row.role_slug as ApprovalKind;
-      if (row.id !== authorId && !chosen.has(kind) && ![...chosen.values()].includes(row.id)) chosen.set(kind, row.id);
-    }
-    return [...chosen].map(([kind, agentId]) => ({ kind, agentId }));
+    const rows = await tx.selectFrom('agents').innerJoin('agent_roles', 'agent_roles.agent_id', 'agents.id').select(['agents.id', 'agent_roles.role_slug']).where('agents.team_id', '=', teamId).where('agents.status', '=', 'active').where('agent_roles.role_slug', 'in', REVIEWING_ROLES).orderBy('agents.sort').execute();
+    // A reviewer first, else whoever stands in for one; never the author.
+    const others = rows.filter(row => row.id !== authorId), chosen = REVIEWING_ROLES.map(role => others.find(row => row.role_slug === role)).find(Boolean);
+    return chosen ? [{ kind: 'reviewer' as ApprovalKind, agentId: chosen.id }] : [];
+  }
+
+  // The merge is a turn without a model; it runs under the PM's seat, or the reviewer's where the team has no PM.
+  async function delivererFor(tx: Db | Tx, projectId: string, reviewerId: string | null) {
+    const project = await tx.selectFrom('projects').select(['team_id', 'parent_id']).where('id', '=', projectId).executeTakeFirstOrThrow();
+    const teamId = project.team_id ?? (project.parent_id ? (await tx.selectFrom('projects').select('team_id').where('id', '=', project.parent_id).executeTakeFirst())?.team_id : null);
+    const pm = teamId ? await tx.selectFrom('agents').select('id').where('team_id', '=', teamId).where('is_pm', '=', true).where('status', '=', 'active').executeTakeFirst() : undefined;
+    return pm?.id ?? reviewerId;
   }
 
   // With every required kind passing and valid at this head, the task is approved and its merge queued.
   async function settle(tx: Tx, task: { project_id: string; assignee_agent_id: string | null }, taskId: string, headSha: string, by: { agentId: string; turnId: string; kind: string; verdict: string }) {
     const valid = await tx.selectFrom('approvals').select(['kind', 'verdict']).where('task_id', '=', taskId).where('state', '=', 'valid').where('head_sha', '=', headSha).execute();
     const reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id), required = reviewers.map(reviewer => reviewer.kind);
-    const approved = required.length > 0 && required.every(kind => valid.some(row => row.kind === kind && row.verdict === PASSING[kind]));
-    const pm = reviewers.find(reviewer => reviewer.kind === 'pm')?.agentId ?? null;
+    const approved = required.length > 0 && required.every(kind => valid.some(row => row.kind === kind && row.verdict === 'pass'));
+    const pm = approved ? await delivererFor(tx, task.project_id, reviewers[0]?.agentId ?? null) : null;
     if (!approved) return { approved, pm, drafts: [] as EventDraft[] };
     const moved = await moveTask(tx, taskId, 'approved', { now: now(), actor: { actorKind: 'agent', agentId: by.agentId, turnId: by.turnId }, payload: { headSha } });
     if (!await tx.selectFrom('merge_queue').select('id').where('task_id', '=', taskId).where('head_sha', '=', headSha).where('state', 'in', ['queued', 'running']).executeTakeFirst())
@@ -47,7 +57,7 @@ export function createReviews(context: Context, turns: Turns) {
   }
 
   return {
-    // Called when a task reaches review at a head: asks one reviewer per kind.
+    // Called when a task reaches review at a head: asks its reviewer.
     async request(taskId: string, headSha: string) {
       if (!SHA.test(headSha)) throw refuse('A review needs the full head sha');
       const result = await storage.transaction(async tx => {
@@ -80,8 +90,8 @@ export function createReviews(context: Context, turns: Turns) {
         const task = await tx.selectFrom('tasks').select(['id', 'project_id', 'assignee_agent_id', 'head_sha', 'state']).where('id', '=', taskId).executeTakeFirst();
         if (!task?.head_sha || !['blocked', 'approved'].includes(task.state)) throw refuse('Only a task whose merge was refused can be merged again');
         const valid = await tx.selectFrom('approvals').select('kind').where('task_id', '=', taskId).where('state', '=', 'valid').where('head_sha', '=', task.head_sha).where('verdict', '=', 'pass').execute();
-        const reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id), pm = reviewers.find(reviewer => reviewer.kind === 'pm')?.agentId;
-        if (!pm || !reviewers.every(reviewer => valid.some(row => row.kind === reviewer.kind))) throw refuse('This revision does not have every approval any more; it has to be reviewed again first');
+        const reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id), pm = await delivererFor(tx, task.project_id, reviewers[0]?.agentId ?? null);
+        if (!pm || !reviewers.length || !reviewers.every(reviewer => valid.some(row => row.kind === reviewer.kind))) throw refuse('This revision does not have every approval any more; it has to be reviewed again first');
         const moved = await moveTask(tx, taskId, 'approved', { set: { blocked_reason: null }, now: now(), actor: { actorKind: 'system', agentId: pm }, payload: { reason: 'deliver-again' } });
         if (!await tx.selectFrom('merge_queue').select('id').where('task_id', '=', taskId).where('state', 'in', ['queued', 'running']).executeTakeFirst())
           await tx.insertInto('merge_queue').values({ id: newId(now()), project_id: task.project_id, task_id: taskId, head_sha: task.head_sha, state: 'queued', reason: null, created_at: now(), finished_at: null }).execute();
@@ -114,7 +124,7 @@ export function createReviews(context: Context, turns: Turns) {
           const headSha = task.head_sha!, reviewers = await reviewersFor(tx, task.project_id, task.assignee_agent_id);
           const live = await tx.selectFrom('work_items').select(['agent_id', 'kind']).where('task_id', '=', task.id).where('state', 'in', ['queued', 'leased']).execute();
           if (task.state === 'approved' || task.state === 'merging') {
-            const pm = reviewers.find(reviewer => reviewer.kind === 'pm')?.agentId, queued = await tx.selectFrom('merge_queue').select('id').where('task_id', '=', task.id).where('state', '=', 'queued').executeTakeFirst();
+            const pm = await delivererFor(tx, task.project_id, reviewers[0]?.agentId ?? null), queued = await tx.selectFrom('merge_queue').select('id').where('task_id', '=', task.id).where('state', '=', 'queued').executeTakeFirst();
             if (pm && queued && !live.some(item => item.kind === 'deliver')) merges.push({ agentId: pm, projectId: task.project_id, taskId: task.id, headSha });
             continue;
           }
@@ -148,21 +158,27 @@ export function createReviews(context: Context, turns: Turns) {
         const task = await tx.selectFrom('tasks').select(['project_id', 'assignee_agent_id', 'head_sha']).where('id', '=', taskId).executeTakeFirstOrThrow();
         if (task.assignee_agent_id === turn.agent_id) throw refuse('The author cannot approve its own work');
         if (task.head_sha !== input.headSha) throw refuse(`The task is at ${task.head_sha ?? 'no head'}; review that revision`);
-        if (!await tx.selectFrom('agent_roles').select('role_slug').where('agent_id', '=', turn.agent_id).where('role_slug', '=', input.kind).executeTakeFirst()) throw refuse(`You do not hold the ${input.kind} role`);
-        if (await tx.selectFrom('approvals').select('id').where('task_id', '=', taskId).where('state', 'in', LIVE).where('agent_id', '=', turn.agent_id).where('kind', '!=', input.kind).executeTakeFirst()) throw refuse('One agent gives one kind of approval per revision');
-        await tx.updateTable('approvals').set({ state: 'stale' }).where('task_id', '=', taskId).where('kind', '=', input.kind).where('state', 'in', LIVE).execute();
-        await tx.insertInto('approvals').values({ id: newId(now()), task_id: taskId, kind: input.kind, agent_id: turn.agent_id, turn_id: turn.id, head_sha: input.headSha, verdict: input.verdict, findings: JSON.stringify(input.findings), summary: input.summary, state, created_at: now() }).execute();
+        if (!await tx.selectFrom('agent_roles').select('role_slug').where('agent_id', '=', turn.agent_id).where('role_slug', 'in', REVIEWING_ROLES).executeTakeFirst()) throw refuse('You do not hold the reviewer role');
+        // Only the seat asked to review decides; a PM or tester left over from before there was one reviewer does not approve beside it.
+        if ((await reviewersFor(tx, task.project_id, task.assignee_agent_id))[0]?.agentId !== turn.agent_id) throw refuse('Another seat reviews this task');
+        // Whatever kind an older prompt names, a verdict is the one review a change has.
+        const kind: ApprovalKind = 'reviewer';
+        await tx.updateTable('approvals').set({ state: 'stale' }).where('task_id', '=', taskId).where('kind', '=', kind).where('state', 'in', LIVE).execute();
+        await tx.insertInto('approvals').values({ id: newId(now()), task_id: taskId, kind, agent_id: turn.agent_id, turn_id: turn.id, head_sha: input.headSha, verdict: input.verdict, findings: JSON.stringify(input.findings), summary: input.summary, state, created_at: now() }).execute();
 
         const rejected = input.verdict !== 'pass';
-        const settled = await settle(tx, task, taskId, input.headSha, { agentId: turn.agent_id, turnId: turn.id, kind: input.kind, verdict: input.verdict });
-        const drafts: EventDraft[] = [{ type: 'review.recorded', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: task.project_id, taskId, turnId: turn.id, payload: { kind: input.kind, verdict: input.verdict, headSha: input.headSha, state } }, ...settled.drafts];
+        const settled = await settle(tx, task, taskId, input.headSha, { agentId: turn.agent_id, turnId: turn.id, kind, verdict: input.verdict });
+        const drafts: EventDraft[] = [{ type: 'review.recorded', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: task.project_id, taskId, turnId: turn.id, payload: { kind, verdict: input.verdict, headSha: input.headSha, state } }, ...settled.drafts];
         // Findings go back at once; an approval waits for its verification.
-        if (!settled.approved && rejected) drafts.push(...await moveTask(tx, taskId, 'in_progress', { now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, payload: { reason: 'changes-requested', kind: input.kind } }));
-        return { approved: settled.approved, rejected, pm: settled.pm, projectId: task.project_id, author: task.assignee_agent_id, published: await events.append(tx, drafts) };
+        if (!settled.approved && rejected) drafts.push(...await moveTask(tx, taskId, 'in_progress', { now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, payload: { reason: 'changes-requested', kind } }));
+        // Changes asked for on three revisions of one task: the PM looks at it before the author goes round again.
+        const rounds = rejected ? (await tx.selectFrom('approvals').select('head_sha').distinct().where('task_id', '=', taskId).where('verdict', '!=', 'pass').execute()).length : 0;
+        return { approved: settled.approved, rejected, rounds, pm: settled.pm, projectId: task.project_id, author: task.assignee_agent_id, published: await events.append(tx, drafts) };
       });
       events.published(result.published);
       // Findings go back to the author as its next work item on the task.
-      if (result.rejected && result.author) await turns.enqueue({ agentId: result.author, projectId: result.projectId, kind: 'work', taskId, dedupeKey: `work:${taskId}` });
+      if (result.rejected && result.author && !(result.rounds >= REVIEW_ROUNDS && await turns.bringInPm({ projectId: result.projectId, taskId, agentId: result.author, reason: 'review-rounds' })))
+        await turns.enqueue({ agentId: result.author, projectId: result.projectId, kind: 'work', taskId, dedupeKey: `work:${taskId}` });
       // Merging is a deterministic turn with no model; it runs under the PM's seat so it shows in its lane.
       if (result.approved && result.pm) await turns.enqueue({ agentId: result.pm, projectId: result.projectId, kind: 'deliver', taskId, dedupeKey: `deliver:${taskId}:${input.headSha}` });
       return { approved: result.approved };
@@ -193,10 +209,12 @@ export function createReviews(context: Context, turns: Turns) {
 
     // Everything the worker's merge gate needs, read at the moment it asks.
     async deliveryFor(taskId: string) {
-      const task = await storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['tasks.key', 'tasks.title', 'tasks.head_sha', 'tasks.pr_url', 'tasks.state', 'projects.manifest']).where('tasks.id', '=', taskId).executeTakeFirstOrThrow();
+      const task = await storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['tasks.key', 'tasks.title', 'tasks.head_sha', 'tasks.pr_url', 'tasks.state', 'tasks.project_id', 'tasks.assignee_agent_id', 'projects.manifest']).where('tasks.id', '=', taskId).executeTakeFirstOrThrow();
       if (task.state !== 'approved' && task.state !== 'merging') throw refuse(`The task is ${task.state}, not approved`);
       if (!task.head_sha) throw refuse('The task has no revision to merge');
-      return { taskKey: task.key, title: task.title, headSha: task.head_sha, prUrl: task.pr_url, manifest: JSON.parse(task.manifest) as Record<string, unknown>, approvals: await this.approvalsFor(taskId, task.head_sha) };
+      // The gate asks for the approvals of the reviewing roles the team has, the same set that approved the task here.
+      const approvalRoles = (await reviewersFor(storage.db, task.project_id, task.assignee_agent_id)).map(reviewer => reviewer.kind);
+      return { taskKey: task.key, title: task.title, headSha: task.head_sha, prUrl: task.pr_url, manifest: JSON.parse(task.manifest) as Record<string, unknown>, approvals: await this.approvalsFor(taskId, task.head_sha), approvalRoles };
     },
 
     // What the merge gate is fed immediately before it merges: current platform state, never a cached copy.

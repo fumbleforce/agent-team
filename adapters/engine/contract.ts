@@ -25,7 +25,7 @@ export interface TurnSpec {
   // How much effort the model is asked to spend, in the tool's own words; ignored by a tool that has no such choice.
   effort?: string | null;
   sessionId: string | null;
-  // 'verify' reads and runs commands but edits nothing: a reviewer or tester in a throwaway checkout of the head under review.
+  // 'verify' reads and runs commands but edits nothing: a reviewer in a throwaway checkout of the head under review.
   toolProfile: 'write' | 'verify' | 'read-only' | 'none';
   platform: { url: string; tokenFile: string } | null;
   // External tools the team connected (remote MCP servers over HTTP), each with its token in a private file of the turn when there is one.

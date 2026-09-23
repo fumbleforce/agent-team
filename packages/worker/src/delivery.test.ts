@@ -40,14 +40,15 @@ async function boot(deliver: DeliverFn, scenario = 'ok', committed?: unknown) {
   return { coordinator, db, worker, turns, reviews, agents, projectId, taskId, calls };
 }
 
-test('work is published, reviewed at its head by three agents, then merged by the gate with platform approvals', async () => {
+test('work is published, reviewed at its head by one reviewer, then merged by the gate with platform approvals', async () => {
   let seen: Parameters<DeliverFn>[0] | null = null, approvalKinds: string[] = [];
   const { coordinator, db, worker, turns, reviews, agents, projectId, taskId, calls } = await boot(async input => { seen = input; approvalKinds = Object.keys(await input.approvals()).sort(); return { state: 'merged', reason: 'confirmed MERGED', mergeAttempted: true, mergeCommit: 'c'.repeat(40) }; });
 
   await turns.enqueue({ agentId: agents.Ada!, projectId, kind: 'work', taskId });
   await worker.tick(); await worker.idle();
-  const afterWork = await db.selectFrom('tasks').select(['pr_url', 'head_sha', 'state']).where('id', '=', taskId).executeTakeFirstOrThrow();
+  const afterWork = await db.selectFrom('tasks').select(['pr_url', 'head_sha', 'state', 'branch']).where('id', '=', taskId).executeTakeFirstOrThrow();
   assert.equal(afterWork.pr_url, PR);
+  assert.equal(afterWork.branch, 'agents/gh-7', 'the pushed branch is kept, so its checks find the task');
   assert.match(afterWork.head_sha ?? '', /^[0-9a-f]{40}$/);
   assert.ok(calls.some(call => call.includes('push')) && !calls.flat().includes('--force'));
   // Named after its task, whatever the agent said at the end of its turn; that goes in the body, said to be its report.
@@ -55,10 +56,9 @@ test('work is published, reviewed at its head by three agents, then merged by th
   assert.equal(created[created.indexOf('--title') + 1], 'GH-7: Fix it');
   assert.match(created[created.indexOf('--body') + 1]!, /^The author's report at the end of its turn:/);
 
-  // Reviews were requested at that head; the three reviewers record their verdicts through the platform.
-  const review = (name: string, kind: 'tester' | 'reviewer' | 'pm') => reviews.record({ id: `turn-${name}`, agent_id: agents[name]!, task_id: taskId, kind: 'review' }, { kind, verdict: 'pass', headSha: afterWork.head_sha!, summary: 'ok', findings: [] });
-  await review('Cleo', 'tester'); await review('Rune', 'reviewer');
-  assert.deepEqual(await review('Maren', 'pm'), { approved: true });
+  // A review was requested at that head; the reviewer records its verdict through the platform, and the PM is not asked.
+  assert.deepEqual((await db.selectFrom('work_items').select('agent_id').where('kind', '=', 'review').execute()).map(item => item.agent_id), [agents.Rune]);
+  assert.deepEqual(await reviews.record({ id: 'turn-Rune', agent_id: agents.Rune!, task_id: taskId, kind: 'review' }, { verdict: 'pass', headSha: afterWork.head_sha!, summary: 'ok', findings: [] }), { approved: true });
 
   // Drain the queued review items (the fake engine answers them), then the delivery turn.
   for (let i = 0; i < 6 && await worker.tick(); i++) await worker.idle();
@@ -68,8 +68,9 @@ test('work is published, reviewed at its head by three agents, then merged by th
   const gate = seen as unknown as Parameters<DeliverFn>[0];
   assert.equal(gate.prUrl, PR);
   assert.equal(gate.branch, 'agents/gh-7');
+  assert.deepEqual(gate.approvalRoles, ['reviewer'], 'the gate asks for the one review the team gave');
   // Read while the delivery turn held its lease: the gate sees the platform's approvals, not a copy.
-  assert.deepEqual(approvalKinds, ['pm', 'reviewer', 'tester']);
+  assert.deepEqual(approvalKinds, ['reviewer']);
   const moves = (await db.selectFrom('events').select('payload').where('task_id', '=', taskId).where('type', '=', 'task.state_changed').orderBy('seq').execute()).map(row => JSON.parse(row.payload) as { from: string; to: string });
   // Every move is said, with where it came from: approval, the merge starting, the merge done. A move nobody announced let a
   // board mirror put the task back where the mirror last saw it.
@@ -82,7 +83,7 @@ test('a gate refusal blocks the task with its reason and merges nothing', async 
   await turns.enqueue({ agentId: agents.Ada!, projectId, kind: 'work', taskId });
   await worker.tick(); await worker.idle();
   const head = (await db.selectFrom('tasks').select('head_sha').where('id', '=', taskId).executeTakeFirstOrThrow()).head_sha!;
-  for (const [name, kind] of [['Cleo', 'tester'], ['Rune', 'reviewer'], ['Maren', 'pm']] as const) await reviews.record({ id: `turn-${name}`, agent_id: agents[name]!, task_id: taskId, kind: 'review' }, { kind, verdict: 'pass', headSha: head, summary: 'ok', findings: [] });
+  await reviews.record({ id: 'turn-Rune', agent_id: agents.Rune!, task_id: taskId, kind: 'review' }, { verdict: 'pass', headSha: head, summary: 'ok', findings: [] });
   for (let i = 0; i < 6 && await worker.tick(); i++) await worker.idle();
   const task = await db.selectFrom('tasks').select(['state', 'blocked_reason']).where('id', '=', taskId).executeTakeFirstOrThrow();
   assert.deepEqual([task.state, task.blocked_reason], ['blocked', 'Required checks missing or not passing']);
@@ -92,9 +93,9 @@ test('a gate refusal blocks the task with its reason and merges nothing', async 
 test('a change outside the write scope of the agent fails the turn and is never published or reviewed', async () => {
   const never: DeliverFn = async () => { throw new Error('unreachable'); };
   const { coordinator, db, worker, turns, agents, projectId, taskId, calls } = await boot(never, 'write:src/pay.ts');
-  // Cleo is the tester: she may write under test, tests and e2e only.
-  await db.updateTable('tasks').set({ assignee_agent_id: agents.Cleo!, state: 'in_progress' }).where('id', '=', taskId).execute();
-  await turns.enqueue({ agentId: agents.Cleo!, projectId, kind: 'work', taskId });
+  // Rune is the reviewer: it runs changes and writes none.
+  await db.updateTable('tasks').set({ assignee_agent_id: agents.Rune!, state: 'in_progress' }).where('id', '=', taskId).execute();
+  await turns.enqueue({ agentId: agents.Rune!, projectId, kind: 'work', taskId });
   await worker.tick(); await worker.idle();
   const turn = await db.selectFrom('turns').select(['state', 'stop_reason', 'summary']).executeTakeFirstOrThrow();
   assert.deepEqual([turn.state, turn.stop_reason], ['failed', 'write-scope']);

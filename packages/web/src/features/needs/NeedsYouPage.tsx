@@ -29,7 +29,7 @@ export function NeedsYouPage({ me, projects }: { me: Me; projects: ProjectNode[]
 function NeedCard({ item, project, onDone }: { item: Item; project: string; onDone(): void }) {
   const [text, setText] = useState(''), [error, setError] = useState<string | null>(null), [busy, setBusy] = useState(false);
   const act = async (path: string, body: unknown) => { setBusy(true); setError(null); try { await api(path, body); onDone(); } catch (failure) { setError(failure instanceof ApiError ? failure.message : 'That did not work; try again.'); } finally { setBusy(false); } };
-  const needsText = item.kind === 'decision' || item.kind === 'quarantine';
+  const needsText = item.kind === 'decision' || item.kind === 'quarantine' || (item.kind === 'blocked' && !item.mergeRefused);
   return (
     <Card tone={item.kind === 'blocked' ? 'raised' : 'decision'} className="flex flex-col gap-2.5">
       <div className="flex items-center gap-2"><Chip tone={LABEL[item.kind].tone}>{LABEL[item.kind].chip}</Chip><Text weight="semibold" truncate>{item.title}</Text><Text size="caption" tone="muted" className="ml-auto whitespace-nowrap">{project} · {ago(item.since)}</Text></div>
@@ -43,10 +43,10 @@ function NeedCard({ item, project, onDone }: { item: Item; project: string; onDo
       </div>}
       {!item.canDecide ? <Text size="caption" tone="muted">Someone who may decide for this project has to settle this.</Text> : (
         <>
-          {needsText && <Field label={item.kind === 'decision' ? 'Your decision, in your own words' : 'A note, if you want to leave one'} error={error ?? undefined}><Textarea rows={2} value={text} onChange={event => setText(event.target.value)} placeholder={item.kind === 'decision' ? 'Go with option B, but keep the old endpoint for one release.' : ''} /></Field>}
+          {needsText && <Field label={item.kind === 'decision' ? 'Your decision, in your own words' : item.kind === 'blocked' ? 'Your answer, if it asked something' : 'A note, if you want to leave one'} error={error ?? undefined}><Textarea rows={2} value={text} onChange={event => setText(event.target.value)} placeholder={item.kind === 'decision' ? 'Go with option B, but keep the old endpoint for one release.' : item.kind === 'blocked' ? 'Use the staging key; the production one is not needed for this.' : ''} /></Field>}
           {!needsText && error && <Text size="small" tone="stop">{error}</Text>}
           <div className="flex flex-wrap gap-2">
-            {item.kind === 'blocked' && !item.mergeRefused && <Button variant="primary" disabled={busy} onClick={() => act(`/api/tasks/${item.id}/carry-on`, {})}>Carry on</Button>}
+            {item.kind === 'blocked' && !item.mergeRefused && <Button variant="primary" disabled={busy} onClick={() => act(`/api/tasks/${item.id}/carry-on`, { answer: text })}>{text.trim() ? 'Answer and carry on' : 'Carry on'}</Button>}
             {item.kind === 'blocked' && item.mergeRefused && <Button variant="primary" disabled={busy} onClick={() => act(`/api/tasks/${item.id}/merge-again`, {})}>Merge again</Button>}
             {item.kind === 'decision' && <Button variant="primary" disabled={busy || !text.trim()} onClick={() => act(`/api/decisions/${item.id}/resolve`, { answer: text })}>Record the decision</Button>}
             {item.kind === 'quarantine' && <><Button variant="primary" disabled={busy} onClick={() => act(`/api/quarantines/${item.id}/release`, { resolution: 'continue', note: text })}>Continue from where it is</Button><Button disabled={busy} onClick={() => act(`/api/quarantines/${item.id}/release`, { resolution: 'stop', note: text })}>Stop this task</Button></>}

@@ -1,8 +1,9 @@
+import { useEffect, useState } from 'react';
 import { Link } from 'wouter';
 import { api, type Me, type ProjectNode } from '../../data/client';
 import { useResource } from '../../data/useResource';
-import { DataTable, SettingsBody, SettingsSection } from '../../patterns';
-import { Button, Chip, Field, Input, Select, StatusDot, Text, Textarea } from '../../ui';
+import { DataTable, MultiPicker, SettingsBody, SettingsSection, StatusLine } from '../../patterns';
+import { Button, Checkbox, Chip, Field, Input, LinkButton, Select, StatusDot, Text, Textarea } from '../../ui';
 import { ActionError, OrgShell, useAction, useCreateKey } from '../org/OrgShell';
 
 interface SettingsView { project: { id: string; slug: string; name: string; kind: string; status: string }; version: number; author: string | null; settings: { description: string; customTabs: { label: string; url: string }[] }; history: { version: number; author: string; note: string | null; created_at: number }[]; can: { configure: boolean; members: boolean; archive: boolean } }
@@ -101,6 +102,36 @@ function ExtraTabs({ tabs, canEdit, onSave }: { tabs: ExtraTab[]; canEdit: boole
   );
 }
 
+interface MergingView { autoMergeAuthorized: boolean; requiredChecks: string[]; publishAuthorized: boolean; repository: string | null; base: string; checks: string[]; canPropose: boolean; proposal: { url: string; autoMerge: boolean; requiredChecks: string[]; at: number } | null }
+
+// Whether the team merges what it approved. It is an authorization, so it is changed by a change request to the project's committed
+// settings, proposed from here and counted once it is merged on the code host.
+function Merging({ slug, canEdit }: { slug: string; canEdit: boolean }) {
+  const view = useResource<MergingView>(`/api/projects/${slug}/merging`);
+  const action = useAction();
+  const [on, setOn] = useState(false), [checks, setChecks] = useState<string[]>([]);
+  const data = view.data;
+  useEffect(() => { if (data) { setOn(data.autoMergeAuthorized); setChecks(data.requiredChecks); } }, [data?.autoMergeAuthorized, data?.requiredChecks.join('\n')]);
+  if (!data) return null;
+  const changed = on !== data.autoMergeAuthorized || checks.join('\n') !== data.requiredChecks.join('\n');
+  const waiting = data.proposal && (data.proposal.autoMerge !== data.autoMergeAuthorized || data.proposal.requiredChecks.join('\n') !== data.requiredChecks.join('\n'));
+  return (
+    <SettingsSection title="Merging">
+      <StatusLine tone={data.autoMergeAuthorized ? 'working' : 'off'}>{data.autoMergeAuthorized ? `The team merges a change it approved once ${data.requiredChecks.join(', ')} ${data.requiredChecks.length === 1 ? 'passes' : 'pass'}.` : 'Approved changes wait for a person to merge them.'}</StatusLine>
+      {waiting && data.proposal && <div className="flex flex-wrap items-center gap-2.5"><Text size="small" tone="muted">A change to this waits to be merged on the code host.</Text><LinkButton size="sm" href={data.proposal.url} target="_blank" rel="noreferrer noopener">Open it ↗</LinkButton></div>}
+      {canEdit && data.canPropose && (
+        <form className="flex flex-col gap-2.5" onSubmit={action.submit(async () => { await api(`/api/projects/${slug}/merging`, { autoMerge: on, requiredChecks: on ? checks : [] }); view.reload(); })}>
+          <Checkbox label="Merge approved changes" note="Once every reviewer approved the same revision and the checks below passed on it." checked={on} onChange={event => setOn(event.target.checked)} />
+          {on && <MultiPicker name="requiredChecks" label="Checks a merge waits for" noun="check" options={data.checks.map(name => ({ id: name, name }))} value={checks} onChange={setChecks} error={action.error?.fields.requiredChecks} />}
+          <div className="flex flex-wrap items-center gap-2.5"><Button type="submit" variant="primary" disabled={action.busy || !changed}>Propose on the code host</Button><Text size="caption" tone="muted">It takes effect once you merge it there.</Text></div>
+          <ActionError error={action.error} />
+        </form>
+      )}
+      {canEdit && !data.canPropose && <Text size="small" tone="muted">{data.repository ? 'Connect the code host with a token that may write to the repository, and this can be proposed from here.' : 'Connect the code first.'}</Text>}
+    </SettingsSection>
+  );
+}
+
 export function ProjectSettingsPage({ id, me, projects }: { id: string; me: Me; projects: ProjectNode[] }) {
   const view = useResource<SettingsView>(`/api/projects/${id}/settings`);
   const save = useAction(), status = useAction();
@@ -137,6 +168,7 @@ export function ProjectSettingsPage({ id, me, projects }: { id: string; me: Me; 
             </SettingsSection>
 
             <ExtraTabs tabs={data.settings.customTabs} canEdit={data.can.configure} onSave={async (customTabs, note) => { await api(`/api/projects/${id}/settings`, { doc: { description: data.settings.description, customTabs }, note }, { 'if-match': String(data.version) }); view.reload(); }} />
+            <Merging slug={data.project.slug} canEdit={data.can.configure} />
             <Milestones slug={data.project.slug} canEdit={data.can.configure} />
             {data.can.members && <ProjectMembers slug={data.project.slug} />}
           </>

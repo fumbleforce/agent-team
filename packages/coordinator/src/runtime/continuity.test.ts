@@ -131,14 +131,14 @@ test('what a seat\'s roles look for, and leave to others, is in front of the mod
   try {
     // A coordinator loads the shipped roles when it starts; this test starts none.
     await createVersionedDocs(context).seed('role', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'roles.json'), 'utf8')) as Record<string, unknown>);
-    const tester = await db.selectFrom('agents').select('id').where('name', '=', 'Cleo').executeTakeFirstOrThrow();
-    await db.insertInto('agent_roles').values([{ agent_id: tester.id, role_slug: 'tester' }, { agent_id: agent.id, role_slug: 'developer' }]).execute();
-    const asTester = await storage.transaction(tx => buildPacket(tx, { kind: 'review', agentId: tester.id, projectId, taskId, threadId: null }));
-    assert.match(asTester.system, /What you look for, which is not what your colleagues look for:\n- As tester: What breaks\./);
-    assert.match(asTester.system, /Does not comment on style, naming or design, which are the reviewer's\./);
-    assert.match(asTester.system, /You are expected to think, not to comply/);
+    const reviewer = await db.selectFrom('agents').select('id').where('name', '=', 'Cleo').executeTakeFirstOrThrow();
+    await db.insertInto('agent_roles').values([{ agent_id: reviewer.id, role_slug: 'reviewer' }, { agent_id: agent.id, role_slug: 'developer' }]).onConflict(oc => oc.doNothing()).execute();
+    const asReviewer = await storage.transaction(tx => buildPacket(tx, { kind: 'review', agentId: reviewer.id, projectId, taskId, threadId: null }));
+    assert.match(asReviewer.system, /What you look for, which is not what your colleagues look for:\n- As reviewer: Whether the change does what the task is for, shown by running it/);
+    assert.match(asReviewer.system, /Does not ask whether it was worth doing: the PM settled that with the brief\./);
+    assert.match(asReviewer.system, /You are expected to think, not to comply/);
     const asDeveloper = await storage.transaction(tx => buildPacket(tx, { kind: 'work', agentId: agent.id, projectId, taskId, threadId: null }));
-    assert.doesNotMatch(asDeveloper.system, /As tester:/);
+    assert.doesNotMatch(asDeveloper.system, /As reviewer:/);
     assert.match(asDeveloper.prompt, /if it is wrong, contradicts itself, rests on something that is not true, or asks for what already exists, do not build it/);
   } finally { await storage.close(); }
 });

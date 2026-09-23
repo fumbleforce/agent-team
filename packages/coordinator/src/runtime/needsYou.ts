@@ -1,7 +1,8 @@
 import { newId } from '@agent-team/protocol';
 import { HttpError, type Context } from '../context.ts';
 import { indexMessage } from '../knowledge/indexing.ts';
-import { moveTask, moveTasksOf } from './taskMoves.ts';
+import { createWorkspace } from '../repos/workspace.ts';
+import { moveTask } from './taskMoves.ts';
 import type { Turns } from './turns.ts';
 
 export type NeedsYouKind = 'decision' | 'quarantine' | 'delivery' | 'proposal' | 'blocked';
@@ -65,20 +66,31 @@ export function createNeedsYou(context: Context, turns: Turns) {
 
     async projectOf(kind: NeedsYouKind, id: string): Promise<string | null> { return (await this.list()).find(item => item.kind === kind && item.id === id)?.projectId ?? null; },
 
-    // An escalated decision is settled in the person's own words; the answer is posted to the thread it came from.
+    // An escalated decision is settled in the person's own words; the answer is posted to the thread it came from. The task it was
+    // about carries on at once with its owner, who reads the answer there; a decision about no task in hand goes to the PM's triage.
     async resolveDecision(userId: string, decisionId: string, answer: string) {
-      const published = await storage.transaction(async tx => {
+      const result = await storage.transaction(async tx => {
         const decision = await tx.selectFrom('decisions').selectAll().where('id', '=', decisionId).where('resolved_at', 'is', null).executeTakeFirst();
         if (!decision) throw new HttpError(404, 'not_found', 'That decision is already settled');
         const messageId = newId(now());
         await tx.insertInto('messages').values({ id: messageId, thread_id: decision.thread_id, author_kind: 'user', author_id: userId, kind: 'decision', body: answer, payload: JSON.stringify({ resolves: decisionId }), created_at: now() }).execute();
         await indexMessage(storage, tx, { id: messageId, threadId: decision.thread_id, body: answer });
         await tx.updateTable('decisions').set({ resolved_by_user: userId, resolved_at: now() }).where('id', '=', decisionId).execute();
-        // Work that was waiting on the decision can go on.
-        const moved = await moveTasksOf(tx, decision.project_id, 'awaiting_decision', 'in_progress', { now: now(), actor: { actorKind: 'user', userId }, payload: { decisionId } });
-        return events.append(tx, [...moved, { type: 'message.posted', actorKind: 'user', userId, projectId: decision.project_id, threadId: decision.thread_id, payload: { messageId, kind: 'decision' } }, { type: 'decision.resolved', actorKind: 'user', userId, projectId: decision.project_id, threadId: decision.thread_id, payload: { decisionId } }]);
+        // The task is the deliberation's, else the one whose thread the decision was taken in.
+        const byDeliberation = decision.deliberation_id ? (await tx.selectFrom('deliberations').select('task_id').where('id', '=', decision.deliberation_id).executeTakeFirst())?.task_id ?? null : null;
+        const byThread = byDeliberation ? null : (await tx.selectFrom('threads').select(['subject_type', 'subject_id']).where('id', '=', decision.thread_id).executeTakeFirst());
+        const taskId = byDeliberation ?? (byThread?.subject_type === 'task' ? byThread.subject_id : null);
+        const task = taskId ? await tx.selectFrom('tasks').select(['id', 'state', 'assignee_agent_id']).where('id', '=', taskId).executeTakeFirst() : undefined;
+        const moved = task?.state === 'awaiting_decision' ? await moveTask(tx, task.id, 'in_progress', { from: ['awaiting_decision'], now: now(), actor: { actorKind: 'user', userId }, payload: { decisionId } }) : [];
+        const published = await events.append(tx, [...moved, { type: 'message.posted', actorKind: 'user', userId, projectId: decision.project_id, threadId: decision.thread_id, payload: { messageId, kind: 'decision' } }, { type: 'decision.resolved', actorKind: 'user', userId, projectId: decision.project_id, threadId: decision.thread_id, payload: { decisionId } }]);
+        return { published, projectId: decision.project_id, threadId: decision.thread_id, task: task && ['in_progress', 'awaiting_decision'].includes(task.state) && task.assignee_agent_id ? { id: task.id, owner: task.assignee_agent_id } : null };
       });
-      events.published(published);
+      events.published(result.published);
+      if (result.task) await turns.enqueue({ agentId: result.task.owner, projectId: result.projectId, kind: 'work', taskId: result.task.id, dedupeKey: `decided:${decisionId}` });
+      else {
+        const pm = await createWorkspace(context).pm(result.projectId);
+        if (pm) await turns.enqueue({ agentId: pm, projectId: result.projectId, kind: 'triage', threadId: result.threadId, dedupeKey: `decided:${decisionId}` });
+      }
     },
 
     // Only a person who looked may release work whose outcome is unknown. Nothing is retried on its own: "continue" queues a fresh turn, "stop" parks the task.

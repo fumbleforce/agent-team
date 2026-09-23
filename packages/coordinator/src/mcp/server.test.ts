@@ -91,14 +91,14 @@ test('a bare handoff is refused without spending its once-per-turn call, and sti
 });
 
 test('a bare verdict is refused without spending the review turn\'s one verdict', async () => {
-  const { coordinator, db, call } = await boot('review', { agent: 'Cleo', roles: ['tester'] });
+  const { coordinator, db, call } = await boot('review', { agent: 'Ada', roles: ['reviewer'] });
   try {
     await db.updateTable('tasks').set({ head_sha: 'a'.repeat(40) }).where('key', '=', 'CK-31').execute();
-    const bare = await call('task.review', { kind: 'tester', verdict: 'pass', summary: 'ok' });
+    const bare = await call('task.review', { verdict: 'pass', summary: 'ok' });
     assert.equal(bare.error, true);
     assert.match(bare.text, /cannot be logged/);
     assert.equal(await db.selectFrom('approvals').select('id').executeTakeFirst(), undefined);
-    const real = await call('task.review', { kind: 'tester', verdict: 'pass', summary: 'Checked the claim query and the retry guard; both hold.' });
+    const real = await call('task.review', { verdict: 'pass', summary: 'Checked the claim query and the retry guard; both hold.' });
     assert.equal(real.error, false, real.text);
   } finally { await coordinator.close(); }
 });

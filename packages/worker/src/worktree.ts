@@ -221,7 +221,9 @@ export function ensureWorktree(options: { checkout: string; taskKey: string; bra
     const overlays = await overlaysFor(options.checkout, baseCommit);
     return mutating(options.admin, async () => {
       // A branch that outlived its worktree keeps the work on it; only a branch made here is taken away again on failure.
-      const existing = await git(options.checkout, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).then(() => true, () => false);
+      let existing = await git(options.checkout, ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`]).then(() => true, () => false);
+      // A task that worked elsewhere before (another worker, a disposable host) left its work on the pushed branch; it goes on from there.
+      if (!existing && options.base.startsWith('origin/')) existing = await git(options.checkout, ['fetch', '--quiet', '--no-tags', 'origin', `refs/heads/${branch}:refs/heads/${branch}`]).then(() => true, () => false);
       try {
         await git(options.checkout, ['worktree', 'prune']);
         await git(options.checkout, existing ? ['worktree', 'add', '--no-checkout', target, branch] : ['worktree', 'add', '--no-checkout', '-b', branch, target, baseCommit]);
@@ -241,7 +243,7 @@ export function ensureWorktree(options: { checkout: string; taskKey: string; bra
 export interface ReviewWorktree { path: string; headSha: string; excluded: string[]; created: boolean; refreshed: boolean }
 const REVIEW_RECORD = '.task.json';
 
-// A reviewer or tester reads the change in a tree of its own, detached at the head under review: never the author's worktree,
+// A reviewer reads the change in a tree of its own, detached at the head under review: never the author's worktree,
 // never a branch anything could be committed to. One per task and reviewer kind, moved along when the head moves.
 export function ensureReviewWorktree(options: { checkout: string; taskKey: string; reviewer: string; headSha: string; projectId?: string; admin?: AdminHooks }): Promise<ReviewWorktree> {
   return gitAdmin(options.checkout, async () => {

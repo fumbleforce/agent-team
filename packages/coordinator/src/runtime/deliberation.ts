@@ -144,6 +144,7 @@ export function createDeliberation(context: Context, turns: Turns) {
     },
 
     async conclude(turn: { agent_id: string }, deliberationId: string, input: Conclusion) {
+      let resume: { agentId: string; projectId: string; taskId: string; decisionId: string } | null = null;
       const published = await storage.transaction(async tx => {
         const row = await tx.selectFrom('deliberations').selectAll().where('id', '=', deliberationId).executeTakeFirst();
         if (!row || row.decider_agent_id !== turn.agent_id) throw conflict('Only the decider concludes');
@@ -158,9 +159,14 @@ export function createDeliberation(context: Context, turns: Turns) {
         await tx.insertInto('decisions').values({ id: decisionId, project_id: row.project_id, thread_id: row.thread_id, message_id: messageId, deliberation_id: deliberationId, kind: row.kind, outcome: input.outcome, summary: input.decision, needs_human: needsHuman, resolved_by_user: null, resolved_at: null, created_at: now() }).execute();
         await tx.updateTable('deliberations').set({ state: needsHuman ? 'escalated' : 'decided' }).where('id', '=', deliberationId).execute();
         const moved = row.task_id && !needsHuman ? await moveTask(tx, row.task_id, 'in_progress', { from: ['awaiting_decision'], now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id }, payload: { decisionId } }) : [];
+        // The work that waited on the decision carries on at once, with the decision in its thread.
+        const owner = moved.length && row.task_id ? (await tx.selectFrom('tasks').select('assignee_agent_id').where('id', '=', row.task_id).executeTakeFirst())?.assignee_agent_id : null;
+        if (owner && row.task_id) resume = { agentId: owner, projectId: row.project_id, taskId: row.task_id, decisionId };
         return events.append(tx, [...moved, { type: 'decision.recorded', actorKind: 'agent', agentId: turn.agent_id, projectId: row.project_id, threadId: row.thread_id, taskId: row.task_id, payload: { decisionId, outcome: input.outcome, needsHuman } }, { type: 'message.posted', actorKind: 'agent', agentId: turn.agent_id, projectId: row.project_id, threadId: row.thread_id, payload: { kind: 'decision' } }]);
       });
       events.published(published);
+      const next = resume as { agentId: string; projectId: string; taskId: string; decisionId: string } | null;
+      if (next) await turns.enqueue({ agentId: next.agentId, projectId: next.projectId, kind: 'work', taskId: next.taskId, dedupeKey: `decided:${next.decisionId}` });
     },
 
     // Closes feedback windows that ran out; called on a timer.

@@ -34,6 +34,8 @@ export const FinishBody = LeaseBody.extend({
     // An approval recorded in the turn counts only when both are the task's current head.
     headShaStart: z.string().regex(/^[0-9a-f]{40}$/).optional(), headShaEnd: z.string().regex(/^[0-9a-f]{40}$/).optional(),
     prUrl: z.string().url().max(500).optional(),
+    // The task's branch as it was pushed to the code host, so its checks can be matched to the task.
+    branch: z.string().regex(/^[\w./-]{1,200}$/).optional(),
     delivery: z.object({ state: z.enum(['merged', 'blocked']), reason: z.string().max(500), mergeAttempted: z.boolean(), mergeCommit: z.string().optional() }).optional(),
   }),
 });

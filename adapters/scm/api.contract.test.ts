@@ -65,7 +65,7 @@ for (const [name, host] of Object.entries(HOSTS) as [keyof typeof HOSTS, (typeof
     assert.deepEqual(await api.reviewState(host.repository, host.change), host.review);
     await assert.rejects(api.reviewState(host.repository, host.foreign), /Not a change of this repository/);
     // The recorded change collides with its base.
-    assert.deepEqual(await api.changeState(host.repository, host.change), { open: true, headSha: SHA, conflicting: true });
+    assert.deepEqual(await api.changeState(host.repository, host.change), { open: true, merged: false, headSha: SHA, conflicting: true });
     await assert.rejects(api.changeState(host.repository, host.foreign), /Not a change of this repository/);
 
     const expected = [{ suite: host.suite, branch: 'feature/pay', sha: SHA, counts: [1, 1, 1, 3, 1500], failing: [{ name: 'checkout.spec › pays with card', status: 'failed', message: 'Expected 200, got 500' }] }];
@@ -87,3 +87,48 @@ for (const [name, host] of Object.entries(HOSTS) as [keyof typeof HOSTS, (typeof
     await assert.rejects(offline.environments(host.repository), error => /network request failed/.test((error as Error).message) && !/host-token/.test((error as Error).message));
   });
 }
+
+// The settings file is read as committed, a change to it goes out as a branch, one commit and a change request, and the check names
+// come from where the merge gate reads them. The recorded host answers only what these calls ask.
+test('both hosts read the committed settings file, propose a change to it, and name the checks of a branch', async () => {
+  const calls: { method: string; url: string; body: any }[] = [];
+  const settings = '{"delivery":{"autoMergeAuthorized":false}}';
+  const answer = (method: string, url: string): Response => {
+    const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
+    if (method === 'GET' && /contents\/\.agent-team\.json\?ref=main$/.test(url)) return json({ content: Buffer.from(settings).toString('base64'), encoding: 'base64', sha: 'file-sha' });
+    if (method === 'GET' && /contents\/\.agent-team\.json\?ref=other$/.test(url)) return json({ message: 'Not Found' }, 404);
+    if (method === 'GET' && /git\/ref\/heads\/main$/.test(url)) return json({ object: { sha: 'base-sha' } });
+    if (method === 'GET' && /check-runs/.test(url)) return json({ check_runs: [{ name: 'verify' }, { name: 'e2e' }] });
+    if (method === 'GET' && /\/status$/.test(url)) return json({ statuses: [{ context: 'ci/legacy' }, { context: 'verify' }] });
+    if (method === 'POST' && /\/pulls$/.test(url)) return json({ html_url: 'https://github.com/o/r/pull/12' });
+    if (method === 'GET' && /files\/\.agent-team\.json\/raw\?ref=main$/.test(url)) return new Response(settings);
+    if (method === 'GET' && /files\/\.agent-team\.json\/raw\?ref=other$/.test(url)) return json({ message: '404 File Not Found' }, 404);
+    if (method === 'GET' && /pipelines\?ref=main/.test(url)) return json([{ id: 5 }]);
+    if (method === 'GET' && /pipelines\/5\/jobs/.test(url)) return json([{ name: 'verify' }, { name: 'lint' }, { name: 'verify' }]);
+    if (method === 'POST' && /merge_requests$/.test(url)) return json({ web_url: 'https://git.example.com/group/sub/project/-/merge_requests/43' });
+    return json({});
+  };
+  const fake = (async (url: string | URL, init?: RequestInit) => { const method = init?.method ?? 'GET'; calls.push({ method, url: String(url), body: init?.body ? JSON.parse(String(init.body)) : null }); return answer(method, String(url)); }) as typeof fetch;
+  const input = { base: 'main', branch: 'agent-team/settings-1', path: '.agent-team.json', content: '{"delivery":{"autoMergeAuthorized":true}}', title: 'Let the team merge', body: 'Asked for in the app.' };
+
+  const github = SCM_APIS.github!({ env: { GH_TOKEN: 'host-token' }, fetch: fake })!;
+  assert.equal(await github.readFile!('o/r', '.agent-team.json', 'main'), settings);
+  assert.equal(await github.readFile!('o/r', '.agent-team.json', 'other'), null, 'no file is no settings, not a failure');
+  assert.deepEqual(await github.checkNames!('o/r', 'main'), ['ci/legacy', 'e2e', 'verify']);
+  calls.length = 0;
+  assert.equal(await github.proposeFile!('o/r', input), 'https://github.com/o/r/pull/12');
+  const writes = calls.filter(call => call.method !== 'GET');
+  assert.deepEqual(writes.map(call => [call.method, call.url.replace('https://api.github.com/repos/o/r', '')]), [['POST', '/git/refs'], ['PUT', '/contents/.agent-team.json'], ['POST', '/pulls']]);
+  assert.deepEqual(writes[0]!.body, { ref: 'refs/heads/agent-team/settings-1', sha: 'base-sha' });
+  assert.deepEqual([Buffer.from(writes[1]!.body.content, 'base64').toString(), writes[1]!.body.branch, writes[1]!.body.sha], [input.content, input.branch, 'file-sha']);
+  assert.deepEqual([writes[2]!.body.head, writes[2]!.body.base], [input.branch, 'main']);
+
+  const gitlab = SCM_APIS.gitlab!({ env: { GITLAB_TOKEN: 'host-token', GITLAB_HOST: 'git.example.com' }, fetch: fake })!;
+  assert.equal(await gitlab.readFile!('group/sub/project', '.agent-team.json', 'main'), settings);
+  assert.equal(await gitlab.readFile!('group/sub/project', '.agent-team.json', 'other'), null);
+  assert.deepEqual(await gitlab.checkNames!('group/sub/project', 'main'), ['lint', 'verify']);
+  calls.length = 0;
+  assert.equal(await gitlab.proposeFile!('group/sub/project', input), 'https://git.example.com/group/sub/project/-/merge_requests/43');
+  const commit = calls.find(call => call.method === 'POST' && /repository\/commits$/.test(call.url))!;
+  assert.deepEqual([commit.body.branch, commit.body.start_branch, commit.body.actions[0].action, commit.body.actions[0].content], [input.branch, 'main', 'update', input.content]);
+});

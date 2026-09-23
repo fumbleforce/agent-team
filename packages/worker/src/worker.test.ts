@@ -41,13 +41,18 @@ test('a turn runs through the engine: steps are traced, usage recorded, the agen
 });
 
 // A turn that ran out of time is a known state: the task stays with its owner, who carries on from the journal.
-test('a usage limit defers the turn, a crash blocks the task, a hang times out and the owner carries on', async () => {
-  for (const [scenario, state, taskState] of [['limit', 'deferred', 'in_progress'], ['crash', 'failed', 'blocked'], ['hang', 'timed_out', 'in_progress']] as const) {
+test('a usage limit defers the turn, a crash is tried once more and then blocks the task, a hang times out and the owner carries on', async () => {
+  for (const [scenario, state, taskState] of [['limit', 'deferred', 'in_progress'], ['crash', 'failed', 'in_progress'], ['hang', 'timed_out', 'in_progress']] as const) {
     const { coordinator, db, worker, taskId } = await boot(scenario);
     await worker.tick();
     await worker.idle();
     assert.equal((await db.selectFrom('turns').select('state').executeTakeFirstOrThrow()).state, state, scenario);
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, taskState, scenario);
+    if (scenario === 'crash') {
+      await worker.tick();
+      await worker.idle();
+      assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'blocked', 'a second crash in a row sets it aside');
+    }
     await coordinator.close();
   }
 });

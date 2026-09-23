@@ -115,11 +115,11 @@ test('what a role looks for can be changed the same way; how the team works is t
 
   const { storage, db, proposals, toby } = await boot();
   try {
-    const perspective = 'What breaks under load and on bad input. Proves every claim with a run, and says what could not be run. Leaves style and design to the reviewer.';
-    assert.equal((await proposals.staff(toby, { ...why, change: { kind: 'change_role_text', role: 'tester', perspective, trial: { measure: 'T5', expect: 'up', days: 14 } } })).state, 'applied');
-    const role = Role.parse(JSON.parse((await db.selectFrom('versioned_docs').select('doc').where('kind', '=', 'role').where('slug', '=', 'tester').executeTakeFirstOrThrow()).doc));
+    const perspective = 'What breaks under load and on bad input. Proves every claim with a run, and says what could not be run. Reads the change against its brief.';
+    assert.equal((await proposals.staff(toby, { ...why, change: { kind: 'change_role_text', role: 'reviewer', perspective, trial: { measure: 'T5', expect: 'up', days: 14 } } })).state, 'applied');
+    const role = Role.parse(JSON.parse((await db.selectFrom('versioned_docs').select('doc').where('kind', '=', 'role').where('slug', '=', 'reviewer').executeTakeFirstOrThrow()).doc));
     assert.equal(role.perspective, perspective);
-    assert.deepEqual(role.approvalKinds, ['tester'], 'only the text changed: what the role may approve and do is untouched');
+    assert.deepEqual(role.approvalKinds, ['reviewer'], 'only the text changed: what the role may approve and do is untouched');
 
     await assert.rejects(proposals.staff(toby, { ...why, change: { kind: 'change_process', knob: 'documentReviewers', value: 0, trial: { measure: 'P1', expect: 'down', days: 7 } } }), /outside what documentReviewers may be/);
     await assert.rejects(proposals.staff(toby, { ...why, change: { kind: 'change_process', knob: 'checkInEvery', value: 10, trial: { measure: 'Z9', expect: 'down', days: 7 } } }), /not a figure of the scorecard/);

@@ -14,6 +14,7 @@ import { registerOrgRoutes } from './orgRoutes.ts';
 import { registerRuleRoutes } from './ruleRoutes.ts';
 import { registerKnowledgeRoutes } from './knowledgeRoutes.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
+import { mountMergingRoutes } from './mergingRoutes.ts';
 import { mountSetupRoutes } from './setupRoutes.ts';
 import { mountSsoSetupRoutes } from './ssoSetupRoutes.ts';
 import { mountOnboardingRoutes } from './onboardingRoutes.ts';
@@ -120,6 +121,7 @@ export function createApp(context: Context) {
   // Assigned further down, where the guided setup is mounted; routes only run after that.
   let setup: ReturnType<typeof mountSetupRoutes>;
   let providerSetup: ReturnType<typeof mountProviderRoutes>;
+  let tasks: ReturnType<typeof mountTaskRoutes>;
   app.post('/machine/projects', async c => {
     await machine(c);
     const id = await workspace.registerProject(await body(c, RegisterProjectBody));
@@ -445,6 +447,9 @@ export function createApp(context: Context) {
     const task = await context.storage.db.selectFrom('tasks').innerJoin('projects', 'projects.id', 'tasks.project_id').select(['projects.id', 'projects.parent_id']).where('tasks.id', '=', c.req.param('id')).executeTakeFirst();
     if (!task) throw new HttpError(404, 'not_found', 'Task not found');
     allow(c, 'project.operate', task.parent_id ?? task.id);
+    // An answer to what stopped the task goes in its thread first, so the owner's next turn starts from it.
+    const input = await body(c, z.object({ answer: z.string().trim().max(8000).default('') }));
+    if (input.answer) await tasks.note(c.req.param('id')!, c.get('viewer').userId, input.answer);
     await reviews.carryOn(c.req.param('id')!);
     return c.json({ ok: true });
   });
@@ -546,6 +551,7 @@ export function createApp(context: Context) {
     configuring: async c => ({ project: (await projectFor(c as Hc<Env>, 'project.configure')).project, viewer: (c as Hc<Env>).get('viewer') }) });
   process.once('exit', () => workerSetup.stop());
   mountOnboardingRoutes(app, { context, canAdmin: c => can((c as Hc<Env>).get('viewer'), 'org.members'), userId: c => (c as Hc<Env>).get('viewer').userId });
+  mountMergingRoutes(app, { context, projectFor: (c, action) => projectFor(c as Hc<Env>, action), body: (c, schema) => body(c as Hc<Env>, schema), userId: c => (c as Hc<Env>).get('viewer').userId });
   setup = mountSetupRoutes(app, { context, integrations, projectFor: (c, action) => projectFor(c as Hc<Env>, action), body: (c, schema) => body(c as Hc<Env>, schema), userId: c => (c as Hc<Env>).get('viewer').userId });
   // What the installed adapters offer, so the app never has to name a provider itself.
   app.get('/api/adapters', c => c.json({ scm: SCM_KINDS, trackers: TRACKER_KINDS }));
@@ -632,7 +638,7 @@ export function createApp(context: Context) {
   providerSetup = mountProviderRoutes(app, context);
   // Skills: written methods the roles name, read by the seats that wear them.
   mountSkillRoutes(app, context);
-  mountTaskRoutes(app, context, turns);
+  tasks = mountTaskRoutes(app, context, turns);
   app.post('/api/agents/:id/provider', async c => {
     const agent = await context.storage.db.selectFrom('agents').innerJoin('projects', 'projects.team_id', 'agents.team_id').select(['agents.id', 'projects.id as project_id']).where('agents.id', '=', c.req.param('id')).executeTakeFirst();
     if (!agent) throw new HttpError(404, 'not_found', 'Agent not found');

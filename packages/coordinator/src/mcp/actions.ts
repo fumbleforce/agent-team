@@ -70,7 +70,7 @@ export function createActions(context: Context, turns: Turns) {
         if (!task) throw refuse('task', 'Task not found in this project');
         if (!['backlog', 'assigned', 'in_progress'].includes(task.state) || (task.state === 'backlog' && task.blocked_reason)) throw refuse('task', `${task.key} is ${task.state}${task.blocked_reason ? ' and held' : ''}; it cannot be given to someone now`);
         if (await tx.selectFrom('turns').select('id').where('task_id', '=', task.id).where('state', '=', 'running').where('kind', '=', 'work').executeTakeFirst()) throw refuse('task', `${task.key} is being worked on right now; move one that is waiting`);
-        // Whoever takes it must be able to write: a reviewer or tester given a coding task would only fail at it.
+        // Whoever takes it must be able to write: a reviewer given a coding task would only fail at it.
         const roles = (await tx.selectFrom('agent_roles').select('role_slug').where('agent_id', '=', owner.id).execute()).map(row => row.role_slug);
         const docs = roles.length ? await tx.selectFrom('versioned_docs').select('doc').where('kind', '=', 'role').where('slug', 'in', roles).execute() : [];
         if (!docs.some(row => { const write = (JSON.parse(row.doc) as { permissions?: { codeWrite?: unknown } }).permissions?.codeWrite; return write !== undefined && write !== 'none'; })) throw refuse('task', `${owner.name} has no role that may change the code. If nobody free can take it, propose a hire with proposal.create.`);

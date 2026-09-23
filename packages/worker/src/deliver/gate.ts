@@ -24,6 +24,7 @@ export interface GateResult { state: 'merged' | 'blocked'; reason: string; merge
 class ChecksRunning extends Error {}
 
 const VERDICT = { tester: 'PASS', reviewer: 'APPROVE', pm: 'APPROVE' } as const;
+export type ApprovalRole = keyof typeof VERDICT;
 
 export function validateApprovals(approvals: Approvals, headSha: string, roles: readonly (keyof typeof VERDICT)[]): void {
   if (!SHA.test(headSha)) throw new Error('Invalid local head SHA');
@@ -59,7 +60,7 @@ export async function verifyWorktree(exec: Exec, worktree: string, branch: strin
 // approvals included: they are re-read from the platform, so an approval withdrawn in between stops the merge.
 export async function deliver(input: { config: DeliveryConfig; scm: ScmGate; approvalRoles?: readonly (keyof typeof VERDICT)[]; prUrl: string; approvals: () => Promise<Approvals>; worktree: string; branch: string; excludedPaths?: string[]; exec?: Exec; signal?: AbortSignal }): Promise<GateResult> {
   const { config, scm, prUrl, worktree, branch } = input;
-  const exec = input.exec ?? defaultExec, roles = input.approvalRoles ?? ['tester', 'reviewer', 'pm'];
+  const exec = input.exec ?? defaultExec, roles: readonly ApprovalRole[] = input.approvalRoles?.length ? input.approvalRoles : ['reviewer'];
   let headSha: string | undefined, mergeAttempted = false;
   const abortCheck = () => { if (input.signal?.aborted) throw new Error('Delivery canceled'); };
   try {

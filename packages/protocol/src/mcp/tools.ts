@@ -139,8 +139,8 @@ export const TOOLS = {
     permission: null, turnKinds: ['work', 'review'], mutating: true, rateClass: 'write',
   }),
   'task.review': tool({
-    description: 'Record your verdict on the task as it stands in the folder you were given, which is checked out at the head under review. Pass only what you verified yourself; findings go back to the author. The summary is a log entry: say what you checked and what you found; a bare "pass" or "ok" is refused.',
-    input: z.object({ kind: z.enum(['tester', 'reviewer', 'pm']), verdict: z.enum(['pass', 'changes', 'fail']), headSha: z.string().regex(/^[0-9a-f]{40}$/).optional(), summary: Words(100), findings: z.array(z.object({ severity: z.enum(['low', 'med', 'high']), path: z.string().max(300).optional(), note: z.string().min(1).max(240) })).max(10).default([]) }),
+    description: 'Record your verdict on the task as it stands in the folder you were given, which is checked out at the head under review. Pass only what you verified yourself: that it does what the task is for, and that it runs. Findings go back to the author. The summary is a log entry: say what you ran, what you checked and what you found; a bare "pass" or "ok" is refused.',
+    input: z.object({ kind: z.enum(['reviewer', 'tester', 'pm']).optional(), verdict: z.enum(['pass', 'changes', 'fail']), headSha: z.string().regex(/^[0-9a-f]{40}$/).optional(), summary: Words(100), findings: z.array(z.object({ severity: z.enum(['low', 'med', 'high']), path: z.string().max(300).optional(), note: z.string().min(1).max(240) })).max(10).default([]) }),
     output: z.object({ approved: z.boolean() }),
     permission: null, turnKinds: ['review'], mutating: true, rateClass: 'once',
   }),

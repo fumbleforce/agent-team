@@ -27,14 +27,14 @@ test('environments of the code host feed the product view, and its test reports 
     const host = { environments: [{ name: 'preview', url: 'https://preview.example.com', branch: 'feature/pay' as string | null }, { name: 'staging', url: 'https://staging.example.com', branch: null }, { name: 'odd', url: 'javascript:alert(1)', branch: null }], reports: new Map<string, ScmTestReport[]>([['trunk', [report('unit', 'trunk', 'a'.repeat(40), [])]]]) };
     const api: ScmApi = {
       reviewState: async () => ({ state: 'pending', approvals: 0, reviewers: [] }),
-      changeState: async () => ({ open: true, headSha: null, conflicting: null }),
+      changeState: async () => ({ open: true, merged: false, headSha: null, conflicting: null }),
       environments: async () => host.environments,
       testReports: async (_repository, ref) => { const branch = 'branch' in ref ? ref.branch : ''; asked.push(branch); if (branch === 'gone') throw new Error('Host HTTP request failed (404)'); return host.reports.get(branch) ?? []; },
     };
     await storage.db.insertInto('product_envs').values({ id: 'manual-1', project_id: projectId, name: 'staging', branch: null, url: 'https://hand-made.example.com', source: 'manual', created_at: 1 }).execute();
     const sync = createScmSync(context);
-    assert.deepEqual(await sync.syncProject(projectId, api), { environments: 1, runs: 1, sentBack: 0 });
-    assert.deepEqual(await sync.syncProject(projectId, api), { environments: 0, runs: 0, sentBack: 0 }, 'the same commit is not recorded twice');
+    assert.deepEqual(await sync.syncProject(projectId, api), { environments: 1, runs: 1, sentBack: 0, closed: 0 });
+    assert.deepEqual(await sync.syncProject(projectId, api), { environments: 0, runs: 0, sentBack: 0, closed: 0 }, 'the same commit is not recorded twice');
     const envs = await storage.db.selectFrom('product_envs').select(['name', 'url', 'branch', 'source']).where('project_id', '=', projectId).orderBy('name').execute();
     assert.deepEqual(envs.map(row => [row.name, row.url, row.branch, row.source]), [['preview', 'https://preview.example.com', 'feature/pay', 'scm'], ['staging', 'https://hand-made.example.com', null, 'manual']]);
     host.environments[0]!.url = 'https://preview-2.example.com';
@@ -86,7 +86,7 @@ test('a change in review that no longer merges goes back to its author at once, 
     const head = 'c'.repeat(40), url = 'https://host.example/acme/shop/pull/3';
     await db.insertInto('tasks').values({ id: 't1', project_id: projectId, key: 'T-1', source: 'internal', title: 'Pay', brief: '', tag: null, priority: 0, milestone_id: null, state: 'in_review', assignee_agent_id: author.id, author_agent_id: null, branch: null, head_sha: head, pr_url: url, blocked_reason: null, created_at: 1, updated_at: 1 }).execute();
     await turns.enqueue({ agentId: pm.id, projectId, kind: 'review', taskId: 't1', dedupeKey: `review:t1:pm:${head}` });
-    const answer: { open: boolean; headSha: string | null; conflicting: boolean | null } = { open: true, headSha: head, conflicting: null };
+    const answer: { open: boolean; merged: boolean; headSha: string | null; conflicting: boolean | null } = { open: true, merged: false, headSha: head, conflicting: null };
     const asked: string[] = [];
     const api: ScmApi = {
       reviewState: async () => ({ state: 'pending', approvals: 0, reviewers: [] }),
@@ -118,5 +118,41 @@ test('a change in review that no longer merges goes back to its author at once, 
     await db.updateTable('tasks').set({ state: 'in_review' }).where('id', '=', 't1').execute();
     assert.equal((await sync.syncProject(projectId, api)).sentBack, 0);
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', 't1').executeTakeFirstOrThrow()).state, 'in_review');
+  } finally { await storage.close(); }
+});
+
+test('the branch a work turn pushed is kept on its task, so a failing run there wakes its author', async () => {
+  const { storage, context, projectId } = await setup();
+  try {
+    const turns = createTurns(context), wake = createCheckWake(context, turns), checks = createChecks(context);
+    const agent = await storage.db.selectFrom('agents').select('id').where('is_pm', '=', false).executeTakeFirstOrThrow();
+    await storage.db.insertInto('tasks').values({ id: 't2', project_id: projectId, key: 'T-2', source: 'internal', title: 'Refunds', brief: '', tag: null, priority: 0, milestone_id: null, state: 'in_progress', assignee_agent_id: agent.id, author_agent_id: null, branch: null, head_sha: null, pr_url: null, blocked_reason: null, created_at: 1, updated_at: 1 }).execute();
+    await turns.enqueue({ agentId: agent.id, projectId, kind: 'work', taskId: 't2', dedupeKey: 'work:t2' });
+    const claimed = (await turns.claim({ workerId: 'w1', free: { work: 1 }, projects: [projectId] }))!;
+    await turns.finish(claimed.turnId, 'w1', claimed.leaseToken, { state: 'completed', summary: 'Refunds done; ready for review.', headSha: 'd'.repeat(40), prUrl: 'https://code.example/acme/shop/pull/7', branch: 'agents/t-2' });
+    assert.equal((await storage.db.selectFrom('tasks').select('branch').where('id', '=', 't2').executeTakeFirstOrThrow()).branch, 'agents/t-2');
+
+    await wake.sweep();
+    await checks.record({ projectId, suite: 'unit', branch: 'agents/t-2', sha: 'd'.repeat(40), source: 'scm', report: report('unit', 'agents/t-2', 'd'.repeat(40), ['refunds › rounds to the cent']).report });
+    await wake.sweep();
+    assert.ok(await storage.db.selectFrom('work_items').select('id').where('task_id', '=', 't2').where('agent_id', '=', agent.id).where('state', '=', 'queued').where('cause_event_id', 'is not', null).executeTakeFirst(), 'its author is woken by the failure');
+  } finally { await storage.close(); }
+});
+
+test('a change merged on the code host by hand closes its task, whatever held it up here', async () => {
+  const { storage, context, projectId } = await setup();
+  try {
+    const db = storage.db, turns = createTurns(context), sync = createScmSync(context, turns);
+    const author = await db.selectFrom('agents').select('id').where('is_pm', '=', false).executeTakeFirstOrThrow();
+    const url = 'https://host.example/acme/shop/pull/9';
+    await db.insertInto('tasks').values({ id: 't3', project_id: projectId, key: 'T-3', source: 'internal', title: 'Coupons', brief: '', tag: null, priority: 0, milestone_id: null, state: 'blocked', assignee_agent_id: author.id, author_agent_id: null, branch: 'agents/t-3', head_sha: 'e'.repeat(40), pr_url: url, blocked_reason: 'This project\'s settings do not authorize the team to merge.', created_at: 1, updated_at: 1 }).execute();
+    await db.insertInto('merge_queue').values({ id: 'mq-3', project_id: projectId, task_id: 't3', head_sha: 'e'.repeat(40), state: 'blocked', reason: 'not authorized', created_at: 1, finished_at: 1 }).execute();
+    const merged = { open: false, merged: true, headSha: 'e'.repeat(40), conflicting: null };
+    const api: ScmApi = { reviewState: async () => ({ state: 'pending', approvals: 0, reviewers: [] }), changeState: async () => merged, environments: async () => [], testReports: async () => [] };
+    assert.equal((await sync.syncProject(projectId, api)).closed, 1);
+    const task = await db.selectFrom('tasks').select(['state', 'blocked_reason']).where('id', '=', 't3').executeTakeFirstOrThrow();
+    assert.deepEqual([task.state, task.blocked_reason], ['done', null]);
+    assert.equal((await db.selectFrom('merge_queue').select('state').where('id', '=', 'mq-3').executeTakeFirstOrThrow()).state, 'merged');
+    assert.equal((await sync.syncProject(projectId, api)).closed, 0, 'a done task is not looked at again');
   } finally { await storage.close(); }
 });

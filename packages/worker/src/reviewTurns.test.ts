@@ -14,7 +14,6 @@ import { reviewWorktreeFor, worktreeFor } from './worktree.ts';
 
 const TOKEN = 'machine-token-for-tests-0123456789';
 const PR = 'https://scm.example.com/acme/app/pull/7';
-const KINDS: Record<string, 'tester' | 'reviewer' | 'pm'> = { Cleo: 'tester', Rune: 'reviewer', Maren: 'pm' };
 
 function repository(manifest?: unknown): string {
   const root = path.join(mkdtempSync(path.join(os.tmpdir(), 'agent-team-review-')), 'app');
@@ -79,8 +78,9 @@ test('a review runs in its own detached worktree, the worker reports the head it
     if (!finished) return;
     const turn = await db.selectFrom('turns').select(['id', 'agent_id', 'task_id', 'kind']).where('id', '=', finished[1]!).executeTakeFirstOrThrow();
     if (turn.kind !== 'review') return;
-    const name = Object.keys(agents).find(key => agents[key] === turn.agent_id)!, head = (await db.selectFrom('tasks').select('head_sha').where('id', '=', taskId).executeTakeFirstOrThrow()).head_sha!;
-    assert.deepEqual(await reviews.record(turn, { kind: KINDS[name]!, verdict: 'pass', headSha: head, summary: 'ok', findings: [] }, { verification: 'worker' }), { approved: false });
+    const head = (await db.selectFrom('tasks').select('head_sha').where('id', '=', taskId).executeTakeFirstOrThrow()).head_sha!;
+    assert.equal(turn.agent_id, agents.Rune);
+    assert.deepEqual(await reviews.record(turn, { verdict: 'pass', headSha: head, summary: 'ok', findings: [] }, { verification: 'worker' }), { approved: false });
     assert.equal((await db.selectFrom('approvals').select('state').where('turn_id', '=', turn.id).executeTakeFirstOrThrow()).state, 'pending-verification');
     assert.deepEqual([(body.outcome as Record<string, unknown>).headShaStart, (body.outcome as Record<string, unknown>).headShaEnd], [head, head]);
   } });
@@ -91,26 +91,24 @@ test('a review runs in its own detached worktree, the worker reports the head it
     const head = (await db.selectFrom('tasks').select('head_sha').where('id', '=', taskId).executeTakeFirstOrThrow()).head_sha!;
     const author = worktreeFor(checkout, 'GH-7', 'agents/');
 
-    for (let i = 0; i < 3; i++) { assert.equal(await worker.tick(), true); await worker.idle(); }
-    assert.deepEqual((await db.selectFrom('turns').select(['kind', 'state']).where('kind', '=', 'review').execute()).map(turn => turn.state), ['completed', 'completed', 'completed']);
-    for (const kind of Object.values(KINDS)) {
-      const tree = reviewWorktreeFor(checkout, 'GH-7', kind);
-      assert.notEqual(tree, author.path);
-      assert.equal(git(tree, 'rev-parse', 'HEAD'), head);
-      assert.throws(() => git(tree, 'symbolic-ref', '-q', 'HEAD'), 'detached: no branch to write to');
-      assert.ok(existsSync(path.join(tree, 'a.txt')) && !existsSync(path.join(tree, '.env')));
-    }
+    assert.equal(await worker.tick(), true); await worker.idle();
+    assert.deepEqual((await db.selectFrom('turns').select(['kind', 'state']).where('kind', '=', 'review').execute()).map(turn => turn.state), ['completed']);
+    const tree = reviewWorktreeFor(checkout, 'GH-7', 'reviewer');
+    assert.notEqual(tree, author.path);
+    assert.equal(git(tree, 'rev-parse', 'HEAD'), head);
+    assert.throws(() => git(tree, 'symbolic-ref', '-q', 'HEAD'), 'detached: no branch to write to');
+    assert.ok(existsSync(path.join(tree, 'a.txt')) && !existsSync(path.join(tree, '.env')));
     assert.equal(git(author.path, 'symbolic-ref', '--short', 'HEAD'), 'agents/gh-7');
-    assert.deepEqual((await db.selectFrom('approvals').select('state').execute()).map(row => row.state), ['valid', 'valid', 'valid']);
+    assert.deepEqual((await db.selectFrom('approvals').select('state').execute()).map(row => row.state), ['valid']);
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'approved');
-    // Each worktree that was made was announced as a git-admin operation and closed again: the author's and one per reviewer kind.
+    // Each worktree that was made was announced as a git-admin operation and closed again: the author's and the reviewer's.
     const admin = log.filter(entry => entry.route.endsWith('/git-admin')).map(entry => entry.body.state);
-    assert.deepEqual(admin, ['begin', 'end', 'begin', 'end', 'begin', 'end', 'begin', 'end']);
+    assert.deepEqual(admin, ['begin', 'end', 'begin', 'end']);
 
     // The merge ends the task: the review worktrees go, the author's worktree and branch stay.
     assert.equal(await worker.tick(), true); await worker.idle();
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'done');
-    for (const kind of Object.values(KINDS)) assert.equal(existsSync(reviewWorktreeFor(checkout, 'GH-7', kind)), false);
+    assert.equal(existsSync(tree), false);
     assert.ok(existsSync(author.path));
     assert.equal(git(checkout, 'branch', '--list', 'agents/gh-7').replace(/^[*+ ]+/, ''), 'agents/gh-7');
   } finally { await close(); }
@@ -120,7 +118,7 @@ test('a review whose head cannot be checked out safely fails without running any
   const { db, worker, turns, agents, projectId, taskId, close } = await boot();
   try {
     await db.updateTable('tasks').set({ head_sha: 'f'.repeat(40) }).where('id', '=', taskId).execute();
-    await turns.enqueue({ agentId: agents.Cleo!, projectId, kind: 'review', taskId, dedupeKey: `review:${taskId}:tester:${'f'.repeat(40)}` });
+    await turns.enqueue({ agentId: agents.Rune!, projectId, kind: 'review', taskId, dedupeKey: `review:${taskId}:reviewer:${'f'.repeat(40)}` });
     assert.equal(await worker.tick(), true); await worker.idle();
     const turn = await db.selectFrom('turns').select(['state', 'stop_reason', 'summary']).executeTakeFirstOrThrow();
     assert.deepEqual([turn.state, turn.stop_reason], ['failed', 'worktree-refused']);

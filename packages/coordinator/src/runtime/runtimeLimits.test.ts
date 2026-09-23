@@ -121,63 +121,60 @@ async function reviewing() {
   await db.insertInto('tasks').values({ id: taskId, project_id: projectId, key: 'GH-1', source: 'tracker', title: 'T', brief: '', tag: null, priority: 0, milestone_id: null, state: 'in_progress', assignee_agent_id: agents.Ada!, author_agent_id: null, branch: null, head_sha: null, pr_url: null, blocked_reason: null, created_at: 1, updated_at: 1 }).execute();
   const turns = createTurns(context), reviews = createReviews(context, turns);
   const turn = (name: string) => ({ id: `turn-${name}`, agent_id: agents[name]!, task_id: taskId, kind: 'review' });
-  const pass = (kind: 'tester' | 'reviewer' | 'pm', headSha = SHA1) => ({ kind, verdict: 'pass' as const, headSha, summary: 'ok', findings: [] });
+  const pass = (headSha = SHA1) => ({ verdict: 'pass' as const, headSha, summary: 'ok', findings: [] });
   const stateOf = async (name: string) => (await db.selectFrom('approvals').select('state').where('turn_id', '=', `turn-${name}`).orderBy('created_at', 'desc').executeTakeFirst())?.state;
   return { storage, db, turns, reviews, agents, projectId, taskId, turn, pass, stateOf, tick: (ms: number) => { clock += ms; } };
 }
 
 test('a verdict from a worker’s turn counts only once the worker reports the head it verified, and that head is the task’s', async () => {
-  const { storage, db, reviews, taskId, turn, pass, stateOf } = await reviewing();
+  const { storage, db, reviews, agents, taskId, turn, pass, stateOf } = await reviewing();
   try {
     await reviews.request(taskId, SHA1);
-    for (const [name, kind] of [['Cleo', 'tester'], ['Rune', 'reviewer'], ['Maren', 'pm']] as const) assert.deepEqual(await reviews.record(turn(name), pass(kind), { verification: 'worker' }), { approved: false });
-    assert.equal(await stateOf('Maren'), 'pending-verification');
+    assert.deepEqual(await reviews.record(turn('Rune'), pass(), { verification: 'worker' }), { approved: false });
+    assert.equal(await stateOf('Rune'), 'pending-verification');
     // Nothing pending is counted: the task is not approved and the merge gate sees no approval.
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'in_review');
     assert.deepEqual(await reviews.approvalsFor(taskId, SHA1), {});
 
-    assert.deepEqual(await reviews.verify('turn-Cleo', { start: SHA1, end: SHA1 }), { approved: false });
-    assert.equal(await stateOf('Cleo'), 'valid');
     // Another head at the start, a head that moved under the reviewer, and no report at all: each is stale, none is valid.
     await reviews.verify('turn-Rune', { start: SHA2, end: SHA2 });
     assert.equal(await stateOf('Rune'), 'stale');
-    await reviews.record(turn('Rune'), pass('reviewer'), { verification: 'worker' });
+    await reviews.record(turn('Rune'), pass(), { verification: 'worker' });
     await reviews.verify('turn-Rune', { start: SHA1, end: SHA2 });
     assert.equal(await stateOf('Rune'), 'stale');
-    await reviews.record(turn('Rune'), pass('reviewer'), { verification: 'worker' });
+    await reviews.record(turn('Rune'), pass(), { verification: 'worker' });
     await reviews.verify('turn-Rune', {});
     assert.equal(await stateOf('Rune'), 'stale');
     assert.equal((await db.selectFrom('merge_queue').select('id').execute()).length, 0);
 
-    await reviews.record(turn('Rune'), pass('reviewer'), { verification: 'worker' });
-    assert.deepEqual(await reviews.verify('turn-Rune', { start: SHA1, end: SHA1 }), { approved: false });
-    // The last verification is what approves the task and queues the one merge.
-    assert.deepEqual(await reviews.verify('turn-Maren', { start: SHA1, end: SHA1 }), { approved: true });
+    // The verification is what approves the task and queues the one merge, under the PM.
+    await reviews.record(turn('Rune'), pass(), { verification: 'worker' });
+    assert.deepEqual(await reviews.verify('turn-Rune', { start: SHA1, end: SHA1 }), { approved: true });
     assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'approved');
     assert.deepEqual((await db.selectFrom('merge_queue').select(['state', 'head_sha']).execute()).map(row => [row.state, row.head_sha]), [['queued', SHA1]]);
-    assert.equal((await db.selectFrom('work_items').select('id').where('kind', '=', 'deliver').execute()).length, 1);
-    assert.deepEqual(Object.keys(await reviews.approvalsFor(taskId, SHA1)).sort(), ['pm', 'reviewer', 'tester']);
+    assert.deepEqual((await db.selectFrom('work_items').select('agent_id').where('kind', '=', 'deliver').execute()).map(item => item.agent_id), [agents.Maren]);
+    assert.deepEqual(Object.keys(await reviews.approvalsFor(taskId, SHA1)), ['reviewer']);
     // Verifying again changes nothing.
-    assert.deepEqual(await reviews.verify('turn-Maren', { start: SHA1, end: SHA1 }), { approved: false });
+    assert.deepEqual(await reviews.verify('turn-Rune', { start: SHA1, end: SHA1 }), { approved: false });
     assert.equal((await db.selectFrom('merge_queue').select('id').execute()).length, 1);
   } finally { await storage.close(); }
 });
 
-test('a head that moves makes waiting verdicts stale, and a verification that arrives afterwards cannot revive them', async () => {
+test('a head that moves makes a waiting verdict stale, and a verification that arrives afterwards cannot revive it', async () => {
   const { storage, db, reviews, taskId, turn, pass, stateOf } = await reviewing();
   try {
     await reviews.request(taskId, SHA1);
-    await reviews.record(turn('Cleo'), pass('tester'), { verification: 'worker' });
-    await reviews.record(turn('Rune'), pass('reviewer'));
+    await reviews.record(turn('Rune'), pass(), { verification: 'worker' });
     await reviews.request(taskId, SHA2);
-    assert.deepEqual([await stateOf('Cleo'), await stateOf('Rune')], ['stale', 'stale']);
-    await reviews.verify('turn-Cleo', { start: SHA1, end: SHA1 });
-    assert.equal(await stateOf('Cleo'), 'stale');
+    assert.equal(await stateOf('Rune'), 'stale');
+    await reviews.verify('turn-Rune', { start: SHA1, end: SHA1 });
+    assert.equal(await stateOf('Rune'), 'stale');
 
     // Verified at the old head while the task is already at the new one: stale, even though the worker saw a consistent tree.
-    await db.updateTable('approvals').set({ state: 'pending-verification' }).where('turn_id', '=', 'turn-Cleo').execute();
-    await reviews.verify('turn-Cleo', { start: SHA1, end: SHA1 });
-    assert.equal(await stateOf('Cleo'), 'stale');
+    await db.updateTable('approvals').set({ state: 'pending-verification' }).where('turn_id', '=', 'turn-Rune').execute();
+    await reviews.verify('turn-Rune', { start: SHA1, end: SHA1 });
+    assert.equal(await stateOf('Rune'), 'stale');
+    assert.equal((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'in_review');
   } finally { await storage.close(); }
 });
 
@@ -187,10 +184,10 @@ test('a review turn that is lost never turns its verdict into an approval, and t
     await reviews.request(taskId, SHA1);
     const claimed = [];
     for (let next = await turns.claim(worker(projectId)); next; next = await turns.claim(worker(projectId))) claimed.push(next);
-    assert.deepEqual(claimed.map(turn => turn.kind), ['review', 'review', 'review']);
-    const mine = claimed.find(turn => turn.agentId === agents.Cleo)!;
-    assert.deepEqual(mine.review, { headSha: SHA1, reviewer: 'tester' });
-    await reviews.record({ id: mine.turnId, agent_id: mine.agentId, task_id: taskId, kind: 'review' }, pass('tester'), { verification: 'worker' });
+    assert.deepEqual(claimed.map(turn => [turn.kind, turn.agentId]), [['review', agents.Rune]]);
+    const mine = claimed[0]!;
+    assert.deepEqual(mine.review, { headSha: SHA1, reviewer: 'reviewer' });
+    await reviews.record({ id: mine.turnId, agent_id: mine.agentId, task_id: taskId, kind: 'review' }, pass(), { verification: 'worker' });
     tick(LEASE_MS + 1);
     await turns.sweep();
     assert.equal((await db.selectFrom('approvals').select('state').where('turn_id', '=', mine.turnId).executeTakeFirstOrThrow()).state, 'stale');

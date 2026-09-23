@@ -24,7 +24,7 @@ test('the personas are in the library of a new organization and can be hired int
     assert.ok(library.some(item => item.slug === 'gandalf' && item.doc.name === 'Gandalf'));
     assert.equal((await call('/api/projects/app/team/hire', { cookie, body: { library: 'joker' } })).status, 200);
     const joker = await db.selectFrom('agents').select(['name', 'title', 'persona']).where('name', '=', 'Joker').executeTakeFirstOrThrow();
-    assert.deepEqual([joker.title, /Delights in breaking things/.test(joker.persona)], ['Tester', true]);
-    assert.deepEqual((await db.selectFrom('agent_roles').innerJoin('agents', 'agents.id', 'agent_roles.agent_id').select('role_slug').where('agents.name', '=', 'Joker').execute()).map(row => row.role_slug), ['tester']);
+    assert.deepEqual([joker.title, /Delights in breaking things/.test(joker.persona)], ['Reviewer', true]);
+    assert.deepEqual((await db.selectFrom('agent_roles').innerJoin('agents', 'agents.id', 'agent_roles.agent_id').select('role_slug').where('agents.name', '=', 'Joker').execute()).map(row => row.role_slug), ['reviewer']);
   } finally { await coordinator.close(); }
 });

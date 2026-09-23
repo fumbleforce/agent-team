@@ -81,3 +81,22 @@ test('a task that changes hands is logged as it stands: the strip names who hold
     assert.deepEqual(mine.turns.map((turn: { task_key: string | null }) => turn.task_key), [page.task.key, page.task.key]);
   } finally { await coordinator.close(); }
 });
+
+test('an answer on a blocked task goes in its thread and starts its owner with it', async () => {
+  const { coordinator, db, call, owner } = await boot();
+  try {
+    const cookie = await owner();
+    await call('/api/projects', { cookie, body: { name: 'Shop' } });
+    const project = (await call('/api/projects/shop', { cookie })).json, developer = project.roster.find((agent: { is_pm: boolean }) => !agent.is_pm);
+    const taskId = (await call('/api/projects/shop/issues', { cookie, body: { title: 'Which key for the sandbox?', body: 'It needs a payment key.' } })).json.taskId as string;
+    await call(`/api/tasks/${taskId}/accept`, { cookie, body: { agentId: developer.id } });
+    await db.updateTable('tasks').set({ state: 'blocked', blocked_reason: 'Which key should the sandbox use?' }).where('id', '=', taskId).execute();
+    await db.deleteFrom('work_items').where('task_id', '=', taskId).execute();
+    assert.equal((await call(`/api/tasks/${taskId}/carry-on`, { cookie, body: { answer: 'Use the staging key.' } })).status, 200);
+    const task = await db.selectFrom('tasks').select(['state', 'blocked_reason']).where('id', '=', taskId).executeTakeFirstOrThrow();
+    assert.deepEqual([task.state, task.blocked_reason], ['in_progress', null]);
+    const page = (await call(`/api/tasks/${taskId}`, { cookie })).json;
+    assert.match(JSON.stringify(page), /Use the staging key\./, 'the answer is in the task\'s own thread');
+    assert.ok(await db.selectFrom('work_items').select('id').where('task_id', '=', taskId).where('agent_id', '=', developer.id).where('kind', '=', 'work').where('state', '=', 'queued').executeTakeFirst());
+  } finally { await coordinator.close(); }
+});

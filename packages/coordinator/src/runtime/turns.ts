@@ -335,7 +335,7 @@ export function createTurns(context: Context) {
           drafts.push({ type: 'agent.idle', actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, payload: { since: now() } });
         }
         await costs.record(tx, { turnId, agentId: turn.agent_id, projectId: turn.project_id, providerId: agent?.provider_id ?? null, billingKind: (agent?.kind as 'metered' | 'subscription' | 'local' | undefined) ?? 'metered', tokensIn: outcome.tokensIn ?? 0, tokensOut: outcome.tokensOut ?? 0, amountMinor: outcome.costMinor ?? 0 });
-        if (turn.task_id && outcome.prUrl) await tx.updateTable('tasks').set({ pr_url: outcome.prUrl }).where('id', '=', turn.task_id).execute();
+        if (turn.task_id && (outcome.prUrl || outcome.branch)) await tx.updateTable('tasks').set({ ...(outcome.prUrl ? { pr_url: outcome.prUrl } : {}), ...(outcome.branch ? { branch: outcome.branch } : {}) }).where('id', '=', turn.task_id).execute();
         // A delivery that comes back later leaves the queue as it found it.
         if (turn.kind === 'deliver' && turn.task_id && outcome.state === 'deferred') {
           // A bare line is no reason to wait by: the queue states what it knows, or nothing.
@@ -386,7 +386,9 @@ export function createTurns(context: Context) {
       const owner = await db.selectFrom('agents').select('name').where('id', '=', input.agentId).executeTakeFirst();
       if (!pm || !thread || !task || pm.id === input.agentId) return false;
       const taken = await db.selectFrom('turns').select(eb => eb.fn.countAll<number>().as('n')).where('task_id', '=', input.taskId).where('agent_id', '=', input.agentId).where('kind', '=', 'work').executeTakeFirstOrThrow();
-      const what = input.reason === 'many-turns' ? `has taken ${Number(taken.n)} turns on ${task.key} (${task.title}) and says there is more to do` : `has taken ${STALLED_AFTER} turns in a row on ${task.key} (${task.title}) without changing anything`;
+      const what = input.reason === 'many-turns' ? `has taken ${Number(taken.n)} turns on ${task.key} (${task.title}) and says there is more to do`
+        : input.reason === 'review-rounds' ? `has had changes asked for on ${task.key} (${task.title}) at three revisions and has not been sent round again`
+          : `has taken ${STALLED_AFTER} turns in a row on ${task.key} (${task.title}) without changing anything`;
       const body = `${owner?.name ?? 'Its owner'} ${what}. ${pm.name}: read the task's journal and thread, then decide: answer what it is stuck on, split the task, give it to someone else with task.assign, tell its owner to carry on, or raise it to the owner.`;
       const published = await storage.transaction(async tx => {
         const id = newId(now());

@@ -131,4 +131,12 @@ export function mountTaskRoutes(app: Hono<Env>, context: Context, turns: Turns) 
     events.published(published);
     return c.json({ ok: true });
   });
+
+  // A person's words on a task, in its own thread, as the owner's next turn will read them.
+  return {
+    async note(taskId: string, userId: string, body: string) {
+      const task = await db.selectFrom('tasks').select(['id', 'project_id', 'key', 'title']).where('id', '=', taskId).executeTakeFirstOrThrow(), threadId = await threadOf(taskId);
+      events.published(await storage.transaction(async tx => events.append(tx, [await say(tx, task, threadId, userId, 'note', body)])));
+    },
+  };
 }

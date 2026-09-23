@@ -47,6 +47,20 @@ test('a clean, approved, passing change merges exactly once and is confirmed', a
   assert.deepEqual([result.state, result.mergeAttempted, state.merges, result.mergeCommit], ['merged', true, 1, 'c'.repeat(40)]);
 });
 
+test('the gate asks for the one reviewer approval by default; the roles it is given change what it asks for', async () => {
+  const { root, head } = worktree();
+  const { reviewer, ...standIns } = approved(head), only: Approvals = { reviewer: reviewer! };
+  const alone = scm(head);
+  const result = await deliver({ config, scm: alone.gate, prUrl: PR, approvals: async () => only, worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([result.state, alone.state.merges], ['merged', 1]);
+  const without = scm(head);
+  const refused = await deliver({ config, scm: without.gate, prUrl: PR, approvals: async () => standIns, worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([refused.state, without.state.merges], ['blocked', 0]);
+  const named = scm(head);
+  const held = await deliver({ config, scm: named.gate, prUrl: PR, approvals: async () => only, approvalRoles: ['reviewer', 'pm'], worktree: root, branch: 'agents/gh-7' });
+  assert.deepEqual([held.state, named.state.merges], ['blocked', 0]);
+});
+
 test('an approval withdrawn between the two reads stops the merge', async () => {
   const { root, head } = worktree();
   const { gate, state } = scm(head);

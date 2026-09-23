@@ -46,7 +46,7 @@ export async function seedDemo(context: Context, options: { empty?: boolean; act
   const maren = seat('Maren', 1, 'PM', 'Decisive, cuts scope, closes debates with a call and an owner.', 'Triaging your Safari report', 0, true);
   const ada = seat('Ada', 2, 'Backend', 'Careful with data integrity; asks "what happens on retry?" first.', 'webhooks.py · tests', 1);
   const bram = seat('Bram', 3, 'Frontend', 'Pushes for feel and polish; ships fast, takes feedback well.', 'PR #2293 in review', 2);
-  const cleo = seat('Cleo', 4, 'QA', 'Skeptical by default; hunts the failure mode nobody mentioned.', 'staging run #4812', 3);
+  const cleo = seat('Cleo', 4, 'Reviewer', 'Skeptical by default; hunts the failure mode nobody mentioned.', 'staging run #4812', 3);
   const finn = seat('Finn', 5, 'Infra', 'Pragmatic, quiet, speaks up when something will page someone.', null, 4);
   await db.insertInto('agents').values([maren, ada, bram, cleo, finn]).execute();
 
@@ -120,7 +120,7 @@ export async function seedDemo(context: Context, options: { empty?: boolean; act
     ]).execute();
 
     // Who wears which role, so the roles page and the grants have something real behind them.
-    await db.insertInto('agent_roles').values([[maren, 'pm'], [ada, 'developer'], [bram, 'developer'], [cleo, 'tester'], [finn, 'developer'], [ada, 'reviewer'], [finn, 'reviewer']].map(([agent, role]) => ({ agent_id: (agent as { id: string }).id, role_slug: role as string }))).onConflict(oc => oc.doNothing()).execute();
+    await db.insertInto('agent_roles').values([[maren, 'pm'], [ada, 'developer'], [bram, 'developer'], [cleo, 'reviewer'], [finn, 'developer'], [ada, 'reviewer'], [finn, 'reviewer']].map(([agent, role]) => ({ agent_id: (agent as { id: string }).id, role_slug: role as string }))).onConflict(oc => oc.doNothing()).execute();
 
     // Where the product runs, so the product view has something to capture and mark up.
     await db.insertInto('product_envs').values([

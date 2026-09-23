@@ -34,8 +34,6 @@ import { SKILL_SCOPE, shippedSkills } from './runtime/skills.ts';
 export type { LauncherFactory } from './runtime/launch.ts';
 export type TrackerFactory = (kind: string) => Promise<TrackerClient | null>;
 export type ScmFactory = (kind: string) => Promise<ScmApi | null>;
-// So are the code hosts: review state, test reports and environments are polled only where the host's token is present.
-const adapterScm: ScmFactory = async kind => scmApi(kind);
 
 export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; /* The person a coordinator on this machine is for: written by `up`, only honoured on a loopback bind. */ localOwner?: LocalOwner; webRoot?: string | null; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; scm?: ScmFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string; /* Where large step artifacts are kept: `{ kind: 'local', dir }` by default, in a folder under the data directory. */ artifacts?: ArtifactsConfig; /* Days a trace outlives its terminal task; 30 by default. */ traceRetentionDays?: number; /* The model that answers typed questions; by default the one the keys in the environment or the app name, or none. */ decider?: Decider | null }
 
@@ -60,6 +58,10 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const built = path.join(packageRoot(), 'packages', 'web', 'dist');
   const webRoot = config.webRoot === undefined ? (existsSync(built) ? built : null) : config.webRoot;
   const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), local: isLoopback(host), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, localOwner: config.localOwner ?? null, demoLogin: config.demoLogin ?? null, ...(config.env ? { env: config.env } : {}), ...(config.fetch ? { fetch: config.fetch } : {}), ...(config.decider !== undefined ? { decider: config.decider } : {}) });
+  // So are the code hosts: review state, test reports, environments and the committed settings are read only where the host's token
+  // is present, from where the coordinator keeps its keys. A deployment that turns outside polling off for trackers has it off for
+  // code hosts too, unless it names a factory.
+  context.scm = config.scm === undefined ? (config.trackers === null ? null : async kind => scmApi(kind, { env: context.env, fetch: context.fetch })) : config.scm;
   await context.secrets.load();
   await createIssues(context, path.join(context.dataDir, 'blobs')).backfillInbox();
   // The shipped skills, which the shipped roles name. Like every shipped document, one an owner edited is never overwritten.
@@ -89,8 +91,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   // a project whose tracker has no key is not polled, and its board says why.
   const adapterTrackers: TrackerFactory = async kind => trackerClient(kind, { env: context.env, fetch: context.fetch });
   const sync = createTrackerSync(context, turns), trackers = config.trackers === undefined ? adapterTrackers : config.trackers, cursors = createCursors(context);
-  // A deployment that turns outside polling off for trackers has it off for code hosts too, unless it names a factory.
-  const scmSync = createScmSync(context, turns), hosts = config.scm === undefined ? (config.trackers === null ? null : adapterScm) : config.scm;
+  const scmSync = createScmSync(context, turns), hosts = context.scm;
   const slack = createSlackMirror(context), drive = createDriveSync(context), gitMirror = config.knowledgeMirror ? createGitMirror(context, config.knowledgeMirror) : null;
   // Outbound mirrors run on a short timer and never stop the coordinator when their other side is down.
   const mirrorTimer = setInterval(() => { void slack.sync().then(() => gitMirror?.sync()).then(() => drive.pull()).then(() => drive.sync()).catch(error => console.error(`Mirror failed: ${(error as Error).message}`)); }, 10_000);

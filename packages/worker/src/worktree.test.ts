@@ -39,3 +39,20 @@ test('a task worktree excludes secrets, is reused, and reports changed paths', a
   assert.equal(again.created, false);
   assert.deepEqual(await changedPaths(again.path, again.baseCommit), ['new.ts']);
 });
+
+test('a task that worked on another machine goes on from the branch it pushed there', async () => {
+  const origin = repository(), bare = `${origin}.git`;
+  execFileSync('git', ['clone', '-q', '--bare', origin, bare]);
+  const clone = (name: string) => { const dir = path.join(path.dirname(origin), name); execFileSync('git', ['clone', '-q', bare, dir]); for (const [key, value] of [['user.email', 't@example.com'], ['user.name', 'T']] as const) execFileSync('git', ['-C', dir, 'config', key, value]); return dir; };
+  const first = clone('first'), second = clone('second');
+  const there = await ensureWorktree({ checkout: first, taskKey: 'CK-40', branchPrefix: 'agents/', base: 'origin/main' });
+  writeFileSync(path.join(there.path, 'refund.ts'), 'done so far');
+  execFileSync('git', ['-C', there.path, 'add', 'refund.ts']); execFileSync('git', ['-C', there.path, 'commit', '-q', '-m', 'part one']);
+  execFileSync('git', ['-C', there.path, 'push', '-q', 'origin', `${there.branch}:${there.branch}`]);
+
+  const here = await ensureWorktree({ checkout: second, taskKey: 'CK-40', branchPrefix: 'agents/', base: 'origin/main' });
+  assert.equal(here.branch, there.branch);
+  assert.ok(existsSync(path.join(here.path, 'refund.ts')), 'the work pushed from the other machine is here');
+  const fresh = await ensureWorktree({ checkout: second, taskKey: 'CK-41', branchPrefix: 'agents/', base: 'origin/main' });
+  assert.ok(!existsSync(path.join(fresh.path, 'refund.ts')), 'a task never pushed starts from the base');
+});

@@ -17,11 +17,11 @@ test('a task does not sit in review because a review was lost: whoever still owe
     await seedDemo(coordinator.context);
     const db = coordinator.context.storage.db, turns = createTurns(coordinator.context), reviews = createReviews(coordinator.context, turns);
     const task = await db.selectFrom('tasks').select(['id', 'project_id']).where('key', '=', 'CK-31').executeTakeFirstOrThrow();
-    // Three teammates who may give a verdict; none of them wrote the change.
+    // A reviewer who did not write the change, and a PM who is not asked to review it.
     const names = Object.fromEntries((await db.selectFrom('agents').select(['id', 'name']).execute()).map(row => [row.name, row.id])) as Record<string, string>;
-    for (const [name, role] of [['Maren', 'pm'], ['Cleo', 'tester'], ['Ada', 'reviewer']] as const) await db.insertInto('agent_roles').values({ agent_id: names[name]!, role_slug: role }).onConflict(oc => oc.doNothing()).execute();
+    for (const [name, role] of [['Maren', 'pm'], ['Cleo', 'reviewer']] as const) await db.insertInto('agent_roles').values({ agent_id: names[name]!, role_slug: role }).onConflict(oc => oc.doNothing()).execute();
     const asked = await reviews.request(task.id, SHA);
-    assert.ok(asked.length >= 2, 'several kinds of review are asked for');
+    assert.deepEqual(asked, [{ kind: 'reviewer', agentId: names.Cleo }]);
     const live = async () => (await db.selectFrom('work_items').select(['agent_id', 'kind']).where('task_id', '=', task.id).where('state', 'in', ['queued', 'leased']).execute()).map(item => `${item.kind}:${item.agent_id}`).sort();
     const all = await live();
     // Nothing is missing, so nothing is asked twice.
@@ -60,7 +60,7 @@ test('a merge that was cut off does not freeze the project or wait for a person:
     await seedDemo(coordinator.context);
     const db = coordinator.context.storage.db, turns = createTurns(coordinator.context), reviews = createReviews(coordinator.context, turns);
     const names = Object.fromEntries((await db.selectFrom('agents').select(['id', 'name']).execute()).map(row => [row.name, row.id])) as Record<string, string>;
-    for (const [name, role] of [['Maren', 'pm'], ['Cleo', 'tester'], ['Ada', 'reviewer']] as const) await db.insertInto('agent_roles').values({ agent_id: names[name]!, role_slug: role }).onConflict(oc => oc.doNothing()).execute();
+    for (const [name, role] of [['Maren', 'pm'], ['Cleo', 'reviewer']] as const) await db.insertInto('agent_roles').values({ agent_id: names[name]!, role_slug: role }).onConflict(oc => oc.doNothing()).execute();
     const task = await db.selectFrom('tasks').select(['id', 'project_id']).where('key', '=', 'CK-31').executeTakeFirstOrThrow();
     // As an earlier version left it: the task set aside, its merge entry unknown, and two more approved tasks waiting behind it.
     await db.updateTable('tasks').set({ state: 'quarantined', head_sha: SHA }).where('id', '=', task.id).execute();
@@ -103,12 +103,15 @@ test('a merge the gate refused is tried again on a person\'s word once what it r
     await seedDemo(coordinator.context);
     const db = coordinator.context.storage.db, turns = createTurns(coordinator.context), reviews = createReviews(coordinator.context, turns);
     const names = Object.fromEntries((await db.selectFrom('agents').select(['id', 'name']).execute()).map(row => [row.name, row.id])) as Record<string, string>;
-    const kinds = [['Maren', 'pm'], ['Cleo', 'tester'], ['Ada', 'reviewer']] as const;
-    for (const [name, role] of kinds) await db.insertInto('agent_roles').values({ agent_id: names[name]!, role_slug: role }).onConflict(oc => oc.doNothing()).execute();
+    for (const [name, role] of [['Maren', 'pm'], ['Cleo', 'reviewer']] as const) await db.insertInto('agent_roles').values({ agent_id: names[name]!, role_slug: role }).onConflict(oc => oc.doNothing()).execute();
     const task = await db.selectFrom('tasks').select(['id', 'project_id']).where('key', '=', 'CK-31').executeTakeFirstOrThrow();
     await db.updateTable('tasks').set({ state: 'blocked', blocked_reason: 'no required checks reported on the branch', head_sha: SHA }).where('id', '=', task.id).execute();
+    const approve = (kind: string, name: string) => db.insertInto('approvals').values({ id: `ok-${kind}`, task_id: task.id, kind, agent_id: names[name]!, turn_id: 'none', head_sha: SHA, verdict: 'pass', findings: '[]', summary: 'Fine.', state: 'valid', created_at: 1 }).execute();
     await assert.rejects(reviews.deliverAgain(task.id), /does not have every approval/);
-    for (const [name, role] of kinds) await db.insertInto('approvals').values({ id: `ok-${role}`, task_id: task.id, kind: role, agent_id: names[name]!, turn_id: 'none', head_sha: SHA, verdict: 'pass', findings: '[]', summary: 'Fine.', state: 'valid', created_at: 1 }).execute();
+    // A PM's verdict, as an earlier version asked for, is not the reviewer's.
+    await approve('pm', 'Maren');
+    await assert.rejects(reviews.deliverAgain(task.id), /does not have every approval/);
+    await approve('reviewer', 'Cleo');
     await reviews.deliverAgain(task.id);
     const after = await db.selectFrom('tasks').select(['state', 'blocked_reason']).where('id', '=', task.id).executeTakeFirstOrThrow();
     assert.deepEqual([after.state, after.blocked_reason, (await db.selectFrom('merge_queue').select('state').where('task_id', '=', task.id).execute()).map(row => row.state), (await db.selectFrom('work_items').select('kind').where('task_id', '=', task.id).where('state', '=', 'queued').execute()).map(item => item.kind)], ['approved', null, ['queued'], ['deliver']]);
@@ -153,25 +156,23 @@ test('a review that failed or ran out of time does not set the finished task asi
     await seedDemo(coordinator.context);
     const db = coordinator.context.storage.db, turns = createTurns(coordinator.context), reviews = createReviews(coordinator.context, turns);
     const names = Object.fromEntries((await db.selectFrom('agents').select(['id', 'name']).execute()).map(row => [row.name, row.id])) as Record<string, string>;
-    for (const [name, role] of [['Maren', 'pm'], ['Cleo', 'tester'], ['Ada', 'reviewer']] as const) await db.insertInto('agent_roles').values({ agent_id: names[name]!, role_slug: role }).onConflict(oc => oc.doNothing()).execute();
+    for (const [name, role] of [['Maren', 'pm'], ['Cleo', 'reviewer']] as const) await db.insertInto('agent_roles').values({ agent_id: names[name]!, role_slug: role }).onConflict(oc => oc.doNothing()).execute();
     const task = await db.selectFrom('tasks').select(['id', 'project_id']).where('key', '=', 'CK-31').executeTakeFirstOrThrow();
     await reviews.request(task.id, SHA);
     const state = async () => (await db.selectFrom('tasks').select(['state', 'blocked_reason']).where('id', '=', task.id).executeTakeFirstOrThrow());
     const timeOut = async () => { const claimed = (await turns.claim({ workerId: 'w1', free: { work: 0, bounded: 1, deliver: 0 }, projects: [task.project_id] }))!; await turns.finish(claimed.turnId, 'w1', claimed.leaseToken, { state: 'timed_out', stopReason: 'timeout', summary: 'Started a server and waited on it.' }); return claimed.agentId; };
 
-    // The tester's review runs out of time: the task stays in review, and the review is asked for again.
+    // The review runs out of time: the task stays in review, and the review is asked for again.
     const who = await timeOut();
+    assert.equal(who, names.Cleo);
     assert.deepEqual([(await state()).state, (await state()).blocked_reason], ['in_review', null]);
     assert.equal((await reviews.chase()).reviews, 1);
 
     // The same reviewer fails three more times: now it is a person's, and the reason names who could not deliver.
-    // The other two have given theirs, so only this reviewer is still owed.
-    await db.updateTable('work_items').set({ state: 'done' }).where('task_id', '=', task.id).where('agent_id', '!=', who).execute();
-    for (const [name, role] of [['Maren', 'pm'], ['Cleo', 'tester'], ['Ada', 'reviewer']] as const) if (names[name] !== who) await db.insertInto('approvals').values({ id: `given-${role}`, task_id: task.id, kind: role, agent_id: names[name]!, turn_id: 'none', head_sha: SHA, verdict: 'pass', findings: '[]', summary: 'Fine.', state: 'valid', created_at: 1 }).execute();
     for (let again = 0; again < 3; again++) { assert.equal(await timeOut(), who); await reviews.chase(); }
     const aside = await state();
     assert.equal(aside.state, 'blocked');
-    assert.match(aside.blocked_reason ?? '', /did not record a (pm|tester|reviewer) verdict in 4 tries/);
+    assert.match(aside.blocked_reason ?? '', /Cleo did not record a reviewer verdict in 4 tries/);
 
     // A person says carry on: back into review, not back to the start.
     await reviews.carryOn(task.id);

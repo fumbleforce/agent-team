@@ -4,7 +4,7 @@ import { outsideWriteScope, STEP_ARTIFACT_LIMITS, STREAM_ARTIFACT_SEQ, turnToken
 import { enforcesToolPolicy, type EngineAdapter } from '../../../adapters/engine/contract.ts';
 import { publish as publishChange, type Exec } from '../../../adapters/scm/publish.ts';
 import { SCM_GATES } from '../../../adapters/scm/gates.ts';
-import { deliver as gate, type Approvals, type DeliveryConfig } from './deliver/gate.ts';
+import { deliver as gate, type ApprovalRole, type Approvals, type DeliveryConfig } from './deliver/gate.ts';
 import { capturePage, type CaptureFn } from './capture.ts';
 import { executeTurn, turnDirectory, type TurnResult } from './execute.ts';
 import { clearRun, identifyRun, recordRun, sweepOrphans } from './orphans.ts';
@@ -18,9 +18,10 @@ import { cappedBy, changedPaths, committedCeiling, ensureReviewWorktree, ensureW
 export const changeTitle = (taskKey: string | null, taskTitle: string | null | undefined): string => (taskKey && taskTitle ? `${taskKey}: ${taskTitle}` : taskTitle || taskKey || 'Change from the team').slice(0, 200);
 export const changeBody = (report: string | null): string => (report ? `The author's report at the end of its turn:\n\n${report}` : '');
 
-export interface DeliveryFacts { taskKey: string; title?: string; headSha: string; prUrl: string | null; manifest: { scm?: { kind?: string }; delivery?: DeliveryConfig }; approvals: Approvals }
+// `approvalRoles` are the reviewing roles the team has: the approvals the coordinator waited for are the ones the gate asks for.
+export interface DeliveryFacts { taskKey: string; title?: string; headSha: string; prUrl: string | null; manifest: { scm?: { kind?: string }; delivery?: DeliveryConfig }; approvals: Approvals; approvalRoles?: ApprovalRole[] }
 export interface DeliveryResult { state: 'merged' | 'blocked'; reason: string; mergeAttempted: boolean; mergeCommit?: string; waiting?: boolean }
-export type DeliverFn = (input: { config: DeliveryConfig; scm: string; prUrl: string; approvals: () => Promise<Approvals>; worktree: string; branch: string }) => Promise<DeliveryResult>;
+export type DeliverFn = (input: { config: DeliveryConfig; scm: string; prUrl: string; approvals: () => Promise<Approvals>; approvalRoles?: ApprovalRole[]; worktree: string; branch: string }) => Promise<DeliveryResult>;
 
 // The one path to the base branch, with the SCM chosen by the project's manifest.
 const defaultDeliver: DeliverFn = input => {
@@ -144,7 +145,7 @@ export function createWorker(config: WorkerConfig) {
     // Approved but never published (the worker had nowhere to push at the time): the change is opened now, from the approved branch.
     let prUrl = facts.prUrl;
     if (!prUrl && config.publish) prUrl = (await publishChange(config.publish.scm, { worktree: worktree.path, repository: config.publish.repository, branch: worktree.branch, base: config.publish.base, title: changeTitle(facts.taskKey, facts.title), body: '' }, config.publish.exec).catch((error: Error) => { console.error(`Publish failed: ${error.message}`); return null; }))?.url ?? null;
-    const delivery = await Promise.resolve().then(() => (prUrl ? (config.deliver ?? defaultDeliver)({ config: facts.manifest.delivery!, scm, prUrl, approvals, worktree: worktree.path, branch: worktree.branch }) : Promise.reject(new Error('No change was published for this task, and this worker has nowhere to publish to'))))
+    const delivery = await Promise.resolve().then(() => (prUrl ? (config.deliver ?? defaultDeliver)({ config: facts.manifest.delivery!, scm, prUrl, approvals, ...(facts.approvalRoles?.length ? { approvalRoles: facts.approvalRoles } : {}), worktree: worktree.path, branch: worktree.branch }) : Promise.reject(new Error('No change was published for this task, and this worker has nowhere to publish to'))))
       .catch((error: Error): DeliveryResult => ({ state: 'blocked', reason: error.message, mergeAttempted: false }));
     // A check that has not finished is no verdict: the delivery goes back to the queue and is tried again in a few minutes.
     if (delivery.waiting) { await call(`/worker/turns/${turn.turnId}/finish`, { ...lease, outcome: { state: 'deferred', stopReason: 'checks-running', summary: delivery.reason.slice(0, 500), ...(prUrl && !facts.prUrl ? { prUrl } : {}) } }); return; }
@@ -285,6 +286,7 @@ export function createWorker(config: WorkerConfig) {
         ...(reviewTree ? { headShaStart: reviewTree.headSha, headShaEnd: await headSha(reviewTree.path) } : {}),
         state: result.state, stopReason: result.stopReason, ...(summary ? { summary } : {}), tokensIn: result.tokensIn, tokensOut: result.tokensOut, costMinor: Math.round(result.costUsd * 100),
         ...(worktree ? { headSha: await headSha(worktree.path) } : {}), ...(published ? { prUrl: published.url } : {}),
+        ...(worktree && (published || (config.ephemeral && config.publish)) ? { branch: worktree.branch } : {}),
       } });
     } finally {
       clearInterval(flusher); clearRun(turnDir);
