@@ -5,7 +5,7 @@ import { createWorkspace } from '../repos/workspace.ts';
 import { moveTask } from './taskMoves.ts';
 import type { Turns } from './turns.ts';
 
-export type NeedsYouKind = 'decision' | 'quarantine' | 'delivery' | 'proposal' | 'blocked';
+export type NeedsYouKind = 'decision' | 'quarantine' | 'delivery' | 'proposal' | 'blocked' | 'system';
 // Why the merge gate refused, for someone who does not read command lines. The gate's own words stay available beside it.
 const REFUSALS: [RegExp, string][] = [
   [/^needs-attention$/i, 'A turn on this task stopped with an error or ran out of time, and an earlier version set the whole task aside for it. Nothing is wrong with the task itself: carry on.'],
@@ -17,6 +17,16 @@ const REFUSALS: [RegExp, string][] = [
   [/No change was published/i, 'Nothing was published for this task, and the worker has nowhere to publish to.'],
   [/did not confirm MERGED/i, 'The merge was attempted, and the code host did not confirm it. Open the change to see where it stands.'],
 ];
+// How long something must hold the team up before a person is told: long enough that it is not a turn about to start.
+const SYSTEM_AFTER_MS = 10 * 60_000, SYNC_AFTER_MS = 15 * 60_000, WORKER_FRESH_MS = 3 * 60_000;
+const SYSTEM_REASONS: Record<string, { title: string; detail: string; href(slug: string): string }> = {
+  'provider-limited': { title: 'A model provider has reached its usage limit', detail: 'they start by themselves when it lifts. Add another provider to keep going now.', href: slug => `/p/${slug}/integrations` },
+  'provider-window': { title: 'A model provider has used the allowance you set', detail: 'they start when the window moves on, or raise the allowance on the provider.', href: slug => `/p/${slug}/integrations` },
+  'provider-unavailable': { title: 'A model provider is switched off or not connected', detail: 'turn it on, or move the seats to another provider.', href: slug => `/p/${slug}/integrations` },
+  'over-budget': { title: 'A budget is used up', detail: 'raise the budget on the Costs page, or wait for the next month.', href: () => '/costs' },
+  'over-cap': { title: 'An agent has reached its daily cap', detail: 'it carries on tomorrow, or raise its cap.', href: slug => `/p/${slug}/team` },
+};
+const SYNCS: Record<string, string> = { tracker: 'The task board sync', scm: 'The code host sync', slack: 'The chat mirror', drive: 'The document folder sync' };
 const inWords = (reason: string | null): string | null => (reason ? REFUSALS.find(([pattern]) => pattern.test(reason))?.[1] ?? null : null);
 
 export interface NeedsYouItem { raw?: string | null; mergeRefused?: boolean; kind: NeedsYouKind; id: string; projectId: string; title: string; detail: string; since: number; taskKey: string | null; href: string | null;
@@ -28,6 +38,42 @@ export interface NeedsYouItem { raw?: string | null; mergeRefused?: boolean; kin
 export function createNeedsYou(context: Context, turns: Turns) {
   const { storage, events, now } = context;
   const db = storage.db;
+
+  // What stops the team that no agent can put right: nothing to run the work, a tool signed out, a provider or budget holding it,
+  // an outside system that stopped answering. Each is one item, however many tasks it holds up, and it goes when the cause does.
+  async function systemItems(slugs: Map<string, string>): Promise<NeedsYouItem[]> {
+    const at = now(), items: NeedsYouItem[] = [];
+    const names = new Map((await db.selectFrom('projects').select(['id', 'name']).execute()).map(row => [row.id, row.name]));
+    const queued = await db.selectFrom('work_items').select(['project_id', 'defer_reason', 'created_at']).where('state', '=', 'queued').where('created_at', '<', at - SYSTEM_AFTER_MS).where(eb => eb.or([eb('not_before', 'is', null), eb('not_before', '<=', at)])).execute();
+    const workers = await db.selectFrom('workers').select(['projects', 'last_seen_at']).where('last_seen_at', '>', at - WORKER_FRESH_MS).execute();
+    const served = new Set(workers.flatMap(worker => JSON.parse(worker.projects) as string[]));
+    const byProject = new Map<string, { oldest: number; reasons: Map<string, number> }>();
+    for (const row of queued) {
+      const entry = byProject.get(row.project_id) ?? { oldest: Number(row.created_at), reasons: new Map() };
+      entry.oldest = Math.min(entry.oldest, Number(row.created_at));
+      entry.reasons.set(row.defer_reason ?? 'none', (entry.reasons.get(row.defer_reason ?? 'none') ?? 0) + 1);
+      byProject.set(row.project_id, entry);
+    }
+    for (const [projectId, entry] of byProject) {
+      const name = names.get(projectId) ?? 'a project', waiting = [...entry.reasons.values()].reduce((sum, n) => sum + n, 0);
+      if (!served.has(projectId)) items.push({ kind: 'system', id: `no-worker:${projectId}`, projectId, title: `Nothing is running the work of ${name}`, detail: `${waiting} ${waiting === 1 ? 'turn waits' : 'turns wait'} and no worker has asked for work for this project lately. Start one on the project's Get started page, or with "agent-team work" in its folder.`, since: entry.oldest, taskKey: null, href: `/welcome?project=${slugs.get(projectId)}` });
+      for (const [reason, count] of entry.reasons) {
+        const said = SYSTEM_REASONS[reason];
+        if (said) items.push({ kind: 'system', id: `${reason}:${projectId}`, projectId, title: `${said.title} (${name})`, detail: `${count} ${count === 1 ? 'turn waits' : 'turns wait'}: ${said.detail}`, since: entry.oldest, taskKey: null, href: said.href(slugs.get(projectId) ?? '') });
+      }
+    }
+    // A tool signed out on a worker: its latest turn stopped on the sign-in and none has got through since.
+    for (const provider of await db.selectFrom('providers').select(['id', 'name']).execute()) {
+      const last = await db.selectFrom('turns').select(['stop_reason', 'finished_at', 'project_id', 'worker_id']).where('provider_id', '=', provider.id).where('finished_at', 'is not', null).where('finished_at', '>', at - 24 * 3600_000).orderBy('finished_at', 'desc').executeTakeFirst();
+      if (last?.stop_reason === 'auth') items.push({ kind: 'system', id: `signed-out:${provider.id}`, projectId: last.project_id, title: `${provider.name} is signed out on ${last.worker_id ?? 'a worker'}`, detail: 'Its last turn stopped because the tool is not signed in. Sign in once on that machine; the work carries on after.', since: Number(last.finished_at), taskKey: null, href: `/p/${slugs.get(last.project_id)}/integrations` });
+    }
+    // An outside system that stopped answering: the tracker, the code host, the chat mirror.
+    for (const row of await db.selectFrom('sync_cursors').select(['scope_id', 'resource', 'error', 'failing_since']).where('error', 'is not', null).where('failing_since', '<', at - SYNC_AFTER_MS).execute()) {
+      if (!names.has(row.scope_id)) continue;
+      items.push({ kind: 'system', id: `sync:${row.scope_id}:${row.resource}`, projectId: row.scope_id, title: `${SYNCS[row.resource.split('.')[0]!] ?? 'A sync'} of ${names.get(row.scope_id)} is failing`, detail: row.error ?? '', since: Number(row.failing_since), taskKey: null, href: `/p/${slugs.get(row.scope_id)}/integrations` });
+    }
+    return items;
+  }
 
   return {
     async list(): Promise<NeedsYouItem[]> {
@@ -61,6 +107,7 @@ export function createNeedsYou(context: Context, turns: Turns) {
         items.push({ kind: 'proposal', id: row.id, projectId: row.project_id, title: row.title, detail: row.why, since: Number(row.created_at), taskKey: null, href: `/proposals/${row.id}` });
       for (const row of await db.selectFrom('tasks').select(['id', 'project_id', 'key', 'title', 'blocked_reason', 'updated_at']).where('state', '=', 'blocked').execute())
         items.push({ kind: 'blocked', id: row.id, projectId: row.project_id, title: `${row.key} · ${row.title}`, detail: inWords(row.blocked_reason) ?? row.blocked_reason ?? 'The team could not move this on.', ...(inWords(row.blocked_reason) ? { raw: row.blocked_reason, mergeRefused: !/^needs-attention$/i.test(row.blocked_reason ?? '') } : {}), since: Number(row.updated_at), taskKey: row.key, href: null, about: await about(row.id, null) });
+      items.push(...await systemItems(slugs));
       return items.sort((a, b) => a.since - b.since);
     },
 

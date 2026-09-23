@@ -64,12 +64,13 @@ export interface KbRevisionsTable { page_id: string; rev_no: number; body: strin
 export interface KbReadsTable { page_id: string; rev_no: number; agent_id: string; turn_id: string | null; at: Ms }
 export interface MemoriesTable { id: string; scope_type: string; scope_id: string; agent_id: string | null; type: string; title: string; body: string; status: string; hits: number; last_hit_at: Ms | null; promoted_page_id: string | null; created_at: Ms;
   abstract: Generated<string>; role_slug: string | null; evidence: Generated<Json>; superseded_by: string | null; superseded_at: Ms | null; supersede_reason: string | null; score: Generated<number>; source: Generated<string> }
+export interface NotificationsTable { key: string; project_id: string | null; title: string; first_seen_at: Ms; notified_at: Ms | null; reminded_at: Ms | null; resolved_at: Ms | null }
 export interface MemoryInjectionsTable { turn_id: string; memory_id: string; depth: string; created_at: Ms }
 export interface NotebookRevisionsTable { agent_id: string; rev: number; body: string; turn_id: string | null; created_at: Ms }
 // Written only through the adapter's SearchPort. `tokens` is what the native index reads; `ref` is where a hit leads.
 export interface SearchDocsTable { doc_type: string; doc_id: string; scope_type: string; scope_id: string; title: string; body: string; ref: string | null; tokens: string }
 
-export interface KnowledgeSchema { cost_entries: CostEntriesTable; cost_daily: CostDailyTable; budgets: BudgetsTable; kb_pages: KbPagesTable; kb_revisions: KbRevisionsTable; kb_reads: KbReadsTable; memories: MemoriesTable; search_docs: SearchDocsTable; memory_injections: MemoryInjectionsTable; notebook_revisions: NotebookRevisionsTable }
+export interface KnowledgeSchema { cost_entries: CostEntriesTable; cost_daily: CostDailyTable; budgets: BudgetsTable; kb_pages: KbPagesTable; kb_revisions: KbRevisionsTable; kb_reads: KbReadsTable; memories: MemoriesTable; search_docs: SearchDocsTable; memory_injections: MemoryInjectionsTable; notebook_revisions: NotebookRevisionsTable; notifications: NotificationsTable }
 
 export interface DeliberationsTable { id: string; project_id: string; thread_id: string; kind: string; task_id: string | null; question: string; proposer_agent_id: string; decider_agent_id: string | null; state: string; revised: boolean; blocking: boolean; feedback_deadline: Ms; extended: boolean; created_at: Ms }
 export interface DeliberationParticipantsTable { deliberation_id: string; agent_id: string; state: string; stance: string | null; is_blocking: boolean; message_id: string | null }

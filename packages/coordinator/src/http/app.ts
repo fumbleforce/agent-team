@@ -15,6 +15,8 @@ import { registerRuleRoutes } from './ruleRoutes.ts';
 import { registerKnowledgeRoutes } from './knowledgeRoutes.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
 import { mountMergingRoutes } from './mergingRoutes.ts';
+import { registerNotifyRoutes } from './notifyRoutes.ts';
+import { createNotifications } from '../runtime/notifications.ts';
 import { mountSetupRoutes } from './setupRoutes.ts';
 import { mountSsoSetupRoutes } from './ssoSetupRoutes.ts';
 import { mountOnboardingRoutes } from './onboardingRoutes.ts';
@@ -703,6 +705,7 @@ export function createApp(context: Context) {
   });
 
   registerOrgRoutes(app, context, { workspace, docs, machineTokens });
+  registerNotifyRoutes(app, context, createNotifications(context, needsYou));
   mountSsoSetupRoutes(app, { context, callbackUri });
   registerRuleRoutes(app, context, { workspace, docs, costs });
 

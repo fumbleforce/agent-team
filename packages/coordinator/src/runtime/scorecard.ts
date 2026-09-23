@@ -38,7 +38,7 @@ export interface ScorecardOptions {
 }
 
 // Every figure the scorecard computes. A trial names one of them as what it expects to move.
-export const FIGURE_IDS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T7', 'I1', 'I2', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'P1', 'P2', 'P3', 'P4', 'P5', 'D1', 'D2', 'O1', 'O2', 'S1', 'S2', 'S3', 'S4', 'C1', 'C2', 'C3', 'M1', 'M2', 'M3', 'M4'] as const;
+export const FIGURE_IDS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T7', 'I1', 'I2', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'P1', 'P2', 'P3', 'P4', 'P5', 'D1', 'D2', 'O1', 'O2', 'O4', 'S1', 'S2', 'S3', 'S4', 'C1', 'C2', 'C3', 'M1', 'M2', 'M3', 'M4'] as const;
 
 const MINUTE = 60_000;
 const DAY = 24 * 3600_000;
@@ -245,6 +245,10 @@ export function createScorecard(context: Context, options: ScorecardOptions = {}
     const upkeep = await db.selectFrom('turns').select(eb => [eb.fn.coalesce(eb.fn.sum<number>('cost_minor'), eb.lit(0)).as('minor'), eb.fn.countAll<number>().as('n')]).where('project_id', '=', projectId).where('kind', '=', 'remember').where('started_at', '>=', from).where('started_at', '<=', to).executeTakeFirstOrThrow();
     const given = await db.selectFrom('memory_injections').innerJoin('turns', 'turns.id', 'memory_injections.turn_id').select(eb => [eb.fn.countAll<number>().as('n'), eb.fn.count<number>('memory_injections.turn_id').distinct().as('turns')]).where('turns.project_id', '=', projectId).where('memory_injections.created_at', '>=', from).where('memory_injections.created_at', '<=', to).executeTakeFirstOrThrow();
 
+    // --- Telling the owner: what landed on Needs you for this project, and how much of it reached them outside the app within five minutes.
+    const noticed = await db.selectFrom('notifications').select(['first_seen_at', 'notified_at']).where('project_id', '=', projectId).where('first_seen_at', '>=', from).where('first_seen_at', '<=', to).execute();
+    const toldInTime = noticed.filter(row => row.notified_at !== null && Number(row.notified_at) - Number(row.first_seen_at) <= 5 * MINUTE).length;
+
     const figures: Figure[] = [
       figure({ id: 'T1', group: 'team-vs-one', measure: 'Quality against one frontier model alone', value: null, unit: 'ratio', sample: 0, target: '1.0 or more', note: 'Comes from scored reference-task runs: agent-team reference' }),
       figure({ id: 'T2', group: 'team-vs-one', measure: 'Cost against one frontier model alone', value: null, unit: 'ratio', sample: 0, target: '0.3 or less', note: 'Comes from scored reference-task runs: agent-team reference' }),
@@ -274,6 +278,7 @@ export function createScorecard(context: Context, options: ScorecardOptions = {}
       figure({ id: 'D2', group: 'delivery', measure: 'Finished work that came back within 14 days', value: share(cameBack.size, done.length), unit: 'share', sample: done.length, target: '10 % or fewer', meets: value => value <= 0.1 }),
       figure({ id: 'O1', group: 'observability', measure: 'Waiting tasks that say why', value: share(waiting.filter(explained).length, waiting.length), unit: 'share', sample: waiting.length, target: '100 %', meets: value => value === 1 }),
       figure({ id: 'O2', group: 'observability', measure: 'Turns that can be read afterwards', value: share(finished.filter(turn => traced.has(turn.id)).length, finished.length), unit: 'share', sample: finished.length, target: '100 %', meets: value => value === 1 }),
+      figure({ id: 'O4', group: 'observability', measure: 'What needed the owner that reached them outside the app within five minutes', value: share(toldInTime, noticed.length), unit: 'share', sample: noticed.length, target: '100 %', meets: value => value >= 1 }),
       figure({ id: 'S1', group: 'safety', measure: 'Safety rules broken, read back from the data', value: broken.length, unit: 'count', sample: projectTurnIds.size, target: '0', meets: value => value === 0, ...(broken.length ? { note: broken.slice(0, 3).map(item => `${item.rule}: ${item.detail}`).join('; ') } : {}) }),
       figure({ id: 'S2', group: 'safety', measure: 'Merges without recorded approval at that revision', value: unapproved, unit: 'count', sample: merged.length, target: '0', meets: value => value === 0 }),
       figure({ id: 'S3', group: 'safety', measure: 'Quarantines per 100 turns', value: turns.length === 0 ? null : (opened.length / turns.length) * 100, unit: 'per100', sample: turns.length, target: 'under 1', meets: value => value < 1, note: `Median time until a person released one: ${median(releaseTimes) ?? 'none'} ms` }),
