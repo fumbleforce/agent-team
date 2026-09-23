@@ -1,9 +1,9 @@
 import type { DeferReason, Lane, TurnKind } from '@agent-team/protocol';
 import { evaluate, type Notice, type Rules } from './rules.ts';
 
-const BOUNDED: readonly TurnKind[] = ['capture', 'review', 'feedback', 'revise', 'conclude', 'triage', 'reply', 'retro', 'ideate'];
+const BOUNDED: readonly TurnKind[] = ['capture', 'review', 'feedback', 'revise', 'conclude', 'triage', 'reply', 'retro', 'ideate', 'remember'];
 // 1 reply to a human, 2 unblock others, 3 owed feedback, 4 continue, 5 new work, 6 upkeep.
-const CLASS: Record<TurnKind, number> = { reply: 1, conclude: 2, revise: 2, review: 3, feedback: 3, triage: 3, work: 5, publish: 4, deliver: 4, retro: 6, ideate: 6, capture: 4 };
+const CLASS: Record<TurnKind, number> = { reply: 1, conclude: 2, revise: 2, review: 3, feedback: 3, triage: 3, work: 5, publish: 4, deliver: 4, retro: 6, ideate: 6, capture: 4, remember: 6 };
 export const AGING_MS = 30 * 60_000, AGING_FLOOR = 2, WORKER_FRESH_MS = 3 * 60_000;
 export const DEFAULT_MAX_WRITERS = 1, MAX_WRITERS_LIMIT = 16;
 // Raised only explicitly, in the ceiling of the project's manifest; anything else is one writer at a time.
@@ -13,7 +13,7 @@ export function maxWritersOf(manifest: unknown): number {
 }
 
 export const laneOf = (kind: TurnKind): Lane => (kind === 'deliver' || kind === 'publish' ? 'deliver' : BOUNDED.includes(kind) ? 'bounded' : 'work');
-export const accessOf = (kind: TurnKind) => (kind === 'work' || kind === 'publish' || kind === 'deliver' ? 'write' : kind === 'feedback' || kind === 'conclude' || kind === 'revise' || kind === 'capture' ? 'none' : 'read');
+export const accessOf = (kind: TurnKind) => (kind === 'work' || kind === 'publish' || kind === 'deliver' ? 'write' : kind === 'feedback' || kind === 'conclude' || kind === 'revise' || kind === 'capture' || kind === 'remember' ? 'none' : 'read');
 
 export interface TurnDraft { id: string; agentId: string; projectId: string; kind: TurnKind; lane: Lane; taskId: string | null; priorityClass: number; createdAt: number }
 export interface RouteChoice { providerId: string | null; model: string | null }

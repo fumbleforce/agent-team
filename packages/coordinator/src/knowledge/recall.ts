@@ -4,6 +4,7 @@ import type { TurnKind } from '@agent-team/protocol';
 // What a turn is given of what the team has learned: the memories that fit its task, within a budget of tokens for its kind, the most
 // fitting few in full and more as their one line. Ranked here, inside the claim, from stored text alone: no model and no network.
 const BUDGET: Partial<Record<TurnKind, number>> = { work: 1600, review: 1000, triage: 700, feedback: 500, revise: 500, conclude: 500, reply: 500, ideate: 600, retro: 800 };
+// A memory turn is shown its neighbours by `nearest` instead, with their ids, so it can replace them.
 const FULL = 3, CANDIDATES = 300;
 const tokens = (text: string) => Math.ceil(text.length / 4);
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max - 1)}…` : text);
@@ -58,4 +59,15 @@ export async function recall(tx: Tx, input: { turnId: string; kind: TurnKind; ag
   await tx.updateTable('memories').set(eb => ({ hits: eb('hits', '+', 1), last_hit_at: input.now })).where('id', 'in', items.map(item => item.id)).execute();
   const text = ['# What the team has learned that bears on this', 'Kept from earlier work on this project. Where one of these is wrong, or out of date, say so with knowledge.propose_memory.', ...full, ...(lines.length ? ['## More, in a line each (knowledge.search finds the rest)', ...lines] : [])].join('\n\n');
   return { text, items };
+}
+
+// The active memories of a project closest in wording to a text: what a memory turn weighs a new memory against.
+export async function nearest(tx: Tx, projectId: string, text: string, limit: number): Promise<{ id: string; title: string; abstract: string; body: string; source: string; role_slug: string | null }[]> {
+  const project = await tx.selectFrom('projects').select(['id', 'parent_id']).where('id', '=', projectId).executeTakeFirst();
+  if (!project) return [];
+  const ids = [project.id, ...(project.parent_id ? [project.parent_id] : [])];
+  const rows = await tx.selectFrom('memories').select(['id', 'title', 'abstract', 'body', 'source', 'role_slug']).where('status', 'in', ['filed', 'confirmed']).where(eb => eb.or([eb('scope_type', '=', 'org'), eb('scope_id', 'in', ids)])).orderBy('created_at', 'desc').limit(CANDIDATES).execute();
+  const about = termsOf(text), docs = rows.map(row => new Set(termsOf(`${row.title} ${row.abstract} ${row.body}`)));
+  const weight = new Map(about.map(term => [term, Math.log(1 + rows.length / (1 + docs.filter(doc => doc.has(term)).length))]));
+  return rows.map((row, index) => ({ row, fit: about.reduce((sum, term) => sum + (docs[index]!.has(term) ? weight.get(term)! : 0), 0) })).filter(item => item.fit > 0).sort((a, b) => b.fit - a.fit).slice(0, limit).map(item => item.row);
 }

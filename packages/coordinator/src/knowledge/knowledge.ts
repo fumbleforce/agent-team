@@ -18,6 +18,8 @@ export interface Embedder { model: string; embed(text: string): Promise<number[]
 const SIMILARITY_FLOOR = 0.6;
 // A memory nobody has used for this long is stale.
 const STALE_AFTER_MS = 60 * 24 * 3600_000;
+// A memory whose turns were sent back this many more times than they passed is taken out of use.
+const MISLEADING = -4;
 
 // Embeddings from any endpoint that speaks the common local-model API; without one, search is lexical only.
 export function httpEmbedder(url: string, model: string): Embedder {
@@ -198,13 +200,13 @@ ${body}`).catch(() => []);
     },
 
     // Confirming a stale memory is a person saying it still holds, which counts as a use: the sixty days start again.
-    async setMemoryStatus(by: Author, memoryId: string, status: 'confirmed' | 'stale' | 'retired') {
+    async setMemoryStatus(by: Author, memoryId: string, status: 'confirmed' | 'stale' | 'retired', reason?: string) {
       const published = await storage.transaction(async tx => {
         const memory = await tx.selectFrom('memories').select(['status', 'last_hit_at', 'created_at', 'scope_type', 'scope_id']).where('id', '=', memoryId).executeTakeFirst();
         if (!memory) throw notFound('Memory');
         const wasStale = memory.status === 'stale' || Number(memory.last_hit_at ?? memory.created_at) < now() - STALE_AFTER_MS;
         await tx.updateTable('memories').set(status === 'confirmed' && wasStale ? { status, last_hit_at: now() } : { status }).where('id', '=', memoryId).execute();
-        return events.append(tx, [{ type: 'memory.status_changed', actorKind: by.kind, ...actorIds(by), projectId: projectOf({ type: memory.scope_type as Scope['type'], id: memory.scope_id }), payload: { memoryId, from: memory.status, to: status } }]);
+        return events.append(tx, [{ type: 'memory.status_changed', actorKind: by.kind, ...actorIds(by), projectId: projectOf({ type: memory.scope_type as Scope['type'], id: memory.scope_id }), payload: { memoryId, from: memory.status, to: status, ...(reason ? { reason: reason.slice(0, 400) } : {}) } }]);
       });
       events.published(published);
     },
@@ -213,7 +215,8 @@ ${body}`).catch(() => []);
     // stale. Stale memories stop being injected into turns and wait for a person to review them.
     async sweepStale(): Promise<number> {
       const before = now() - STALE_AFTER_MS;
-      const rows = await db.selectFrom('memories').select('id').where('status', 'in', ['filed', 'confirmed']).where(eb => eb.or([eb('last_hit_at', '<', before), eb.and([eb('last_hit_at', 'is', null), eb('created_at', '<', before)])])).limit(500).execute();
+      // Unused for sixty days, or given to turns whose work kept being sent back: either way it waits for a person before it is given again.
+      const rows = await db.selectFrom('memories').select('id').where('status', 'in', ['filed', 'confirmed']).where(eb => eb.or([eb('last_hit_at', '<', before), eb.and([eb('last_hit_at', 'is', null), eb('created_at', '<', before)]), eb('score', '<=', MISLEADING)])).limit(500).execute();
       if (rows.length === 0) return 0;
       events.published(await storage.transaction(async tx => {
         await tx.updateTable('memories').set({ status: 'stale' }).where('id', 'in', rows.map(row => row.id)).where('status', 'in', ['filed', 'confirmed']).execute();

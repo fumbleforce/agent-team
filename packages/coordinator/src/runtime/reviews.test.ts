@@ -96,3 +96,25 @@ test('only the seat asked to review decides: the PM cannot approve a change besi
   assert.deepEqual(await reviews.record(turn('Rune'), verdict('reviewer')), { approved: true });
   await storage.close();
 });
+
+test('what the author was given to remember is judged by the review: up when it passes, down when it is sent back', async () => {
+  const { storage, db, reviews, agents, taskId, turn, verdict } = await boot();
+  const projectId = (await db.selectFrom('tasks').select('project_id').where('id', '=', taskId).executeTakeFirstOrThrow()).project_id;
+  await db.insertInto('memories').values({ id: 'mem-1', scope_type: 'project', scope_id: projectId, agent_id: null, type: 'gotcha', title: 'Money is integer cents', body: 'b', status: 'filed', hits: 0, last_hit_at: null, promoted_page_id: null, created_at: 1 }).execute();
+  const workTurn = async (id: string, at: number) => {
+    await db.insertInto('work_items').values({ id: `wi-${id}`, agent_id: agents.Ada!, project_id: projectId, kind: 'work', lane: 'work', task_id: taskId, thread_id: null, priority_class: 5, state: 'done', defer_reason: null, not_before: null, dedupe_key: null, cause_event_id: null, created_at: at }).execute();
+    await db.insertInto('turns').values({ id, work_item_id: `wi-${id}`, agent_id: agents.Ada!, project_id: projectId, task_id: taskId, kind: 'work', lane: 'work', access: 'write', state: 'completed', stop_reason: null, worker_id: 'w1', lease_token_hash: 'h', lease_until: at, grants: '{}', summary: null, tokens_in: 0, tokens_out: 0, cost_minor: 0, started_at: at, finished_at: at, provider_id: null, model: null, session_id: null, context_mode: 'packet', git_admin: false } as never).execute();
+    await db.insertInto('memory_injections').values({ turn_id: id, memory_id: 'mem-1', depth: 'full', created_at: at }).execute();
+  };
+  const score = async () => (await db.selectFrom('memories').select('score').where('id', '=', 'mem-1').executeTakeFirstOrThrow()).score;
+  await workTurn('w-1', 10);
+  await reviews.request(taskId, SHA1);
+  await reviews.record(turn('Rune'), verdict('reviewer', 'changes'));
+  assert.equal(await score(), -1);
+  await workTurn('w-2', Date.now() + 1000);
+  await reviews.request(taskId, SHA2);
+  await reviews.record({ ...turn('Rune'), id: 'turn-Rune-2' }, verdict('reviewer', 'pass', SHA2));
+  assert.equal(await score(), 0, 'only what was given since the last verdict is judged by this one');
+  assert.equal((await db.selectFrom('events').select('seq').where('type', '=', 'memory.scored').execute()).length, 2);
+  await storage.close();
+});

@@ -30,6 +30,7 @@ import { createCheckWake } from './checks/wake.ts';
 
 import { backfillSearch } from './knowledge/backfill.ts';
 import { createLaunches, type LauncherFactory } from './runtime/launch.ts';
+import { createRemembering } from './runtime/remembering.ts';
 import { SKILL_SCOPE, shippedSkills } from './runtime/skills.ts';
 export type { LauncherFactory } from './runtime/launch.ts';
 export type TrackerFactory = (kind: string) => Promise<TrackerClient | null>;
@@ -76,7 +77,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   await createVersionedDocs(context).seed('team_template', { type: 'library', id: '' }, JSON.parse(readFileSync(path.join(packageRoot(), 'blueprints', 'team-templates.json'), 'utf8')) as Record<string, unknown>);
   const app = createApp(context);
   // Lease expiry and feedback windows are time-driven; everything else reacts to requests.
-  const turns = createTurns(context), deliberation = createDeliberation(context, turns), retro = createRetro(context, turns), traceStore = createTraceStore(context), checkWake = createCheckWake(context, turns);
+  const turns = createTurns(context), deliberation = createDeliberation(context, turns), retro = createRetro(context, turns), traceStore = createTraceStore(context), checkWake = createCheckWake(context, turns), remembering = createRemembering(context, turns);
   const memory = createKnowledge(context);
   // Changes the team made to how it works are judged when their trial ends.
   const trials = createTrials(context, { openWeight: isOpenWeight, modelFamily });
@@ -84,7 +85,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const duties = createDuties(context, turns);
   // The decision model's reads are judged once the PM has decided the same thing.
   const decisions = createDecisions(context);
-  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).then(() => checkWake.sweep()).then(() => memory.sweepStale()).then(() => trials.sweep()).then(() => duties.sweep()).then(() => decisions.sweep()).catch(error => console.error(error)); }, 15_000);
+  const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).then(() => checkWake.sweep()).then(() => remembering.sweep()).then(() => memory.sweepStale()).then(() => trials.sweep()).then(() => duties.sweep()).then(() => decisions.sweep()).catch(error => console.error(error)); }, 15_000);
   timer.unref();
 
   // The tracker clients are adapters. They read their key where the coordinator keeps them, so one typed into the app counts;

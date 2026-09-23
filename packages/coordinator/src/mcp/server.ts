@@ -22,6 +22,7 @@ import { BARE_REPORT, BARE_VERDICT, saysNothing } from '../runtime/reports.ts';
 import { createProposals } from '../runtime/proposals.ts';
 import { HttpError } from '../context.ts';
 import { ideationOf } from '../sync/tracker.ts';
+import { MemoryRefused, recordMemories } from '../knowledge/remember.ts';
 import { readSkill, skillsOf } from '../runtime/skills.ts';
 
 interface Turn { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; grants: string }
@@ -194,6 +195,7 @@ export function createMcp(context: Context, deps: McpDeps) {
       throw new ToolError(skill && 'files' in skill ? `${input.name} has no file ${input.file}; its files are: ${skill.files.join(', ') || 'none'}` : `There is no skill ${input.name}. Yours are: ${mine.join(', ') || 'none'}`);
     },
     'knowledge.propose_memory': async (turn, input) => ({ memoryId: await knowledge.fileMemory({ scope: (await scopesOf(turn))[0]!, agentId: turn.agent_id, ...input }) }),
+    'memory.record': async (turn, input) => recordMemories(context, knowledge, turn, (await scopesOf(turn))[0]!, input.items).catch(error => { throw error instanceof MemoryRefused ? new ToolError(error.message) : error; }),
     'proposal.create': async (turn, input) => proposals.create(turn, input),
     'proposal.vote': async (turn, input) => proposals.vote(turn, input.proposalId, input.vote),
     'staffing.review': async (turn, input) => proposals.review(turn, input.days),

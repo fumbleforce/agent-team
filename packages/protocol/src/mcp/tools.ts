@@ -97,10 +97,22 @@ export const TOOLS = {
     permission: null, turnKinds: ALL, mutating: false, rateClass: 'read',
   }),
   'knowledge.propose_memory': tool({
-    description: 'File something the team should not have to learn twice: a gotcha, an observation, a convention or a decision. It is reviewed before it is injected into later turns.',
-    input: z.object({ type: z.enum(['observation', 'gotcha', 'decision', 'convention']), title: z.string().min(1).max(160), body: z.string().min(1).max(2000) }),
+    description: 'File something the team should not have to learn twice: a gotcha, an observation, a convention or a decision. Later turns it bears on are given it; one that turns out wrong is replaced.',
+    input: z.object({ type: z.enum(['observation', 'gotcha', 'decision', 'convention']), title: z.string().min(1).max(160), abstract: z.string().max(240).optional(), body: z.string().min(1).max(2000) }),
     output: z.object({ memoryId: z.string() }),
     permission: null, turnKinds: ALL, mutating: true, rateClass: 'few',
+  }),
+  'memory.record': tool({
+    description: 'Record what the team keeps from what happened, in one call: each memory to keep (with the memories it replaces, by id) and each memory to retire as wrong. An empty list keeps nothing.',
+    input: z.object({ items: z.array(z.object({
+      action: z.enum(['keep', 'retire']),
+      type: z.enum(['observation', 'gotcha', 'decision', 'convention']).optional(), title: z.string().min(1).max(160).optional(), abstract: z.string().min(1).max(240).optional(), body: z.string().min(1).max(2000).optional(),
+      // A memory about how one role works on this project goes only to the seats that wear it.
+      forRole: z.string().regex(/^[a-z][a-z0-9-]{0,40}$/).optional(),
+      replaces: z.array(z.string().max(60)).max(5).default([]), fromOwner: z.boolean().default(false), why: Words(40),
+    })).max(6) }),
+    output: z.object({ kept: z.array(z.string()), retired: z.number() }),
+    permission: null, turnKinds: ['remember'], mutating: true, rateClass: 'once',
   }),
   'proposal.create': tool({
     description: 'Propose a change to the team itself: a hire, a retirement, roles, limits, routing or direction. Give the reason and evidence; teammates vote, and what is outside the delegated bounds goes to the owner.',

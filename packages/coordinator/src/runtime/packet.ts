@@ -9,6 +9,7 @@ import { latestRead, readLines } from './decisions.ts';
 import { skillsPart } from './skills.ts';
 import { toolsPart } from './agentTools.ts';
 import { DELIVERABLES, DELIVERABLES_REVIEW, DELIVERABLES_WORK, roundPart } from './deliverables.ts';
+import { nearest } from '../knowledge/recall.ts';
 import { ORG_ROLE, ORG_RULE } from './orgPlans.ts';
 
 export interface Packet { system: string; prompt: string }
@@ -24,6 +25,7 @@ export const TASK_RULES: Record<TurnKind, string> = {
   review: 'Review the task below. Your folder is a throwaway checkout of exactly the revision under review: read it and run it, and change nothing. You are the only review this change gets before it merges. Run the tests and whatever else shows it works, try the input the author did not, and judge whether the change does what the task is for, not whether it follows the wording of the brief. Whether it was worth doing is settled; whether it works and fits the code is yours. A finding names the file, what goes wrong and how you know; something you only suspect is said as a suspicion. Pass what you would stand behind, not what you could not fault in the time. Then record your verdict with the task.review tool (you do not need the commit id). The verdict is the whole point of this turn: a review that ends without a task.review call counts for nothing and is asked for again, so call it before you write anything else, even when all you can say is what you could not check. Keep it short: a few minutes. If you start a server or a watcher to check something, stop it again before you finish; a command that does not return makes the whole review run out of time.',
   retro: 'The weekly retro is open in the thread below, with the figures of this week. Post one note with discussion.post: what went well in a line, and at most three problems with their evidence and a suggestion. If you are the PM, read the notes already there and turn at most three of them into team proposals with proposal.create.',
   ideate: 'The backlog has room. Propose at most three substantial next pieces of work by calling ideas.propose once: each with its problem, benefit, scope, success criteria, size, evidence and why now. Do not repeat what is listed below. Each idea becomes an issue that waits for the owner; nothing is built before the owner approves it.',
+  remember: 'Something happened on this project that the team may learn from. It is below, with what the team already remembers that is near it. Keep what a later turn on another task should know: how this code, product or owner works, what went wrong and why, what was asked for and not given. The state of this task is not a memory; its journal holds that. Each memory is one thing: a title, a one-line abstract, and a body of a few sentences saying what to do and why. Where a memory below is now wrong or said better by one you keep, name it in replaces; where two say the same, keep one that replaces both; where one is simply wrong, retire it. Nothing worth keeping is a fine answer. Call memory.record once with every change, even an empty list: a turn that does not call it keeps nothing.',
   publish: '', deliver: '', capture: '',
 };
 
@@ -139,6 +141,27 @@ export async function buildResumePacket(tx: Tx, turn: { agentId: string; project
 }
 
 // Advice the owner asked for on this task: each colleague's one block, as given. The decision is the owner's.
+// What a memory turn reads: what happened on its task (or in its thread) since the team last kept memories from it, and the memories
+// nearest to that, with their ids so they can be replaced or retired.
+async function whatHappened(tx: Tx, turn: { projectId: string; taskId: string | null; threadId: string | null }): Promise<string> {
+  const last = await tx.selectFrom('turns').select('started_at').where('kind', '=', 'remember').where('state', '=', 'completed').where(eb => (turn.taskId ? eb('task_id', '=', turn.taskId) : eb('project_id', '=', turn.projectId))).orderBy('started_at', 'desc').executeTakeFirst();
+  const since = Number(last?.started_at ?? 0), parts: string[] = [];
+  const task = turn.taskId ? await tx.selectFrom('tasks').select(['key', 'title', 'brief', 'state', 'journal']).where('id', '=', turn.taskId).executeTakeFirst() : undefined;
+  if (task) parts.push(`# Task ${task.key}: ${task.title} (${task.state})\n${clip(task.brief || '(no brief)', 1500)}`, journalPart(task.journal) ?? '');
+  if (turn.taskId) {
+    const worked = await tx.selectFrom('turns').innerJoin('agents', 'agents.id', 'turns.agent_id').select(['agents.name', 'turns.state', 'turns.stop_reason', 'turns.summary']).where('turns.task_id', '=', turn.taskId).where('turns.kind', '=', 'work').where('turns.finished_at', '>', since).orderBy('turns.finished_at').limit(8).execute();
+    if (worked.length) parts.push(`# The work since\n${worked.map(row => `- ${row.name}: ${row.state}${row.stop_reason && row.state !== 'completed' ? ` (${row.stop_reason})` : ''}. ${clip(row.summary ?? '', 500)}`).join('\n')}`);
+    const reviewed = await tx.selectFrom('approvals').select(['verdict', 'summary', 'findings', 'head_sha']).where('task_id', '=', turn.taskId).where('created_at', '>', since).orderBy('created_at').limit(6).execute();
+    if (reviewed.length) parts.push(`# What review found\n${reviewed.map(row => [`- ${row.verdict} at ${row.head_sha.slice(0, 10)}: ${clip(row.summary, 500)}`, ...findingLines(row.findings)].join('\n')).join('\n')}`);
+  }
+  const threads = turn.taskId ? (await tx.selectFrom('threads').select('id').where('subject_type', '=', 'task').where('subject_id', '=', turn.taskId).execute()).map(row => row.id) : turn.threadId ? [turn.threadId] : [];
+  const said = threads.length ? await tx.selectFrom('messages').select(['author_kind', 'kind', 'body']).where('thread_id', 'in', threads).where('author_kind', '=', 'user').where('created_at', '>', since).orderBy('created_at').limit(8).execute() : [];
+  if (said.length) parts.push(`# What the owner said (their word counts as theirs: set fromOwner on what you keep of it)\n${said.map(row => `- ${clip(row.body, 800)}`).join('\n')}`);
+  const near = await nearest(tx, turn.projectId, parts.join('\n'), 12);
+  parts.push(near.length ? `# What the team already remembers near this\n${near.map(row => `- ${row.id}${row.source === 'owner' ? ' (from the owner)' : ''}${row.role_slug ? ` (for ${row.role_slug})` : ''}: ${row.title}. ${clip(row.abstract || row.body, 300)}`).join('\n')}` : '# What the team already remembers near this\nNothing yet.');
+  return parts.filter(Boolean).join('\n\n');
+}
+
 // When this agent's last finished turn on the task failed, what it failed with: the turn that follows starts from it.
 async function failurePart(tx: Tx, taskId: string, agentId: string): Promise<string | null> {
   const last = await tx.selectFrom('turns').select(['state', 'stop_reason', 'summary']).where('task_id', '=', taskId).where('agent_id', '=', agentId).where('kind', '=', 'work').where('finished_at', 'is not', null).orderBy('finished_at', 'desc').limit(1).executeTakeFirst();
@@ -197,6 +220,7 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
   if (['reply', 'retro', 'triage', 'work', 'conclude'].includes(turn.kind) && await staffs(tx, turn.agentId)) parts.push(STAFFING_RULE);
   // The chief of staff answers the owner about the organisation, not about a task of its own.
   if (turn.kind === 'reply' && await tx.selectFrom('agent_roles').select('agent_id').where('agent_id', '=', turn.agentId).where('role_slug', '=', ORG_ROLE).executeTakeFirst()) parts[0] = ORG_RULE;
+  if (turn.kind === 'remember') return { system, prompt: [parts[0]!, await whatHappened(tx, turn)].join('\n\n') };
   if (turn.taskId) {
     const task = await tx.selectFrom('tasks').select(['key', 'title', 'brief', 'state', 'journal', 'assignee_agent_id', 'result_kind']).where('id', '=', turn.taskId).executeTakeFirst();
     if (task) parts.push(`# Task ${task.key}: ${task.title}\n${clip(task.brief || '(no brief)', 2000)}`);

@@ -167,8 +167,13 @@ export function createReviews(context: Context, turns: Turns) {
         await tx.insertInto('approvals').values({ id: newId(now()), task_id: taskId, kind, agent_id: turn.agent_id, turn_id: turn.id, head_sha: input.headSha, verdict: input.verdict, findings: JSON.stringify(input.findings), summary: input.summary, state, created_at: now() }).execute();
 
         const rejected = input.verdict !== 'pass';
+        // What the author was given to remember since the last verdict is judged by this one: up on a pass, down on changes.
+        const previous = await tx.selectFrom('approvals').select(eb => eb.fn.max('created_at').as('at')).where('task_id', '=', taskId).where('turn_id', '!=', turn.id).executeTakeFirst();
+        const given = (await tx.selectFrom('memory_injections').innerJoin('turns', 'turns.id', 'memory_injections.turn_id').select('memory_injections.memory_id').distinct().where('turns.task_id', '=', taskId).where('turns.kind', '=', 'work').where('memory_injections.created_at', '>', Number(previous?.at ?? 0)).execute()).map(row => row.memory_id);
+        const scored: EventDraft[] = given.length ? [{ type: 'memory.scored', actorKind: 'agent', agentId: turn.agent_id, projectId: task.project_id, taskId, turnId: turn.id, payload: { memoryIds: given, delta: rejected ? -1 : 1 } }] : [];
+        if (given.length) await tx.updateTable('memories').set(eb => ({ score: eb('score', '+', rejected ? -1 : 1) })).where('id', 'in', given).execute();
         const settled = await settle(tx, task, taskId, input.headSha, { agentId: turn.agent_id, turnId: turn.id, kind, verdict: input.verdict });
-        const drafts: EventDraft[] = [{ type: 'review.recorded', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: task.project_id, taskId, turnId: turn.id, payload: { kind, verdict: input.verdict, headSha: input.headSha, state } }, ...settled.drafts];
+        const drafts: EventDraft[] = [...scored, { type: 'review.recorded', actorKind: 'agent' as const, agentId: turn.agent_id, projectId: task.project_id, taskId, turnId: turn.id, payload: { kind, verdict: input.verdict, headSha: input.headSha, state } }, ...settled.drafts];
         // Findings go back at once; an approval waits for its verification.
         if (!settled.approved && rejected) drafts.push(...await moveTask(tx, taskId, 'in_progress', { now: now(), actor: { actorKind: 'agent', agentId: turn.agent_id, turnId: turn.id }, payload: { reason: 'changes-requested', kind } }));
         // Changes asked for on three revisions of one task: the PM looks at it before the author goes round again.
