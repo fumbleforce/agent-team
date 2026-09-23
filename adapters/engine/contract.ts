@@ -51,8 +51,9 @@ export type StopReason = 'completed' | 'rate-limited' | 'auth' | 'context-overfl
 
 // `contextTokens` is what the latest model call carried: the size of the conversation, which is what decides when a session is too long.
 // `tokensIn` adds up every call of the turn, most of it the same cached text read again, and says nothing about that.
-export interface ParseState { nextSeq: number; sessionId: string | null; contextTokens: number; tokensIn: number; tokensOut: number; costUsd: number; summary: string | null; limited: boolean }
-export const newParseState = (): ParseState => ({ nextSeq: 0, sessionId: null, contextTokens: 0, tokensIn: 0, tokensOut: 0, costUsd: 0, summary: null, limited: false });
+// `window` is the usage window as the engine last said: the share of it used and when it resets (epoch ms).
+export interface ParseState { nextSeq: number; sessionId: string | null; contextTokens: number; tokensIn: number; tokensOut: number; costUsd: number; summary: string | null; limited: boolean; window: { used: number; resetsAt: number } | null }
+export const newParseState = (): ParseState => ({ nextSeq: 0, sessionId: null, contextTokens: 0, tokensIn: 0, tokensOut: 0, costUsd: 0, summary: null, limited: false, window: null });
 
 // One engine CLI behind one contract. Secrets never appear in argv; `parse` is pure apart from `state`.
 export interface EngineAdapter {

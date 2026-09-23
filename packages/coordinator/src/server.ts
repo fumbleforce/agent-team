@@ -33,6 +33,7 @@ import { createLaunches, type LauncherFactory } from './runtime/launch.ts';
 import { createRemembering } from './runtime/remembering.ts';
 import { createNeedsYou } from './runtime/needsYou.ts';
 import { createNotifications } from './runtime/notifications.ts';
+import { publishedModels } from '../../../adapters/engine/models.ts';
 import { SKILL_SCOPE, shippedSkills } from './runtime/skills.ts';
 export type { LauncherFactory } from './runtime/launch.ts';
 export type TrackerFactory = (kind: string) => Promise<TrackerClient | null>;
@@ -66,6 +67,10 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   // code hosts too, unless it names a factory.
   context.scm = config.scm === undefined ? (config.trackers === null ? null : async kind => scmApi(kind, { env: context.env, fetch: context.fetch })) : config.scm;
   await context.secrets.load();
+  // What is known about models is read once a day, in the background; never under the test runner, which reaches no outside service.
+  const readModels = () => publishedModels(context.fetch).then(listed => context.models.load(listed), () => {});
+  const modelsTimer = 'NODE_TEST_CONTEXT' in process.env ? null : setInterval(() => { void readModels(); }, 24 * 3600_000);
+  if (modelsTimer) { modelsTimer.unref(); void readModels(); }
   await createIssues(context, path.join(context.dataDir, 'blobs')).backfillInbox();
   // The shipped skills, which the shipped roles name. Like every shipped document, one an owner edited is never overwritten.
   await createVersionedDocs(context).seed('skill', SKILL_SCOPE, shippedSkills(path.join(packageRoot(), 'blueprints', 'skills')));
@@ -131,6 +136,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const port = typeof address === 'object' && address ? address.port : (config.port ?? DEFAULT_PORT);
   const shutDown = async () => {
     clearInterval(timer);
+    if (modelsTimer) clearInterval(modelsTimer);
     clearInterval(pollTimer);
     clearTimeout(firstPoll);
     clearInterval(mirrorTimer);

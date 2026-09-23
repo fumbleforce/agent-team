@@ -6,7 +6,7 @@ import { Button, Card, Chip, IconButton, Input, Menu, SectionLabel, Select, Stat
 import { BILLING, ProviderFlow, READY_TONE, type Provider } from '../project/ProviderFlow';
 
 // One provider, flat: what it is, whether it is ready, and its models, which are changed right here and saved as they change.
-function ProviderRow({ provider, canEdit, onChanged }: { provider: Provider; canEdit: boolean; onChanged(): void }) {
+function ProviderRow({ provider, others, canEdit, onChanged }: { provider: Provider; others: Provider[]; canEdit: boolean; onChanged(): void }) {
   const list = useResource<{ models: PickOption[] }>(provider.catalog && canEdit ? `/api/providers/catalog/${provider.catalog}/models` : null);
   const [models, setModels] = useState(provider.models), [problem, setProblem] = useState<string | null>(null);
   const change = (body: Record<string, unknown>, undo?: () => void) => { setProblem(null); void api(`/api/providers/${provider.id}/change`, body).then(onChanged, failure => { undo?.(); setProblem(failure instanceof ApiError ? failure.message : 'That did not work; try again.'); }); };
@@ -28,6 +28,8 @@ function ProviderRow({ provider, canEdit, onChanged }: { provider: Provider; can
       </div>
       <MultiPicker inline name={`models-${provider.id}`} label={`models of ${provider.name}`} options={list.data?.models ?? []} value={models} onChange={pick} loading={Boolean(provider.catalog) && canEdit && !list.data} disabled={!canEdit} />
       {keying && <form className="flex items-center gap-2" onSubmit={event => { event.preventDefault(); const typed = String(new FormData(event.currentTarget).get('key') ?? '').trim(); if (typed) change({ key: typed }); setKeying(false); }}><Input compact name="key" type="password" autoComplete="off" autoFocus aria-label={provider.keyLabel ?? 'Key'} placeholder={provider.keyLabel ?? ''} /><Button type="submit" size="sm" variant="primary">Save</Button><Button size="sm" variant="ghost" onClick={() => setKeying(false)}>Cancel</Button></form>}
+      {others.length > 0 && (canEdit || (provider.fallbacks?.length ?? 0) > 0) && <MultiPicker inline listedOnly noun="provider" name={`fallbacks-${provider.id}`} label={`When ${provider.name} cannot take the work, send it to`} options={others.map(other => ({ id: other.id, name: other.name }))} value={(provider.fallbacks ?? []).map(fallback => fallback.providerId)} onChange={next => change({ fallbacks: next.map(providerId => ({ providerId, model: null })) })} disabled={!canEdit} />}
+      {(provider.fallbacks?.length ?? 0) > 0 && <Text size="caption" tone="muted">When it is at its limit, off or signed out, its work goes to {(provider.fallbacks ?? []).map(fallback => others.find(other => other.id === fallback.providerId)?.name ?? 'a removed provider').join(', then ')}.</Text>}
       {problem && <StatusLine tone="stop">{problem}</StatusLine>}
     </Card>
   );
@@ -41,7 +43,7 @@ export function ProvidersSection() {
   return (
     <section aria-label="Model providers" className="flex flex-col gap-1.5">
       <SectionLabel aside={canEdit ? <Button size="sm" onClick={() => setFlow({ open: true, kind: null })}>+ Add</Button> : undefined}>Model providers</SectionLabel>
-      {list.map(provider => <ProviderRow key={provider.id} provider={provider} canEdit={canEdit} onChanged={providers.reload} />)}
+      {list.map(provider => <ProviderRow key={provider.id} provider={provider} others={list.filter(other => other.id !== provider.id)} canEdit={canEdit} onChanged={providers.reload} />)}
       {providers.data && list.length === 0 && <Text size="small" tone="muted">None yet. Agents use what their worker has.</Text>}
       <ProviderFlow open={flow.open} kind={flow.kind} providers={list} onOpenChange={(open, kind) => setFlow(previous => ({ open, kind: kind === undefined ? previous.kind : kind }))} onDone={providers.reload} />
     </section>

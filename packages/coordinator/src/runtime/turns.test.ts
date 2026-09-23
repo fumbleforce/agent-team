@@ -16,7 +16,7 @@ async function boot() {
   const agents = await db.selectFrom('agents').select(['id', 'name']).execute();
   const task = await db.selectFrom('tasks').select('id').where('key', '=', 'CK-31').executeTakeFirstOrThrow();
   const agent = (name: string) => agents.find(item => item.name === name)!.id;
-  return { storage, turns: createTurns(context), projectId: project.id, taskId: task.id, agent, tick: (ms: number) => { clock += ms; } };
+  return { storage, context, turns: createTurns(context), projectId: project.id, taskId: task.id, agent, tick: (ms: number) => { clock += ms; } };
 }
 const worker = (projectId: string, id = 'w1') => ({ workerId: id, free: { work: 2, bounded: 2 }, projects: [projectId] });
 
@@ -139,5 +139,19 @@ test('a tool signed out holds its provider, not the task: the work waits in the 
   assert.equal(await turns.claim(worker(projectId)), null, 'the provider rests');
   tick(10 * 60_000 + 1);
   assert.ok(await turns.claim(worker(projectId)), 'and is tried again');
+  await storage.close();
+});
+
+test('a metered turn whose tool reports no money is priced from what is published about its model; a subscription stays free', async () => {
+  const { storage, context, turns, projectId, taskId, agent } = await boot();
+  const db = storage.db;
+  context.models.load([{ id: 'openai/gpt-5.5', contextTokens: 400_000, inputUsd: 0.00000125, outputUsd: 0.00001 }]);
+  await db.insertInto('providers').values({ id: 'p-key', name: 'Codex with an OpenAI key', kind: 'metered', engine: 'codex', billing: 'metered', engine_config: '{}', models: '["gpt-5.5"]', limits: '{}', status: 'connected', status_detail: null }).execute();
+  await db.updateTable('agents').set({ provider_id: 'p-key', model: 'gpt-5.5' }).where('id', '=', agent('Bram')).execute();
+  await turns.enqueue({ agentId: agent('Bram'), projectId, kind: 'work', taskId });
+  const turn = (await turns.claim(worker(projectId)))!;
+  await turns.finish(turn.turnId, 'w1', turn.leaseToken, { state: 'completed', summary: 'Did it.', tokensIn: 100_000, tokensOut: 10_000 });
+  const entry = await db.selectFrom('cost_entries').select(['amount_minor', 'tokens_in']).where('turn_id', '=', turn.turnId).executeTakeFirstOrThrow();
+  assert.equal(Number(entry.amount_minor), 23, '100k in at $1.25 and 10k out at $10 per million is 22.5 cents');
   await storage.close();
 });

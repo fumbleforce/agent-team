@@ -126,3 +126,17 @@ test('a team is edited by hand: create, change, reorder, one PM, pause and retir
     assert.ok(audit.every(event => event.user_id));
   } finally { await coordinator.close(); }
 });
+
+test('a provider names where its work goes when it cannot take it, from the other providers and their models', async () => {
+  const { coordinator, call, owner } = await boot();
+  try {
+    const cookie = await owner();
+    const add = async (name: string, models: string[]) => (await call('/api/providers', { cookie, body: { name, kind: 'metered', engine: 'opencode', models, maxConcurrentTurns: 2, limits: {} } })).json.id as string;
+    const main = await add('Main', ['m1']), spare = await add('Spare', ['s1', 's2']);
+    assert.equal((await call(`/api/providers/${main}/change`, { cookie, body: { fallbacks: [{ providerId: main, model: null }] } })).status, 400, 'not itself');
+    assert.equal((await call(`/api/providers/${main}/change`, { cookie, body: { fallbacks: [{ providerId: spare, model: 'nope' }] } })).status, 400, 'only a model it has');
+    assert.equal((await call(`/api/providers/${main}/change`, { cookie, body: { fallbacks: [{ providerId: spare, model: 's2' }] } })).status, 200);
+    const listed = ((await call('/api/providers', { cookie })).json.providers as { id: string; fallbacks: unknown }[]).find(item => item.id === main)!;
+    assert.deepEqual(listed.fallbacks, [{ providerId: spare, model: 's2' }]);
+  } finally { await coordinator.close(); }
+});

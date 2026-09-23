@@ -22,7 +22,9 @@ interface TurnRow { id: string; work_item_id: string; agent_id: string; project_
 type Outcome = z.infer<typeof FinishBody>['outcome'];
 
 // Engine sessions are scoped to (agent, task). Only work turns have one; bounded turns always start from a fresh packet.
-export function createSessions(context: Pick<Context, 'events' | 'now'>) {
+export function createSessions(context: Pick<Context, 'events' | 'now'> & { models?: Context['models'] }) {
+  // A session is started afresh before it fills the model's context: at the usual size, or earlier for a model that holds less.
+  const rotateAt = (model: string | null) => { const room = model ? context.models?.facts(model).contextTokens ?? null : null; return room ? Math.min(ROTATE_AT_TOKENS, Math.floor(room * 0.6)) : ROTATE_AT_TOKENS; };
   const { events, now } = context;
 
   async function queueWork(tx: Tx, turn: TurnRow, dedupeKey: string) {
@@ -75,7 +77,7 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
       const active = await tx.selectFrom('agent_sessions').selectAll().where('agent_id', '=', input.agentId).where('task_id', '=', input.taskId).where('state', '=', 'active').orderBy('created_at', 'desc').executeTakeFirst();
       const rotate = !active ? null
         : active.provider_id !== seat.provider_id || active.model !== seat.model || active.engine !== (seat.engine ?? null) ? 'provider-or-model-changed'
-        : Number(active.context_tokens) >= ROTATE_AT_TOKENS ? 'context-threshold'
+        : Number(active.context_tokens) >= rotateAt(seat.model) ? 'context-threshold'
         // The transcript lives on the worker that ran it.
         : active.worker_id !== input.workerId ? 'worker-changed'
         : !active.engine_session_id ? 'no-engine-session' : null;

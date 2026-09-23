@@ -1,9 +1,11 @@
 import type { DeferReason, Lane, TurnKind } from '@agent-team/protocol';
+import { modelFamily } from '../../../../adapters/engine/providers.ts';
 import { evaluate, type Notice, type Rules } from './rules.ts';
 
 const BOUNDED: readonly TurnKind[] = ['capture', 'review', 'feedback', 'revise', 'conclude', 'triage', 'reply', 'retro', 'ideate', 'remember'];
 // 1 reply to a human, 2 unblock others, 3 owed feedback, 4 continue, 5 new work, 6 upkeep.
 const CLASS: Record<TurnKind, number> = { reply: 1, conclude: 2, revise: 2, review: 3, feedback: 3, triage: 3, work: 5, publish: 4, deliver: 4, retro: 6, ideate: 6, capture: 4, remember: 6 };
+export const STICKY_FALLBACK_MS = 15 * 60_000, SPILL_AT_PCT = 90;
 export const AGING_MS = 30 * 60_000, AGING_FLOOR = 2, WORKER_FRESH_MS = 3 * 60_000;
 export const DEFAULT_MAX_WRITERS = 1, MAX_WRITERS_LIMIT = 16;
 // Raised only explicitly, in the ceiling of the project's manifest; anything else is one writer at a time.
@@ -21,7 +23,8 @@ export interface SnapAgent { status: string; providerId: string | null; model: s
 // holder: the live worker whose checkout has the task's worktree. sticky: the route the task's work already ran on.
 // difficulty: how hard the task looked to the decision model, when one read it; a routing rule may filter on it.
 export interface SnapTask { state: string; tags: string[]; difficulty: string | null; quarantined: boolean; writerRunning: boolean; holder: string | null; sticky: RouteChoice | null }
-export interface SnapProvider { id: string; name: string; status: string; engine?: string; models: string[]; limitedUntil: number | null; running: number; maxConcurrent: number | null; windowPct: number | null }
+// `fallbacks`: where its work goes, in order, when it cannot take it; a model named there, else the same model where the fallback has it, else its first.
+export interface SnapProvider { id: string; name: string; status: string; engine?: string; fallbacks?: { providerId: string; model: string | null }[]; models: string[]; limitedUntil: number | null; running: number; maxConcurrent: number | null; windowPct: number | null }
 // budgetPct is the fullest budget that covers the project; budget names it; warned says it already warned this period.
 // writersRunning counts the project's running work turns against maxWriters (default 1): worktrees do not isolate ports, databases or containers.
 // checkoutQuarantined: the claiming worker's checkout of the project was left in an unknown state by a lost git-admin operation.
@@ -70,20 +73,55 @@ export function gate(item: TurnDraft, snapshot: Snapshot): Gate {
   // whoever's seat they are shown under. Holding them behind the team's model turns kept finished work from merging.
   const verdict = MODELLESS.includes(item.kind) ? { allow: true, route: { providerId: null, model: null }, notices: [] } : evaluate(item, snapshot);
   if (!verdict.allow || !verdict.route) return refuse(verdict.deferReason ?? 'deferred', verdict.notices);
-  if (verdict.route.providerId !== null) {
-    const provider = snapshot.providers[verdict.route.providerId];
-    if (provider?.status !== 'connected') return refuse('provider-unavailable', verdict.notices);
-    if (provider.limitedUntil !== null && provider.limitedUntil > snapshot.now) return refuse('provider-limited', verdict.notices);
-    if (provider.maxConcurrent !== null && provider.running >= provider.maxConcurrent) return refuse('provider-busy', verdict.notices);
-    if (provider.windowPct !== null && provider.windowPct >= 100) return refuse('provider-window', verdict.notices);
-    // A turn goes only to a worker that has the provider's tool; another worker that has it takes the turn.
-    if (snapshot.claim?.ready && provider.engine && !snapshot.claim.ready.engines.includes(provider.engine)) return refuse('engine-missing', verdict.notices);
+  let route = verdict.route;
+  if (route.providerId !== null) {
+    const provider = snapshot.providers[route.providerId], reason = unable(snapshot, route.providerId);
+    if (reason) {
+      // A provider that cannot take the work hands it to its first fallback that can, unless it is only busy. Work already under way on
+      // a task moves only after it has waited a while: moving it means starting its session again from the packet.
+      const sticky = item.kind === 'work' && task?.sticky?.providerId === route.providerId;
+      const next = reason !== 'provider-busy' && (!sticky || snapshot.now - item.createdAt >= STICKY_FALLBACK_MS) ? provider?.fallbacks?.find(fallback => fallback.providerId !== route.providerId && unable(snapshot, fallback.providerId) === null) : undefined;
+      if (!next) return refuse(reason, verdict.notices);
+      route = onto(snapshot, next, route.model);
+    } else if ((provider?.windowPct ?? 0) >= SPILL_AT_PCT && item.priorityClass >= 5 && !(item.kind === 'work' && task?.sticky?.providerId === route.providerId)) {
+      // A window nearly used up is kept for the work already under way: new and background work goes to a fallback that has room.
+      const next = provider?.fallbacks?.find(fallback => fallback.providerId !== route.providerId && unable(snapshot, fallback.providerId) === null && (snapshot.providers[fallback.providerId]?.windowPct ?? 0) < SPILL_AT_PCT);
+      if (next) route = onto(snapshot, next, route.model);
+    }
+  }
+  // A review runs on another family of model than the work it checks, wherever one is connected: checkers of one family share blind spots.
+  if (item.kind === 'review' && task?.sticky?.model && route.providerId !== null && modelFamily(route.model) !== null && modelFamily(route.model) === modelFamily(task.sticky.model)) {
+    const author = modelFamily(task.sticky.model), from = snapshot.providers[route.providerId];
+    const candidates = [...(from?.fallbacks ?? []).map(fallback => fallback.providerId), ...Object.keys(snapshot.providers)].filter((id, index, all) => all.indexOf(id) === index && id !== route.providerId);
+    for (const id of candidates) {
+      if (unable(snapshot, id) !== null) continue;
+      const model = snapshot.providers[id]!.models.find(name => modelFamily(name) !== null && modelFamily(name) !== author);
+      if (model) { route = { providerId: id, model }; break; }
+    }
   }
   // A write turn goes to the worker that holds the task's worktree while that worker is alive.
   // Anything that needs the repository waits while this worker's checkout of it is in an unknown state.
   if (snapshot.claim && accessOf(item.kind) !== 'none' && home?.checkoutQuarantined) return refuse('checkout-quarantined', verdict.notices);
   if (snapshot.claim && accessOf(item.kind) === 'write' && task?.holder && task.holder !== snapshot.claim.workerId) return refuse('no-worktree-holder', verdict.notices);
-  return { ok: true, route: verdict.route, notices: verdict.notices };
+  return { ok: true, route, notices: verdict.notices };
+}
+
+// A fallback's route: the model named for it, else the same model where it has it, else its first.
+const onto = (snapshot: Snapshot, next: { providerId: string; model: string | null }, model: string | null) => {
+  const models = snapshot.providers[next.providerId]!.models;
+  return { providerId: next.providerId, model: next.model ?? (model && models.includes(model) ? model : models[0] ?? null) };
+};
+
+// Why a provider cannot take a turn from this claim right now, or null when it can.
+function unable(snapshot: Snapshot, providerId: string): DeferReason | null {
+  const provider = snapshot.providers[providerId];
+  if (provider?.status !== 'connected') return 'provider-unavailable';
+  if (provider.limitedUntil !== null && provider.limitedUntil > snapshot.now) return 'provider-limited';
+  if (provider.maxConcurrent !== null && provider.running >= provider.maxConcurrent) return 'provider-busy';
+  if (provider.windowPct !== null && provider.windowPct >= 100) return 'provider-window';
+  // A turn goes only to a worker that has the provider's tool; another worker that has it takes the turn.
+  if (snapshot.claim?.ready && provider.engine && !snapshot.claim.ready.engines.includes(provider.engine)) return 'engine-missing';
+  return null;
 }
 
 // Order: effective class, then the agent that has gone longest without a turn, then age. The first item that passes

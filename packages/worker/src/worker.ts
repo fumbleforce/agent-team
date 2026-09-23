@@ -285,6 +285,8 @@ export function createWorker(config: WorkerConfig) {
         // The head the review worktree was verified at before the engine ran, and where it is now: a verdict counts only if both are the task's head.
         ...(reviewTree ? { headShaStart: reviewTree.headSha, headShaEnd: await headSha(reviewTree.path) } : {}),
         state: result.state, stopReason: result.stopReason, ...(summary ? { summary } : {}), tokensIn: result.tokensIn, tokensOut: result.tokensOut, costMinor: Math.round(result.costUsd * 100),
+        // The engine's own word on its usage window, and when a limit lifts: the provider rests exactly that long.
+        ...(result.window ? { window: result.window, ...(result.state === 'deferred' ? { resetAt: result.window.resetsAt } : {}) } : {}),
         ...(worktree ? { headSha: await headSha(worktree.path) } : {}), ...(published ? { prUrl: published.url } : {}),
         ...(worktree && (published || (config.ephemeral && config.publish)) ? { branch: worktree.branch } : {}),
       } });

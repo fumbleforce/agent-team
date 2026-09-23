@@ -5,7 +5,7 @@ import { ChoiceCard, More, MultiPicker, SecretField, StatusLine, type PickOption
 import { Button, Chip, CodeBlock, Dialog, Field, Input, SectionLabel, type DotTone } from '../../ui';
 
 export interface Readiness { state: 'ready' | 'waiting' | 'none'; message: string; workers: string[]; need?: 'worker' | 'tool' | 'key' | null }
-export interface Provider { id: string; name: string; kind: string; engine: string; catalog: string | null; models: string[]; status: string; agents: number; readiness: Readiness; efforts?: string[]; modelEfforts?: Record<string, string[]>; keyLabel?: string | null; keySaved?: boolean; limits: { concurrency: number | null; windowTokens: number | null; windowHours: number | null } }
+export interface Provider { id: string; name: string; kind: string; engine: string; catalog: string | null; models: string[]; fallbacks?: { providerId: string; model: string | null }[]; status: string; agents: number; readiness: Readiness; efforts?: string[]; modelEfforts?: Record<string, string[]>; keyLabel?: string | null; keySaved?: boolean; limits: { concurrency: number | null; windowTokens: number | null; windowHours: number | null } }
 interface CatalogEntry { kind: string; title: string; summary: string; billing: string; install: string; signIn?: string; named?: boolean; window: boolean; hasList: boolean; keySaved: boolean; providerId: string | null; readiness: Readiness;
   key?: { variable: string; label: string; getAt: string; placeholder?: string }; aliases?: string[] }
 

@@ -63,7 +63,7 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
     const seats = await db.selectFrom('agents').select('provider_id').select(eb => eb.fn.countAll<number>().as('n')).where('status', '!=', 'retired').groupBy('provider_id').execute();
     return c.json({ canEdit: can(c.get('viewer'), 'org.members'), providers: rows.map(row => {
       const limits = JSON.parse(row.limits) as Limits, kind = catalogKind(row.engine_config);
-      return { id: row.id, name: row.name, kind: row.kind, engine: row.engine, catalog: kind, models: JSON.parse(row.models) as string[], efforts: effortsOf(row.engine), modelEfforts: modelEfforts(row.engine), keyLabel: (kind ? providerEntry(kind)?.key?.label : undefined) ?? null, keySaved: Boolean(kind && providerEntry(kind)?.key && context.secrets.has(providerEntry(kind)!.key!.variable)), status: row.status, statusDetail: row.status_detail, limitedUntil: row.limited_until === null ? null : Number(row.limited_until),
+      return { id: row.id, name: row.name, kind: row.kind, engine: row.engine, catalog: kind, models: JSON.parse(row.models) as string[], fallbacks: (JSON.parse(row.engine_config) as { fallbacks?: { providerId: string; model: string | null }[] }).fallbacks ?? [], efforts: effortsOf(row.engine), modelEfforts: modelEfforts(row.engine), keyLabel: (kind ? providerEntry(kind)?.key?.label : undefined) ?? null, keySaved: Boolean(kind && providerEntry(kind)?.key && context.secrets.has(providerEntry(kind)!.key!.variable)), status: row.status, statusDetail: row.status_detail, limitedUntil: row.limited_until === null ? null : Number(row.limited_until),
         limits: { concurrency: limits.maxConcurrentTurns ?? null, windowTokens: limits.windowTokens ?? null, windowHours: limits.windowTokens ? (limits.windowMs ?? 5 * HOUR) / HOUR : null },
         agents: Number(seats.find(seat => seat.provider_id === row.id)?.n ?? 0), readiness: readiness(workers, row.engine, kind ? providerEntry(kind) : null) };
     }) });
@@ -135,7 +135,9 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
   // One thing changed in place, from the provider's own row: the models, how many turns at once, or its key. Everything else stays as it was.
   const ChangeBody = z.object({ models: z.array(z.string().regex(/^\S{1,120}$/, 'A model name has no spaces')).max(40).optional(), concurrency: z.number().int().min(1).max(64).optional(), key: z.string().trim().min(8).max(400).regex(/^\S+$/).optional(),
     // Off keeps the provider, its key and its models, and starts no turn on it; agents on it wait until it is on again.
-    on: z.boolean().optional() });
+    on: z.boolean().optional(),
+    // Where its work goes, in order, when it cannot take it: other providers of this organization, each with a model or none to pick one.
+    fallbacks: z.array(z.object({ providerId: z.string().max(60), model: z.string().regex(/^\S{1,120}$/).nullable().default(null) })).max(5).optional() });
   app.post('/api/providers/:id/change', async c => {
     const userId = admin(c), input = await parseBody(c, ChangeBody);
     const row = await db.selectFrom('providers').selectAll().where('id', '=', c.req.param('id')).executeTakeFirst();
@@ -152,6 +154,14 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
     if (input.key && variable) { await context.secrets.set(variable, input.key, userId); lists.clear(); }
     if (input.on !== undefined) {
       const published = await storage.transaction(async tx => { await tx.updateTable('providers').set({ status: input.on ? 'connected' : 'paused', status_detail: input.on ? null : 'Turned off' }).where('id', '=', row.id).execute(); return events.append(tx, [{ type: input.on ? 'provider.turned_on' : 'provider.turned_off', category: 'audit', actorKind: 'user', userId, payload: { providerId: row.id, name: row.name } }]); });
+      events.published(published);
+    }
+    if (input.fallbacks) {
+      const others = new Map((await db.selectFrom('providers').select(['id', 'models']).where('id', '!=', row.id).execute()).map(other => [other.id, JSON.parse(other.models) as string[]]));
+      const wrong = input.fallbacks.find(fallback => !others.has(fallback.providerId) || (fallback.model !== null && !others.get(fallback.providerId)!.includes(fallback.model)));
+      if (wrong) throw new HttpError(400, 'invalid', 'A fallback is not another provider here, or not one of its models', { fallbacks: 'Choose other providers, and models they have' });
+      const config = { ...(JSON.parse(row.engine_config) as Record<string, unknown>), fallbacks: input.fallbacks };
+      const published = await storage.transaction(async tx => { await tx.updateTable('providers').set({ engine_config: JSON.stringify(config) }).where('id', '=', row.id).execute(); return events.append(tx, [{ type: 'provider.updated', category: 'audit', actorKind: 'user', userId, payload: { providerId: row.id, fallbacks: input.fallbacks } }]); });
       events.published(published);
     }
     if (input.models || input.concurrency) await save(userId, ProviderBody.parse({ name: row.name, kind: row.kind, engine: row.engine, models, limits: { concurrency: input.concurrency ?? limits.maxConcurrentTurns, ...(limits.windowTokens ? { windowTokens: limits.windowTokens, windowMs: limits.windowMs } : {}) } }), { id: row.id });

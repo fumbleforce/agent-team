@@ -4,7 +4,7 @@ import { createInterface } from 'node:readline';
 import { killTree, spawnCommand } from './platform.ts';
 import { newParseState, type EngineAdapter, type EngineStep, type StopReason, type TurnSpec } from '../../../adapters/engine/contract.ts';
 
-export interface TurnResult { state: 'completed' | 'failed' | 'deferred' | 'interrupted' | 'timed_out'; stopReason: StopReason | 'timeout' | 'aborted'; summary: string | null; tokensIn: number; tokensOut: number; contextTokens: number; costUsd: number; sessionId: string | null }
+export interface TurnResult { state: 'completed' | 'failed' | 'deferred' | 'interrupted' | 'timed_out'; stopReason: StopReason | 'timeout' | 'aborted'; summary: string | null; tokensIn: number; tokensOut: number; contextTokens: number; costUsd: number; sessionId: string | null; window?: { used: number; resetsAt: number } | null }
 const GRACE_MS = 5000;
 // How much of the engine's stderr a failed turn carries into its summary: the last lines, where a CLI names what went wrong.
 const STDERR_LINES = 12, STDERR_CHARS = 1500;
@@ -68,7 +68,7 @@ export function executeTurn(options: { adapter: EngineAdapter; spec: TurnSpec; t
 
     child.on('close', (code, exitSignal) => {
       clearTimeout(timer);
-      const usage = { summary: state.summary, tokensIn: state.tokensIn, tokensOut: state.tokensOut, contextTokens: state.contextTokens, costUsd: state.costUsd, sessionId: state.sessionId };
+      const usage = { summary: state.summary, tokensIn: state.tokensIn, tokensOut: state.tokensOut, contextTokens: state.contextTokens, costUsd: state.costUsd, sessionId: state.sessionId, window: state.window };
       const exit = { code, signal: exitSignal };
       if (ended === 'timeout') return resolve({ state: 'timed_out', stopReason: ended, ...usage, summary: failureSummary('timeout', exit, state.summary, stderrTail) });
       if (ended) return resolve({ state: 'interrupted', stopReason: ended, ...usage });

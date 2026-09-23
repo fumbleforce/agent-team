@@ -156,3 +156,20 @@ test('every engine reaches the platform: codex through the bridge, cursor throug
   assert.match(cursorTurn.input ?? '', /# The platform's tools[\s\S]*call --list/);
   for (const prepared of [codexTurn, cursorTurn]) assert.ok(![...prepared.args, prepared.input ?? '', ...Object.values(prepared.env).map(String)].some(text => text.includes(SECRET)));
 });
+
+test('claude: the usage window is read from the service\'s own figures, and a rejection is a limit', () => {
+  const state = newParseState();
+  engineAdapter('claude').parse(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'allowed_warning', utilization: 0.92, resetsAt: 1_800_000_000 } }), state);
+  assert.deepEqual([state.window, state.limited], [{ used: 0.92, resetsAt: 1_800_000_000_000 }, false]);
+  engineAdapter('claude').parse(JSON.stringify({ type: 'rate_limit_event', rate_limit_info: { status: 'rejected', utilization: 1.01, resetsAt: 1_800_000_600 } }), state);
+  assert.deepEqual([state.window, state.limited], [{ used: 1.01, resetsAt: 1_800_000_600_000 }, true]);
+});
+
+test('what is known about a model is looked up by the name a provider gives it, and nothing is made up where the list is silent', async () => {
+  const { factsOf, publishedModels } = await import('./models.ts');
+  const listed = await publishedModels((async () => new Response(JSON.stringify({ data: [{ id: 'openai/gpt-5.5', context_length: 400_000, pricing: { prompt: '0.00000125', completion: '0.00001' } }, { id: 'qwen/qwen3-coder', context_length: 262_144, pricing: { prompt: '0', completion: '0' } }] }))) as typeof fetch);
+  assert.deepEqual(factsOf(listed, 'gpt-5.5'), { contextTokens: 400_000, inputUsd: 0.00000125, outputUsd: 0.00001, family: 'gpt', openWeight: false });
+  assert.deepEqual(factsOf(listed, 'openrouter/qwen/qwen3-coder').contextTokens, 262_144);
+  assert.equal(factsOf(listed, 'openrouter/qwen/qwen3-coder').openWeight, true);
+  assert.deepEqual(factsOf(listed, 'someone/unknown-model'), { contextTokens: null, inputUsd: null, outputUsd: null, family: 'unknown', openWeight: false });
+});

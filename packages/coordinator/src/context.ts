@@ -8,6 +8,7 @@ import type { ArtifactStore } from '../../../adapters/artifacts/contract.ts';
 import { createSecretStore, type SecretStore } from './auth/secretStore.ts';
 import { environmentDecider } from '../../../adapters/decider/index.ts';
 import type { ScmApi } from './sync/scm.ts';
+import { factsOf, type ModelFacts } from '../../../adapters/engine/models.ts';
 import type { Decider } from '../../../adapters/decider/contract.ts';
 
 // Where bodies too large for a database row are kept. `dir` is the local folder; every other option belongs to the named kind.
@@ -37,6 +38,8 @@ export interface Context {
   trustedHeader: string | null;
   // True when the coordinator listens on this machine only; some conveniences (starting a worker from the app) exist only then.
   local: boolean;
+  // What is known about models (context size, price, family), from a public list refreshed once a day; empty until it is first read.
+  models: ModelBook;
   // The code host's API for a kind, where its token is present; null where outside polling is off.
   scm: ((kind: string) => Promise<ScmApi | null>) | null;
   // Set only by `agent-team up` on a loopback bind: the one person this machine's coordinator is for, signed in without a password.
@@ -44,6 +47,13 @@ export interface Context {
   // Set only by the demo command: the account that /demo/enter signs in.
   demoLogin: { email: string; password: string } | null;
 }
+
+export interface ModelBook { facts(model: string, providerKind?: string | null): ModelFacts; load(listed: Parameters<typeof factsOf>[0]): void; loadedAt: number }
+const modelBook = (): ModelBook => {
+  let listed: Parameters<typeof factsOf>[0] = [];
+  const book: ModelBook = { loadedAt: 0, facts: (model, providerKind = null) => factsOf(listed, model, providerKind), load(next) { listed = next; book.loadedAt = Date.now(); } };
+  return book;
+};
 
 export interface LocalOwner { name: string; email: string; orgName: string }
 
@@ -56,7 +66,7 @@ export function createContext(options: { storage: StorageAdapter; machineToken: 
   const { kind, dir, ...rest } = options.artifacts ?? {};
   const artifacts = createArtifacts(kind, { ...rest, root: dir ?? path.join(dataDir, 'artifacts') });
   const env = options.env ?? process.env, request = options.fetch ?? fetch;
-  return { storage: options.storage, env, fetch: request, decider: options.decider !== undefined ? options.decider : underTest ? null : environmentDecider(env, request), secrets: createSecretStore({ storage: options.storage, dataDir, env, now }), artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, localOwner: options.localOwner ?? null, scm: null, demoLogin: options.demoLogin ?? null };
+  return { storage: options.storage, env, fetch: request, decider: options.decider !== undefined ? options.decider : underTest ? null : environmentDecider(env, request), secrets: createSecretStore({ storage: options.storage, dataDir, env, now }), artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, localOwner: options.localOwner ?? null, scm: null, models: modelBook(), demoLogin: options.demoLogin ?? null };
 }
 
 export class HttpError extends Error {

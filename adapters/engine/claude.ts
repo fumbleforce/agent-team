@@ -10,7 +10,7 @@ const KIND: Record<string, TraceStepInput['kind']> = { Read: 'read', Grep: 'read
 const DENIED = ['Bash(git push:*)', 'Bash(git reset --hard:*)', 'Bash(gh pr merge:*)', 'Bash(glab mr merge:*)', 'Agent'];
 
 type Block = { type?: string; text?: string; name?: string; input?: Record<string, unknown> };
-type StreamEvent = { type?: string; subtype?: string; session_id?: string; is_error?: boolean; result?: string; total_cost_usd?: number; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }; message?: { content?: Block[]; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } }; rate_limit_info?: { status?: string } };
+type StreamEvent = { type?: string; subtype?: string; session_id?: string; is_error?: boolean; result?: string; total_cost_usd?: number; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }; message?: { content?: Block[]; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } }; rate_limit_info?: { status?: string; utilization?: number; resetsAt?: number } };
 
 const HANDSHAKE = { type: 'control_request', request_id: 'models', request: { subtype: 'initialize' } };
 type Offered = { value?: unknown; displayName?: unknown; description?: unknown; supportedEffortLevels?: unknown };
@@ -80,6 +80,9 @@ export const claude: EngineAdapter = {
     try { event = JSON.parse(line); } catch { return []; }
     if (event.session_id) state.sessionId = event.session_id;
     if (event.type === 'rate_limit_event' && event.rate_limit_info?.status === 'rejected') state.limited = true;
+    // The window the account is limited by: how much of it is used and when it resets, from the service's own headers.
+    const info = event.type === 'rate_limit_event' ? event.rate_limit_info : undefined;
+    if (info && typeof info.utilization === 'number' && typeof info.resetsAt === 'number') state.window = { used: info.utilization, resetsAt: info.resetsAt * 1000 };
     if (event.type === 'result') {
       state.costUsd += event.total_cost_usd ?? 0;
       // Most of a turn's input arrives through the cache; leaving it out would report a handful of tokens.

@@ -35,6 +35,14 @@ export function createTurns(context: Context) {
   const costs = createCosts(context);
   const sessions = createSessions(context);
   const decisions = createDecisions(context);
+  // A metered turn whose tool reports tokens but no money is priced from what is published about its model, so budgets and caps see it.
+  // A subscription or a local model costs nothing per turn; a model nobody publishes a price for stays at what the tool said.
+  const priced = (billing: string | undefined, model: string | null, outcome: Outcome): number => {
+    if (outcome.costMinor || billing !== 'metered' || !model) return outcome.costMinor ?? 0;
+    const facts = context.models.facts(model);
+    if (facts.inputUsd === null || facts.outputUsd === null) return 0;
+    return Math.round(((outcome.tokensIn ?? 0) * facts.inputUsd + (outcome.tokensOut ?? 0) * facts.outputUsd) * 100);
+  };
 
   // Runs at the start of every claim and on a timer. An expired lease means the outcome is unknown:
   // the turn becomes uncertain, is never retried, and the smallest object it could have changed is quarantined.
@@ -106,11 +114,14 @@ export function createTurns(context: Context) {
     for (const provider of await tx.selectFrom('providers').selectAll().execute()) {
       const limits = JSON.parse(provider.limits) as { maxConcurrentTurns?: number; windowTokens?: number; windowMs?: number };
       let windowPct: number | null = null;
-      if (limits.windowTokens) {
+      // The engine's own figure while its window lasts; else the allowance set on the provider, counted from the tokens it used.
+      if (provider.window_used !== null && provider.window_reset_at !== null && Number(provider.window_reset_at) > now()) windowPct = Number(provider.window_used) * 100;
+      else if (limits.windowTokens) {
         const used = await tx.selectFrom('cost_entries').select(eb => [eb.fn.sum<number>('tokens_in').as('tokens_in'), eb.fn.sum<number>('tokens_out').as('tokens_out')]).where('provider_id', '=', provider.id).where('at', '>=', now() - (limits.windowMs ?? 5 * 3600_000)).executeTakeFirst();
         windowPct = (Number(used?.tokens_in ?? 0) + Number(used?.tokens_out ?? 0)) / limits.windowTokens * 100;
       }
-      snapshot.providers[provider.id] = { id: provider.id, name: provider.name, status: provider.status, engine: provider.engine, models: JSON.parse(provider.models) as string[], limitedUntil: provider.limited_until === null ? null : Number(provider.limited_until), running: running.filter(turn => (turn.provider_id ?? turn.seat_provider_id) === provider.id).length, maxConcurrent: limits.maxConcurrentTurns ?? null, windowPct };
+      const fallbacks = ((JSON.parse(provider.engine_config) as { fallbacks?: { providerId: string; model: string | null }[] }).fallbacks ?? []);
+      snapshot.providers[provider.id] = { id: provider.id, name: provider.name, status: provider.status, engine: provider.engine, fallbacks, models: JSON.parse(provider.models) as string[], limitedUntil: provider.limited_until === null ? null : Number(provider.limited_until), running: running.filter(turn => (turn.provider_id ?? turn.seat_provider_id) === provider.id).length, maxConcurrent: limits.maxConcurrentTurns ?? null, windowPct };
     }
 
     // A project budget covers the project and its sub-projects; the org budget covers everything. The fullest one governs.
@@ -328,6 +339,7 @@ export function createTurns(context: Context) {
           await tx.updateTable('providers').set({ limited_until: until, status_detail: `Usage limit reached; resumes ${new Date(until).toISOString()}` }).where('id', '=', providerId).execute();
           drafts.push({ type: 'provider.limited', actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, turnId, payload: { providerId, until } });
         }
+        if (outcome.window && providerId) await tx.updateTable('providers').set({ window_used: outcome.window.used, window_reset_at: outcome.window.resetsAt }).where('id', '=', providerId).execute();
         // A tool that is signed out is the provider's problem, not the task's: the provider rests and is tried again a little later, when
         // someone may have signed in, and the owner is told on Needs you.
         if (outcome.state === 'failed' && outcome.stopReason === 'auth' && providerId) {
@@ -344,7 +356,7 @@ export function createTurns(context: Context) {
           await tx.updateTable('agents').set({ idle_at: now() }).where('id', '=', turn.agent_id).execute();
           drafts.push({ type: 'agent.idle', actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, payload: { since: now() } });
         }
-        await costs.record(tx, { turnId, agentId: turn.agent_id, projectId: turn.project_id, providerId: agent?.provider_id ?? null, billingKind: (agent?.kind as 'metered' | 'subscription' | 'local' | undefined) ?? 'metered', tokensIn: outcome.tokensIn ?? 0, tokensOut: outcome.tokensOut ?? 0, amountMinor: outcome.costMinor ?? 0 });
+        await costs.record(tx, { turnId, agentId: turn.agent_id, projectId: turn.project_id, providerId: agent?.provider_id ?? null, billingKind: (agent?.kind as 'metered' | 'subscription' | 'local' | undefined) ?? 'metered', tokensIn: outcome.tokensIn ?? 0, tokensOut: outcome.tokensOut ?? 0, amountMinor: priced(agent?.kind, turn.model, outcome) });
         if (turn.task_id && (outcome.prUrl || outcome.branch)) await tx.updateTable('tasks').set({ ...(outcome.prUrl ? { pr_url: outcome.prUrl } : {}), ...(outcome.branch ? { branch: outcome.branch } : {}) }).where('id', '=', turn.task_id).execute();
         // A delivery that comes back later leaves the queue as it found it.
         if (turn.kind === 'deliver' && turn.task_id && outcome.state === 'deferred') {

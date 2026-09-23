@@ -1,7 +1,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { CostRules, RoutingRules, type TurnKind } from '@agent-team/protocol';
-import { AGING_MS, effectiveClass, enqueue, gate, idleFires, laneOf, pick, type Snapshot, type TurnDraft } from './scheduler.ts';
+import { AGING_MS, effectiveClass, enqueue, gate, idleFires, laneOf, pick, STICKY_FALLBACK_MS, type Snapshot, type TurnDraft } from './scheduler.ts';
 import { suggest } from './rebalance.ts';
 
 const T0 = 1_000_000_000;
@@ -142,4 +142,36 @@ test('a turn goes only to a worker that has its provider\'s tool; a worker that 
   assert.deepEqual(without.deferrals.map(row => row.reason), ['engine-missing']);
   assert.equal(pick(snapshot, { ...claim, ready: { engines: ['claude', 'codex'] } }).picked?.item.id, work.id);
   assert.equal(pick(snapshot, claim).picked?.item.id, work.id, 'an older worker that reports nothing still gets the turn');
+});
+
+test('a provider that cannot take the work hands it to its first fallback that can; one that is only busy keeps it; work under way waits a while first', () => {
+  const limited = provider('main', { limitedUntil: T0 + 60 * 60_000, fallbacks: [{ providerId: 'gone', model: null }, { providerId: 'spare', model: null }] });
+  const review = item('a', 'review', { taskId: 't' });
+  const moved = pick(world({ items: [review], providers: { main: limited, spare: provider('spare', { models: ['m1', 'spare-model'] }) } }), claim);
+  assert.deepEqual(moved.picked?.route, { providerId: 'spare', model: 'm1' }, 'the same model where the fallback has it');
+  const noModel = pick(world({ items: [review], providers: { main: limited, spare: provider('spare') } }), claim);
+  assert.deepEqual(noModel.picked?.route, { providerId: 'spare', model: 'spare-model' }, 'else its first model');
+  const busy = pick(world({ items: [review], providers: { main: provider('main', { maxConcurrent: 1, running: 1, fallbacks: [{ providerId: 'spare', model: null }] }), spare: provider('spare') } }), claim);
+  assert.deepEqual([busy.picked, busy.deferrals.map(row => row.reason)], [null, ['provider-busy']]);
+  // Work that already ran on the provider moves only after waiting a quarter of an hour.
+  const work = item('a', 'work', { taskId: 't', createdAt: T0 });
+  const onIt = { t: task({ state: 'in_progress', sticky: { providerId: 'main', model: 'm1' } }) };
+  assert.equal(pick(world({ items: [work], tasks: onIt, providers: { main: limited, spare: provider('spare') } }), claim).picked, null);
+  assert.equal(pick(world({ now: T0 + STICKY_FALLBACK_MS, items: [work], tasks: onIt, providers: { main: { ...limited, limitedUntil: T0 + 2 * 3600_000 }, spare: provider('spare') } }), claim).picked?.route.providerId, 'spare');
+});
+
+test('a window nearly used up is kept for work under way: new and background work goes to a fallback with room', () => {
+  const full = provider('main', { windowPct: 95, fallbacks: [{ providerId: 'spare', model: null }] });
+  const fresh = item('a', 'work', { taskId: 't' }), review = item('b', 'review', { taskId: 't' });
+  assert.equal(pick(world({ items: [fresh], providers: { main: full, spare: provider('spare') } }), claim).picked?.route.providerId, 'spare');
+  assert.equal(pick(world({ items: [review], providers: { main: full, spare: provider('spare') } }), claim).picked?.route.providerId, 'main', 'owed work stays');
+  assert.equal(pick(world({ items: [fresh], providers: { main: full, spare: provider('spare', { windowPct: 97 }) } }), claim).picked?.route.providerId, 'main', 'no fallback with room: it stays');
+});
+
+test('a review runs on another family of model than the work it checks, where one is connected', () => {
+  const onClaude = { t: task({ state: 'in_review', sticky: { providerId: 'main', model: 'claude-sonnet-5' } }) };
+  const review = item('b', 'review', { taskId: 't' });
+  const snapshot = (spare: string[]) => world({ items: [review], tasks: onClaude, agents: { a: agent(), b: agent({ model: 'claude-sonnet-5' }) }, providers: { main: provider('main', { models: ['claude-sonnet-5'] }), spare: provider('spare', { models: spare }) } });
+  assert.deepEqual(pick(snapshot(['claude-haiku-4-5', 'openai/gpt-5.5']), claim).picked?.route, { providerId: 'spare', model: 'openai/gpt-5.5' });
+  assert.deepEqual(pick(snapshot(['claude-haiku-4-5']), claim).picked?.route, { providerId: 'main', model: 'claude-sonnet-5' }, 'no other family connected: it stays');
 });
