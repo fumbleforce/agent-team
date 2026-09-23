@@ -8,6 +8,10 @@ disable-model-invocation: true
 
 Edit text to remove AI patterns.
 
+## In short
+
+Write plain, specific sentences a person reads once. Name the source, the mechanism or the number instead of how something feels (5, 27). Use the plain word and say "is" (7, 8, 31); cut filler, hedging, adverbs and generic conclusions (23, 24, 25, 30). No em dashes, no colon as a connector, no bold labels restating the line, sentence-case headings, no emojis (13, 14, 16, 17, 18). No chatbot phrases or flattery (20, 22). Prefer active voice and one idea per sentence, in whole sentences (28, 29, 33). Before you hand in text a person reads, read the full list of patterns with skill.read unslop.
+
 ## Process
 
 1. Scan for the patterns below.

@@ -10,7 +10,7 @@ import { createVersionedDocs } from '../repos/versionedDocs.ts';
 import { turnToken } from '../auth/secrets.ts';
 import { startCoordinator } from '../server.ts';
 import { sendBackToMerge } from './conflicts.ts';
-import { SKILL_SCOPE, shippedSkills } from './skills.ts';
+import { SKILL_SCOPE, shippedSkills, skillsPart } from './skills.ts';
 import { createTurns } from './turns.ts';
 
 const TOKEN = 'machine-token-for-tests-0123456789';
@@ -67,6 +67,12 @@ test('a seat has the skills of its roles: the always-applied ones in full, the r
     const desk = await replyOf(agents.Ada!);
     assert.match(desk.packet.system, /# Always apply: unslop/);
     assert.doesNotMatch(desk.packet.system, /# Your skills/, 'a seat whose only skill is always applied has no list to read from');
+
+    // A turn whose words no person reads (a review, feedback to a colleague) carries the short form, which points at the rest.
+    const brief = (await coordinator.context.storage.transaction(tx => skillsPart(tx, agents.Bram!, { brief: true })))!;
+    assert.match(brief, /# Always apply: unslop\n.*\n\nWrite plain, specific sentences .* read the full list of patterns with skill\.read unslop\./s);
+    assert.doesNotMatch(brief, /Superficial -ing phrases/, 'the full list stays out');
+    assert.ok(brief.length < system.length - 3000);
 
     let id = 0;
     const call = async (name: string, args: unknown) => {

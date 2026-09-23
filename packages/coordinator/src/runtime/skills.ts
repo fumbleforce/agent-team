@@ -22,17 +22,21 @@ const HOW = 'A skill is a written method for one kind of work. Before the work a
 const ALWAYS = 'Apply this to everything a person reads: chat replies, reports and task summaries, documents, pull request descriptions and commit messages.';
 
 // The part of a seat's standing prompt that its skills add: the text of those always applied, and one line for each of the rest,
-// which the agent reads when the work calls for it. Nothing when the seat has no skills.
-export async function skillsPart(tx: Tx, agentId: string): Promise<string | null> {
+// which the agent reads when the work calls for it. Nothing when the seat has no skills. `brief` is for a turn whose words no person
+// reads (a review's verdict, feedback to a colleague): an always-applied skill with an "In short" section gives only that.
+export async function skillsPart(tx: Tx, agentId: string, options: { brief?: boolean } = {}): Promise<string | null> {
   const skills = await skillsOf(tx, agentId);
   if (skills.length === 0) return null;
   const always = skills.filter(skill => skill.always), listed = skills.filter(skill => !skill.always);
   const parts = [
     ...(listed.length ? [`# Your skills\n${HOW}\n${listed.map(skill => `- ${skill.slug}: ${clip(skill.description.replace(/\s+/g, ' '), 240)}`).join('\n')}`] : []),
-    ...always.map(skill => `# Always apply: ${skill.slug}\n${ALWAYS}\n\n${skill.body}`),
+    ...always.map(skill => `# Always apply: ${skill.slug}\n${ALWAYS}\n\n${(options.brief ? inShort(skill.body) : null) ?? skill.body}`),
   ];
   return parts.join('\n\n');
 }
+
+// The "In short" section of a skill, when it has one.
+const inShort = (body: string): string | null => /^## In short\n+([\s\S]*?)(?=\n## |\n# |$)/m.exec(body)?.[1]?.trim() ?? null;
 
 // A skill in full, or one file of it. Any skill of the library can be read: skills name each other.
 export async function readSkill(db: Db, name: string, file?: string): Promise<{ name: string; description: string; body: string; files: string[] } | { name: string; file: string; content: string } | null> {
