@@ -1,17 +1,19 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import type { TraceStepInput } from '@agent-team/protocol';
+import { ENTRYPOINTS, packageRoot, type TraceStepInput } from '@agent-team/protocol';
 import { allowlistedEnvironment, type EngineAdapter } from './contract.ts';
 
 const LIMIT = /rate.?limit|usage limit|too many requests|\b429\b|insufficient_quota/i;
 type Item = { type?: string; text?: string; command?: string; changes?: { path?: string }[] };
 type StreamEvent = { type?: string; thread_id?: string; item?: Item; usage?: { input_tokens?: number; output_tokens?: number }; error?: { message?: string }; message?: string };
 
-// No per-tool policy: restrictions are the engine's sandbox mode. The platform server is reached through the CLI shim the worker puts on PATH.
+// No per-tool policy: restrictions are the engine's sandbox mode. The tool starts its MCP servers as programs, so the platform and each
+// connected tool are reached through `agent-team mcp-bridge`, which reads the token from the turn's private file: the configuration names
+// only the address and that file.
 export const codex: EngineAdapter = {
   name: 'codex',
   bin: 'codex',
-  capabilities: { resume: 'id', mcp: 'none', toolPolicy: 'sandbox', bounded: true, structuredOutput: true, usageLimits: 'detect', cost: 'tokens' },
+  capabilities: { resume: 'id', mcp: 'stdio', toolPolicy: 'sandbox', bounded: true, structuredOutput: true, usageLimits: 'detect', cost: 'tokens' },
   environment: env => allowlistedEnvironment(env),
   defaultModel(env) {
     try { return /^model\s*=\s*"([^"]+)"/m.exec(readFileSync(path.join(env.CODEX_HOME ?? path.join(env.HOME ?? env.USERPROFILE ?? '', '.codex'), 'config.toml'), 'utf8'))?.[1] ?? null; } catch { return null; }
@@ -29,9 +31,12 @@ export const codex: EngineAdapter = {
   prepare(spec, _turnDir, env) {
     const sandbox = spec.toolProfile === 'write' ? 'workspace-write' : 'read-only';
     const head = spec.sessionId ? ['exec', 'resume', spec.sessionId] : ['exec'];
+    // The platform's tools and the connected ones, for this turn only.
+    const servers = [...(spec.platform ? [{ name: 'platform', url: spec.platform.url, tokenFile: spec.platform.tokenFile }] : []), ...(spec.tools ?? []).filter(tool => tool.name !== 'platform')];
+    const platform = servers.flatMap(server => ['-c', `mcp_servers.${server.name}.command=${JSON.stringify(process.execPath)}`, '-c', `mcp_servers.${server.name}.args=${JSON.stringify([path.join(packageRoot(), ENTRYPOINTS.cli), 'mcp-bridge', server.url, ...(server.tokenFile ? [server.tokenFile] : [])])}`]);
     return {
       bin: 'codex',
-      args: [...head, '--json', '--sandbox', sandbox, '--cd', spec.cwd, '--skip-git-repo-check', ...(spec.model ? ['--model', spec.model] : []), ...(spec.effort && /^[a-z]{2,12}$/.test(spec.effort) ? ['-c', `model_reasoning_effort="${spec.effort}"`] : []), '-'],
+      args: [...platform, ...head, '--json', '--sandbox', sandbox, '--cd', spec.cwd, '--skip-git-repo-check', ...(spec.model ? ['--model', spec.model] : []), ...(spec.effort && /^[a-z]{2,12}$/.test(spec.effort) ? ['-c', `model_reasoning_effort="${spec.effort}"`] : []), '-'],
       // The whole prompt, system part first, goes on stdin.
       input: `${spec.systemPrompt}\n\n---\n\n${spec.prompt}`,
       env,

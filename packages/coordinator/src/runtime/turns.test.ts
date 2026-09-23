@@ -124,3 +124,20 @@ test('a provider serves only as many turns at once as its limit, and the claim c
   assert.ok(await turns.claim(worker(projectId)));
   await storage.close();
 });
+
+test('a tool signed out holds its provider, not the task: the work waits in the queue and is tried again later', async () => {
+  const { storage, turns, projectId, taskId, agent, tick } = await boot();
+  const db = storage.db;
+  await db.insertInto('providers').values({ id: 'p-sub', name: 'Claude subscription', kind: 'subscription', engine: 'claude', billing: 'subscription', engine_config: '{}', models: '["sonnet"]', limits: '{}', status: 'connected', status_detail: null }).execute();
+  await db.updateTable('agents').set({ provider_id: 'p-sub', model: 'sonnet' }).where('id', '=', agent('Bram')).execute();
+  await turns.enqueue({ agentId: agent('Bram'), projectId, kind: 'work', taskId });
+  const first = (await turns.claim(worker(projectId)))!;
+  await turns.finish(first.turnId, 'w1', first.leaseToken, { state: 'failed', stopReason: 'auth', summary: 'Not logged in' });
+  assert.notEqual((await db.selectFrom('tasks').select('state').where('id', '=', taskId).executeTakeFirstOrThrow()).state, 'blocked');
+  const provider = await db.selectFrom('providers').select(['limited_until', 'status_detail']).where('id', '=', 'p-sub').executeTakeFirstOrThrow();
+  assert.match(provider.status_detail ?? '', /^Signed out on w1/);
+  assert.equal(await turns.claim(worker(projectId)), null, 'the provider rests');
+  tick(10 * 60_000 + 1);
+  assert.ok(await turns.claim(worker(projectId)), 'and is tried again');
+  await storage.close();
+});

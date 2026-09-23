@@ -139,9 +139,32 @@ else if (command === 'up') {
   // The turn's token comes from a private file or the environment, never from the command line.
   const url = process.env.AGENT_TEAM_PLATFORM_URL, tokenFile = process.env.AGENT_TEAM_TURN_TOKEN_FILE;
   const token = tokenFile ? readFileSync(tokenFile, 'utf8').trim() : process.env.AGENT_TEAM_TURN_TOKEN;
-  if (!url || !token || !rest[0]) { console.error('Usage: agent-team call <tool> [json], with AGENT_TEAM_PLATFORM_URL and AGENT_TEAM_TURN_TOKEN_FILE set by the worker'); process.exit(1); }
-  const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: rest[0], arguments: JSON.parse(rest[1] ?? '{}') } }) });
-  const body = await response.json() as { result?: { content?: { text?: string }[]; isError?: boolean }; error?: { message?: string } };
-  console.log(body.result?.content?.map(part => part.text).join('\n') ?? body.error?.message ?? `The call failed (${response.status})`);
+  if (!url || !token || !rest[0]) { console.error('Usage: agent-team call <tool> [json] | --list, with AGENT_TEAM_PLATFORM_URL and AGENT_TEAM_TURN_TOKEN_FILE set by the worker'); process.exit(1); }
+  const listing = rest[0] === '--list';
+  const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` }, body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: listing ? 'tools/list' : 'tools/call', params: listing ? {} : { name: rest[0], arguments: JSON.parse(rest[1] ?? '{}') } }) });
+  const body = await response.json() as { result?: { content?: { text?: string }[]; isError?: boolean; tools?: { name: string; description?: string; inputSchema?: unknown }[] }; error?: { message?: string } };
+  // The list says what each tool is for and what it takes, in a form a model reads at a glance.
+  if (listing && body.result?.tools) console.log(body.result.tools.map(tool => `${tool.name}: ${tool.description ?? ''}\n  takes ${JSON.stringify((tool.inputSchema as { properties?: unknown } | undefined)?.properties ?? {})}`).join('\n'));
+  else console.log(body.result?.content?.map(part => part.text).join('\n') ?? body.error?.message ?? `The call failed (${response.status})`);
   process.exit(response.ok && !body.error && !body.result?.isError ? 0 : 1);
+} else if (command === 'mcp-bridge') {
+  // For an engine that starts its MCP servers as programs: messages on stdin go to the server's address, its answers come back on stdout.
+  // The token is read from its private file here, so it is in no command line and no environment.
+  const [url, tokenFile] = rest;
+  if (!url || !/^https?:\/\//.test(url)) { console.error('Usage: agent-team mcp-bridge <url> [token file]'); process.exit(1); }
+  const token = tokenFile ? readFileSync(tokenFile, 'utf8').trim() : null;
+  let session: string | null = null;
+  const { createInterface } = await import('node:readline');
+  for await (const line of createInterface({ input: process.stdin, crlfDelay: Infinity })) {
+    if (!line.trim()) continue;
+    const response: Response | null = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', accept: 'application/json, text/event-stream', ...(token ? { authorization: `Bearer ${token}` } : {}), ...(session ? { 'mcp-session-id': session } : {}) }, body: line }).catch(() => null);
+    const id = (() => { try { return (JSON.parse(line) as { id?: unknown }).id; } catch { return undefined; } })();
+    if (!response) { if (id !== undefined) process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: 'The server could not be reached' } })}\n`); continue; }
+    session = response.headers.get('mcp-session-id') ?? session;
+    const text = await response.text();
+    // A notification has no answer; a stream carries its answers as data lines.
+    const answers = (response.headers.get('content-type') ?? '').includes('text/event-stream') ? text.split('\n').filter((part: string) => part.startsWith('data:')).map((part: string) => part.slice(5).trim()) : [text.trim()];
+    for (const answer of answers.filter(Boolean)) process.stdout.write(`${answer}\n`);
+    if (!answers.some(Boolean) && id !== undefined && !response.ok) process.stdout.write(`${JSON.stringify({ jsonrpc: '2.0', id, error: { code: -32000, message: `The server answered ${response.status}` } })}\n`);
+  }
 } else { console.log(USAGE); process.exit(command ? 1 : 0); }

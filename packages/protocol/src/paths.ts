@@ -17,6 +17,7 @@ export const SOURCE_EXT = path.extname(fileURLToPath(import.meta.url)) === '.js'
 export const ENTRYPOINTS = {
   coordinator: `packages/coordinator/src/main${SOURCE_EXT}`,
   worker: `packages/worker/src/main${SOURCE_EXT}`,
+  cli: `bin/agent-team${SOURCE_EXT}`,
 } as const;
 export const DEFAULT_PORT = 4310;
 

@@ -1,5 +1,13 @@
+import path from 'node:path';
 import { stripVTControlCharacters } from 'node:util';
+import { ENTRYPOINTS, packageRoot } from '@agent-team/protocol';
 import { allowlistedEnvironment, type EngineAdapter } from './contract.ts';
+
+// The tool cannot mount the platform's server, so the platform's tools are one command away: the turn's address and token file are in its
+// environment, and the prompt says how to call them. The token itself stays in the file.
+const call = () => `"${process.execPath}" "${path.join(packageRoot(), ENTRYPOINTS.cli)}" call`;
+const PLATFORM = (command: string) => `# The platform's tools
+You reach them by running a command, not as tools of your own. \`${command} --list\` names them with what each takes; \`${command} <tool> '<json arguments>'\` calls one, for example \`${command} task.update '{"status":"checkpoint","summary":"…"}'\`. What the instructions above call a tool (task.update, task.review, discussion.post) is called this way.`;
 
 const LIMIT = /rate.?limit|usage limit|too many requests|\b429\b|quota/i;
 type StreamEvent = { type?: string; session_id?: string; tool_call?: Record<string, { args?: Record<string, unknown> }>; message?: { content?: { type?: string; text?: string }[] }; result?: string };
@@ -22,8 +30,8 @@ export const cursor: EngineAdapter = {
     return {
       bin: 'agent',
       args: ['--print', '--output-format', 'stream-json', ...(spec.toolProfile === 'write' ? ['--force'] : []), ...(spec.sessionId ? ['--resume', spec.sessionId] : []), ...(spec.model ? ['--model', spec.model] : [])],
-      input: `${spec.systemPrompt}\n\n---\n\n${spec.prompt}`,
-      env,
+      input: `${spec.systemPrompt}\n\n${spec.platform ? `${PLATFORM(call())}\n\n` : ''}---\n\n${spec.prompt}`,
+      env: spec.platform ? { ...env, AGENT_TEAM_PLATFORM_URL: spec.platform.url, AGENT_TEAM_TURN_TOKEN_FILE: spec.platform.tokenFile } : env,
       files: [],
     };
   },

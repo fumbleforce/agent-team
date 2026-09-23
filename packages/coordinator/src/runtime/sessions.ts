@@ -18,7 +18,7 @@ export const STALLED_AFTER = 3;
 export const CHECK_IN_EVERY = 12;
 
 export interface Resume { sessionId: string; prompt: string; baseSha: string | null }
-interface TurnRow { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; summary: string | null; session_id: string | null; context_mode: string | null }
+interface TurnRow { id: string; work_item_id: string; agent_id: string; project_id: string; task_id: string | null; kind: string; summary: string | null; session_id: string | null; context_mode: string | null; provider_id?: string | null }
 type Outcome = z.infer<typeof FinishBody>['outcome'];
 
 // Engine sessions are scoped to (agent, task). Only work turns have one; bounded turns always start from a fresh packet.
@@ -124,6 +124,8 @@ export function createSessions(context: Pick<Context, 'events' | 'now'>) {
         if (item?.dedupe_key?.startsWith(`${CARRY}timeout:`) || !(await stillTheirs(tx, turn))) return { requeued: false, drafts: [] };
         return { requeued: true, drafts: [await queueWork(tx, turn, `${CARRY}timeout:${turn.id}`)] };
       }
+      // A tool signed out on the worker: the work goes back in the queue behind its provider, which rests until someone may have signed in.
+      if (outcome.state === 'failed' && outcome.stopReason === 'auth' && turn.provider_id && await stillTheirs(tx, turn)) return { requeued: true, drafts: [await queueWork(tx, turn, `${CARRY}auth:${turn.id}`)] };
       // A work turn that failed on its own terms (the engine crashed, the context ran over) runs once more with the failure in its packet;
       // a second failure in a row sets the task aside. What cannot change by trying again (a sign-in, the worker's setup, a write outside
       // the task's scope, a push) is not retried. A turn whose outcome is unknown never reaches here: its lease expired instead.

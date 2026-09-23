@@ -20,7 +20,7 @@ import { agentTools, turnTools, type TurnTool } from './agentTools.ts';
 export const LEASE_MS = 90_000;
 export { laneOf };
 // What an author is told when its approved change no longer merges. Merging the base in, never rebasing: a published branch is never force-pushed.
-export const RULES_SCOPE = { type: 'org', id: '' } as const, RULES_SLUG = 'default', LIMIT_BACKOFF_MS = 5 * 60_000;
+export const RULES_SCOPE = { type: 'org', id: '' } as const, RULES_SLUG = 'default', LIMIT_BACKOFF_MS = 5 * 60_000, SIGNED_OUT_RETRY_MS = 10 * 60_000;
 const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 const RATE_LIMITED = /rate-limit|usage-limit/;
 
@@ -110,7 +110,7 @@ export function createTurns(context: Context) {
         const used = await tx.selectFrom('cost_entries').select(eb => [eb.fn.sum<number>('tokens_in').as('tokens_in'), eb.fn.sum<number>('tokens_out').as('tokens_out')]).where('provider_id', '=', provider.id).where('at', '>=', now() - (limits.windowMs ?? 5 * 3600_000)).executeTakeFirst();
         windowPct = (Number(used?.tokens_in ?? 0) + Number(used?.tokens_out ?? 0)) / limits.windowTokens * 100;
       }
-      snapshot.providers[provider.id] = { id: provider.id, name: provider.name, status: provider.status, models: JSON.parse(provider.models) as string[], limitedUntil: provider.limited_until === null ? null : Number(provider.limited_until), running: running.filter(turn => (turn.provider_id ?? turn.seat_provider_id) === provider.id).length, maxConcurrent: limits.maxConcurrentTurns ?? null, windowPct };
+      snapshot.providers[provider.id] = { id: provider.id, name: provider.name, status: provider.status, engine: provider.engine, models: JSON.parse(provider.models) as string[], limitedUntil: provider.limited_until === null ? null : Number(provider.limited_until), running: running.filter(turn => (turn.provider_id ?? turn.seat_provider_id) === provider.id).length, maxConcurrent: limits.maxConcurrentTurns ?? null, windowPct };
     }
 
     // A project budget covers the project and its sub-projects; the org budget covers everything. The fullest one governs.
@@ -327,6 +327,12 @@ export function createTurns(context: Context) {
         if (limited && providerId) {
           await tx.updateTable('providers').set({ limited_until: until, status_detail: `Usage limit reached; resumes ${new Date(until).toISOString()}` }).where('id', '=', providerId).execute();
           drafts.push({ type: 'provider.limited', actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, turnId, payload: { providerId, until } });
+        }
+        // A tool that is signed out is the provider's problem, not the task's: the provider rests and is tried again a little later, when
+        // someone may have signed in, and the owner is told on Needs you.
+        if (outcome.state === 'failed' && outcome.stopReason === 'auth' && providerId) {
+          await tx.updateTable('providers').set({ limited_until: now() + SIGNED_OUT_RETRY_MS, status_detail: `Signed out on ${turn.worker_id ?? 'a worker'}; tried again every ${SIGNED_OUT_RETRY_MS / 60_000} minutes` }).where('id', '=', providerId).execute();
+          drafts.push({ type: 'provider.signed_out', actorKind: 'system' as const, projectId: turn.project_id, agentId: turn.agent_id, turnId, payload: { providerId, workerId: turn.worker_id } });
         }
         // Deferred work returns to the queue; nobody is at fault. Everything else closes the item.
         const reason = limited ? 'provider-limited' : DeferReason.safeParse(outcome.stopReason).data ?? 'deferred';

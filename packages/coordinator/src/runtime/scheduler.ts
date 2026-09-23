@@ -21,12 +21,13 @@ export interface SnapAgent { status: string; providerId: string | null; model: s
 // holder: the live worker whose checkout has the task's worktree. sticky: the route the task's work already ran on.
 // difficulty: how hard the task looked to the decision model, when one read it; a routing rule may filter on it.
 export interface SnapTask { state: string; tags: string[]; difficulty: string | null; quarantined: boolean; writerRunning: boolean; holder: string | null; sticky: RouteChoice | null }
-export interface SnapProvider { id: string; name: string; status: string; models: string[]; limitedUntil: number | null; running: number; maxConcurrent: number | null; windowPct: number | null }
+export interface SnapProvider { id: string; name: string; status: string; engine?: string; models: string[]; limitedUntil: number | null; running: number; maxConcurrent: number | null; windowPct: number | null }
 // budgetPct is the fullest budget that covers the project; budget names it; warned says it already warned this period.
 // writersRunning counts the project's running work turns against maxWriters (default 1): worktrees do not isolate ports, databases or containers.
 // checkoutQuarantined: the claiming worker's checkout of the project was left in an unknown state by a lost git-admin operation.
 export interface SnapProject { status: string; budgetPct: number | null; budget: { scope: string; scopeId: string } | null; warned: boolean; deliveryBusy: boolean; writersRunning?: number; maxWriters?: number; checkoutQuarantined?: boolean }
-export interface ClaimDraft { workerId: string; free: { readonly [L in Lane]?: number | undefined }; projects: readonly string[] }
+// `ready` is what the worker said it can run; a worker that says nothing is not held to it.
+export interface ClaimDraft { workerId: string; free: { readonly [L in Lane]?: number | undefined }; projects: readonly string[]; ready?: { engines: readonly string[] } | undefined }
 export interface Snapshot { now: number; items: TurnDraft[]; agents: Record<string, SnapAgent>; tasks: Record<string, SnapTask>; providers: Record<string, SnapProvider>; projects: Record<string, SnapProject>; running: { agentId: string; lane: Lane }[]; rules: Rules; claim?: ClaimDraft }
 
 export type Gate = { ok: true; route: RouteChoice; notices: Notice[] } | { ok: false; deferReason: DeferReason; notices: Notice[] };
@@ -75,6 +76,8 @@ export function gate(item: TurnDraft, snapshot: Snapshot): Gate {
     if (provider.limitedUntil !== null && provider.limitedUntil > snapshot.now) return refuse('provider-limited', verdict.notices);
     if (provider.maxConcurrent !== null && provider.running >= provider.maxConcurrent) return refuse('provider-busy', verdict.notices);
     if (provider.windowPct !== null && provider.windowPct >= 100) return refuse('provider-window', verdict.notices);
+    // A turn goes only to a worker that has the provider's tool; another worker that has it takes the turn.
+    if (snapshot.claim?.ready && provider.engine && !snapshot.claim.ready.engines.includes(provider.engine)) return refuse('engine-missing', verdict.notices);
   }
   // A write turn goes to the worker that holds the task's worktree while that worker is alive.
   // Anything that needs the repository waits while this worker's checkout of it is in an unknown state.

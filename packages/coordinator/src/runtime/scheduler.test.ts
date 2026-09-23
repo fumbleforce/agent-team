@@ -133,3 +133,13 @@ test('gate: a merge runs no model, so a full, limited, switched-off or spent-out
   const busy = gate(deliver, world({ projects: { p: project({ deliveryBusy: true }) } }));
   assert.deepEqual([busy.ok, busy.ok ? null : busy.deferReason], [false, 'delivery-busy']);
 });
+
+test('a turn goes only to a worker that has its provider\'s tool; a worker that says nothing is not held to it', () => {
+  const work = item('a', 'work', { taskId: 't' });
+  const snapshot = world({ items: [work], providers: { main: provider('main', { engine: 'codex' }), spare: provider('spare') } });
+  const without = pick(snapshot, { ...claim, ready: { engines: ['claude'] } });
+  assert.equal(without.picked, null);
+  assert.deepEqual(without.deferrals.map(row => row.reason), ['engine-missing']);
+  assert.equal(pick(snapshot, { ...claim, ready: { engines: ['claude', 'codex'] } }).picked?.item.id, work.id);
+  assert.equal(pick(snapshot, claim).picked?.item.id, work.id, 'an older worker that reports nothing still gets the turn');
+});

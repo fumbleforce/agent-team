@@ -145,3 +145,14 @@ test('what a tool offers is read from the tool itself: codex from the list it ke
   assert.deepEqual(await engineAdapter('cursor').discover?.({ env: {}, run: async args => (args[0] === 'models' ? cursorList : '') }), { models: [{ id: 'auto', name: 'Auto' }, { id: 'fast-one', name: 'Fast One' }], efforts: [] });
   assert.deepEqual(await engineAdapter('opencode').discover?.({ env: {}, run: async args => (args[0] === 'models' ? 'vendor/model-a\nlocal/model-b:7b\nsome log line\nvendor/model-a\n' : '') }), { models: [{ id: 'vendor/model-a', name: 'vendor/model-a' }, { id: 'local/model-b:7b', name: 'local/model-b:7b' }], efforts: [] });
 });
+
+test('every engine reaches the platform: codex through the bridge, cursor through the call command, and neither is handed the token', () => {
+  const { spec: turn, dir } = spec();
+  const codexTurn = engineAdapter('codex').prepare(turn, dir, {});
+  const bridged = codexTurn.args.find(arg => arg.startsWith('mcp_servers.platform.args='))!;
+  assert.deepEqual(JSON.parse(bridged.slice('mcp_servers.platform.args='.length)).slice(1), ['mcp-bridge', 'http://127.0.0.1:4310/mcp', turn.platform!.tokenFile]);
+  const cursorTurn = engineAdapter('cursor').prepare(turn, dir, {});
+  assert.deepEqual([cursorTurn.env.AGENT_TEAM_PLATFORM_URL, cursorTurn.env.AGENT_TEAM_TURN_TOKEN_FILE], ['http://127.0.0.1:4310/mcp', turn.platform!.tokenFile]);
+  assert.match(cursorTurn.input ?? '', /# The platform's tools[\s\S]*call --list/);
+  for (const prepared of [codexTurn, cursorTurn]) assert.ok(![...prepared.args, prepared.input ?? '', ...Object.values(prepared.env).map(String)].some(text => text.includes(SECRET)));
+});

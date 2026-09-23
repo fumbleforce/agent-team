@@ -23,6 +23,7 @@ const SYSTEM_REASONS: Record<string, { title: string; detail: string; href(slug:
   'provider-limited': { title: 'A model provider has reached its usage limit', detail: 'they start by themselves when it lifts. Add another provider to keep going now.', href: slug => `/p/${slug}/integrations` },
   'provider-window': { title: 'A model provider has used the allowance you set', detail: 'they start when the window moves on, or raise the allowance on the provider.', href: slug => `/p/${slug}/integrations` },
   'provider-unavailable': { title: 'A model provider is switched off or not connected', detail: 'turn it on, or move the seats to another provider.', href: slug => `/p/${slug}/integrations` },
+  'engine-missing': { title: 'No worker has the tool a model provider needs', detail: 'install it on a worker (the provider says how on the Integrations page), or move the seats to a provider a worker can run.', href: slug => `/p/${slug}/integrations` },
   'over-budget': { title: 'A budget is used up', detail: 'raise the budget on the Costs page, or wait for the next month.', href: () => '/costs' },
   'over-cap': { title: 'An agent has reached its daily cap', detail: 'it carries on tomorrow, or raise its cap.', href: slug => `/p/${slug}/team` },
 };
