@@ -132,6 +132,25 @@ function Merging({ slug, canEdit }: { slug: string; canEdit: boolean }) {
   );
 }
 
+// Where a project's work runs, where the deployment can start machines for it: a worker that connects by itself, or a Sprite started when
+// work waits and put to sleep after.
+function RunsOn({ slug, canEdit }: { slug: string; canEdit: boolean }) {
+  const view = useResource<{ launcher: string | null; canLaunch: boolean }>(`/api/projects/${slug}/runs-on`);
+  const action = useAction();
+  if (!view.data?.canLaunch) return null;
+  const set = (launcher: string | null) => { void action.run(() => api(`/api/projects/${slug}/runs-on`, { launcher })).then(view.reload); };
+  return (
+    <SettingsSection title="Where the work runs">
+      <Select aria-label="Where the work runs" disabled={!canEdit || action.busy} value={view.data.launcher ?? ''} onChange={event => set(event.target.value || null)}>
+        <option value="">On a worker that connects by itself</option>
+        <option value="sprite">On a Sprite, started when work waits and asleep after</option>
+      </Select>
+      <Text size="caption" tone="muted">A Sprite keeps the checkout and the engines' sign-ins between turns. It pushes each turn's work, so publishing has to be authorized.</Text>
+      <ActionError error={action.error} />
+    </SettingsSection>
+  );
+}
+
 export function ProjectSettingsPage({ id, me, projects }: { id: string; me: Me; projects: ProjectNode[] }) {
   const view = useResource<SettingsView>(`/api/projects/${id}/settings`);
   const save = useAction(), status = useAction();
@@ -169,6 +188,7 @@ export function ProjectSettingsPage({ id, me, projects }: { id: string; me: Me; 
 
             <ExtraTabs tabs={data.settings.customTabs} canEdit={data.can.configure} onSave={async (customTabs, note) => { await api(`/api/projects/${id}/settings`, { doc: { description: data.settings.description, customTabs }, note }, { 'if-match': String(data.version) }); view.reload(); }} />
             <Merging slug={data.project.slug} canEdit={data.can.configure} />
+            <RunsOn slug={data.project.slug} canEdit={data.can.configure} />
             <Milestones slug={data.project.slug} canEdit={data.can.configure} />
             {data.can.members && <ProjectMembers slug={data.project.slug} />}
           </>

@@ -124,6 +124,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   void backfillSearch(context).catch(error => console.error(`Search backfill failed: ${(error as Error).message}`));
   // Disposable workers are started only when the deployment supplies a launcher factory.
   const launches = config.launchers ? createLaunches(context, config.launchers) : null;
+  context.launching = launches !== null;
   const launchTimer = setInterval(() => { void launches?.sweep().catch(error => console.error(error)); }, 30_000);
   launchTimer.unref();
   // The board should be whole as soon as the app is up, not a poll interval later.

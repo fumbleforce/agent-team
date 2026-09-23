@@ -21,6 +21,8 @@ export interface Accounts {
   trustedSession(email: string): Promise<string | null>;
   // The owner of a coordinator that is only for the person at this machine: the one there is, or one made now without a password.
   localOwner(input: LocalOwner): Promise<string>;
+  // A person sets or changes their own password; one they already have must be given to change it.
+  setPassword(userId: string, current: string | null, next: string): Promise<void>;
   logout(sessionToken: string): Promise<void>;
   viewer(sessionToken: string | undefined): Promise<Viewer | null>;
   invite(by: Viewer, input: z.infer<typeof InviteBody>): Promise<string>;
@@ -128,6 +130,16 @@ export function createAccounts(context: Context): Accounts {
       });
       if (published) { events.published(published); return userId; }
       return (await storage.db.selectFrom('users').select('id').where('org_role', '=', 'owner').orderBy('created_at').executeTakeFirstOrThrow()).id;
+    },
+
+    async setPassword(userId, current, next) {
+      const user = await storage.db.selectFrom('users').select(['password_hash']).where('id', '=', userId).executeTakeFirstOrThrow();
+      if (user.password_hash && !(current && await verifyPassword(current, user.password_hash))) throw new HttpError(403, 'credentials', 'The current password is not right');
+      const hash = await hashPassword(next);
+      events.published(await storage.transaction(async tx => {
+        await tx.updateTable('users').set({ password_hash: hash }).where('id', '=', userId).execute();
+        return events.append(tx, [{ type: 'auth.password_set', category: 'audit', actorKind: 'user', userId, payload: { first: user.password_hash === null } }]);
+      }));
     },
 
     async logout(sessionToken) {

@@ -47,7 +47,7 @@ export function mountProviderRoutes(app: Hono<Env>, context: Context) {
   }
   function readiness(workers: Awaited<ReturnType<typeof workersNow>>, engine: string, entry: ProviderEntry | null): Readiness {
     const variable = entry?.key?.variable, saved = Boolean(variable && context.secrets.has(variable)), withTool = workers.filter(worker => worker.engines.includes(engine));
-    const ready = withTool.filter(worker => !variable || saved || (!entry?.key?.inAppOnly && worker.variables.includes(variable)));
+    const ready = withTool.filter(worker => !variable || entry?.key?.optional || saved || (!entry?.key?.inAppOnly && worker.variables.includes(variable)));
     if (ready.length) return { state: 'ready', need: null, workers: ready.map(worker => worker.name), message: `Ready on ${list(ready.map(worker => worker.name))}` };
     if (withTool.length) return { state: 'waiting', need: 'key', workers: [], message: `Add the ${entry!.key!.label}` };
     if (workers.length === 0) return { state: 'none', need: 'worker', workers: [], message: 'No worker is running yet' };

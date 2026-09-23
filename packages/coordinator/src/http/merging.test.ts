@@ -66,3 +66,18 @@ test('what a checkout registered does not outrank the committed file, and a proj
     assert.equal((await call('/api/projects/site/merging', { cookie, body: { autoMerge: true, requiredChecks: ['verify'] } })).status, 409);
   } finally { await coordinator.close(); }
 });
+
+test('where a project\'s work runs is chosen in the app, and only where the deployment starts machines', async () => {
+  const { coordinator, db, call, owner, machine } = await boot();
+  try {
+    const cookie = await owner();
+    await call('/machine/projects', { headers: machine, body: { slug: 'shop', name: 'Shop', manifest: {} } });
+    assert.deepEqual((await call('/api/projects/shop/runs-on', { cookie })).json, { launcher: null, canLaunch: false, choices: [] });
+    assert.equal((await call('/api/projects/shop/runs-on', { cookie, body: { launcher: 'sprite' } })).status, 409);
+    coordinator.context.launching = true;
+    assert.equal((await call('/api/projects/shop/runs-on', { cookie, body: { launcher: 'sprite' } })).status, 200);
+    assert.equal(JSON.parse((await db.selectFrom('projects').select('manifest').where('slug', '=', 'shop').executeTakeFirstOrThrow()).manifest).worker.launcher, 'sprite');
+    await call('/machine/projects', { headers: machine, body: { slug: 'shop', name: 'Shop', manifest: {} } });
+    assert.equal((await call('/api/projects/shop/runs-on', { cookie })).json.launcher, 'sprite', 'registering again from a checkout keeps it');
+  } finally { await coordinator.close(); }
+});

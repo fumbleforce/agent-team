@@ -22,6 +22,25 @@ export function createMachineTokens(context: Context) {
       return { id, token };
     },
 
+    // A token the coordinator gives a machine it started itself, for as long as that machine runs: never the root token.
+    async issue(name: string): Promise<{ id: string; token: string }> {
+      const id = newId(now()), token = PREFIX + newToken();
+      events.published(await storage.transaction(async tx => {
+        await tx.insertInto('machine_tokens').values({ id, name: name.slice(0, 60), token_hash: hashToken(token), kind: 'worker', created_by: null, created_at: now(), revoked_at: null, last_used_at: null }).execute();
+        return events.append(tx, [{ type: 'auth.machine_token_created', category: 'audit', actorKind: 'system', payload: { tokenId: id, name: name.slice(0, 60), kind: 'worker' } }]);
+      }));
+      return { id, token };
+    },
+
+    async retire(id: string): Promise<void> {
+      events.published(await storage.transaction(async tx => {
+        const row = await tx.selectFrom('machine_tokens').select(['name', 'revoked_at']).where('id', '=', id).executeTakeFirst();
+        if (!row || row.revoked_at !== null) return [];
+        await tx.updateTable('machine_tokens').set({ revoked_at: now() }).where('id', '=', id).execute();
+        return events.append(tx, [{ type: 'auth.machine_token_revoked', category: 'audit', actorKind: 'system', payload: { tokenId: id, name: row.name } }]);
+      }));
+    },
+
     async list() {
       const rows = await storage.db.selectFrom('machine_tokens').leftJoin('users', 'users.id', 'machine_tokens.created_by')
         .select(['machine_tokens.id', 'machine_tokens.name', 'machine_tokens.kind', 'machine_tokens.created_at', 'machine_tokens.revoked_at', 'machine_tokens.last_used_at', 'users.name as created_by_name']).orderBy('machine_tokens.created_at', 'desc').execute();

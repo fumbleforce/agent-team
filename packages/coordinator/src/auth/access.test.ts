@@ -169,3 +169,16 @@ test('passwords are at least 12 characters, and only the owner invites admins', 
     assert.equal((await call('/api/invites', { cookie, body: { email: 'owner@example.com', orgRole: 'member' } })).status, 409);
   } finally { await coordinator.close(); }
 });
+
+test('the owner of a coordinator on this machine sets a password, and can sign in with it where there is no signing in by being here', async () => {
+  const { coordinator, call } = await boot({ localOwner: { name: 'Me', email: 'me@example.com', orgName: 'shop' } });
+  try {
+    const mine = await call('/api/me');
+    assert.deepEqual((await call('/api/me/password', { cookie: mine.cookie! })).json, { has: false });
+    assert.equal((await call('/api/me/password', { cookie: mine.cookie!, body: { next: 'short' } })).status, 400);
+    assert.equal((await call('/api/me/password', { cookie: mine.cookie!, body: { next: 'a-long-enough-secret' } })).status, 200);
+    assert.equal((await call('/api/me/password', { cookie: mine.cookie!, body: { current: 'wrong-one-entirely', next: 'another-long-secret' } })).status, 403, 'changing it needs the one there is');
+    const login = await call('/api/auth/login', { body: { email: 'me@example.com', password: 'a-long-enough-secret' } });
+    assert.equal(login.status, 200);
+  } finally { await coordinator.close(); }
+});

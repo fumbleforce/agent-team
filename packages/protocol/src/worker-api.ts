@@ -3,7 +3,11 @@ import { TraceKind } from './enums.ts';
 
 const WorkerId = z.string().regex(/^[\w.-]{1,128}$/);
 export const LeaseBody = z.object({ workerId: WorkerId, leaseToken: z.string().min(20) });
+// Raised when what a worker and a coordinator say to each other changes so that one of an older version would misread the other.
+export const PROTOCOL_VERSION = 1;
 export const ClaimBody = z.object({
+  // The protocol the worker speaks; a worker that says none is from before it was said, and is taken to speak the first.
+  protocol: z.number().int().min(1).optional(),
   workerId: WorkerId,
   free: z.object({ work: z.number().int().min(0), bounded: z.number().int().min(0), deliver: z.number().int().min(0) }).partial(),
   projects: z.array(z.string()).max(100),

@@ -40,6 +40,8 @@ export interface Context {
   local: boolean;
   // What is known about models (context size, price, family), from a public list refreshed once a day; empty until it is first read.
   models: ModelBook;
+  // Whether this deployment starts workers for queued work (a launcher is configured), and so may offer it to a project.
+  launching: boolean;
   // The code host's API for a kind, where its token is present; null where outside polling is off.
   scm: ((kind: string) => Promise<ScmApi | null>) | null;
   // Set only by `agent-team up` on a loopback bind: the one person this machine's coordinator is for, signed in without a password.
@@ -66,7 +68,7 @@ export function createContext(options: { storage: StorageAdapter; machineToken: 
   const { kind, dir, ...rest } = options.artifacts ?? {};
   const artifacts = createArtifacts(kind, { ...rest, root: dir ?? path.join(dataDir, 'artifacts') });
   const env = options.env ?? process.env, request = options.fetch ?? fetch;
-  return { storage: options.storage, env, fetch: request, decider: options.decider !== undefined ? options.decider : underTest ? null : environmentDecider(env, request), secrets: createSecretStore({ storage: options.storage, dataDir, env, now }), artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, localOwner: options.localOwner ?? null, scm: null, models: modelBook(), demoLogin: options.demoLogin ?? null };
+  return { storage: options.storage, env, fetch: request, decider: options.decider !== undefined ? options.decider : underTest ? null : environmentDecider(env, request), secrets: createSecretStore({ storage: options.storage, dataDir, env, now }), artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, localOwner: options.localOwner ?? null, scm: null, launching: false, models: modelBook(), demoLogin: options.demoLogin ?? null };
 }
 
 export class HttpError extends Error {

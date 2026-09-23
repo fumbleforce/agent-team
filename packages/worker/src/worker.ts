@@ -1,6 +1,6 @@
 import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
-import { outsideWriteScope, STEP_ARTIFACT_LIMITS, STREAM_ARTIFACT_SEQ, turnToken, type Lane, type PermissionGrant, type TraceStepInput, type TurnKind, type Viewport } from '@agent-team/protocol';
+import { outsideWriteScope, PROTOCOL_VERSION, STEP_ARTIFACT_LIMITS, STREAM_ARTIFACT_SEQ, turnToken, type Lane, type PermissionGrant, type TraceStepInput, type TurnKind, type Viewport } from '@agent-team/protocol';
 import { enforcesToolPolicy, type EngineAdapter } from '../../../adapters/engine/contract.ts';
 import { publish as publishChange, type Exec } from '../../../adapters/scm/publish.ts';
 import { SCM_GATES } from '../../../adapters/scm/gates.ts';
@@ -75,6 +75,8 @@ export function ephemeralRefusal(input: { publishAuthorized: boolean; publish?: 
 
 class LeaseLost extends Error {}
 
+export class WrongVersion extends Error {}
+
 export function createWorker(config: WorkerConfig) {
   const busy: Record<Lane, number> = { work: 0, bounded: 0, deliver: 0 };
   const running = new Set<Promise<void>>();
@@ -128,6 +130,7 @@ export function createWorker(config: WorkerConfig) {
   async function call<T>(route: string, body: unknown): Promise<T> {
     const response = await fetch(config.coordinatorUrl + route, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${config.token}` }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) });
     if (response.status === 409) throw new LeaseLost();
+    if (response.status === 426) throw new WrongVersion(((await response.json().catch(() => null)) as { error?: { message?: string } } | null)?.error?.message ?? 'The worker and the coordinator speak different versions');
     if (!response.ok) throw new Error(`Coordinator answered ${response.status}`);
     return await response.json() as T;
   }
@@ -324,7 +327,7 @@ export function createWorker(config: WorkerConfig) {
       const free = Object.fromEntries((Object.keys(busy) as Lane[]).map(lane => [lane, config.lanes[lane] - busy[lane]]));
       const projects = await servable();
       if (projects.length === 0) return false;
-      const { turn } = await call<{ turn: Claimed | null }>('/worker/claim', { workerId: config.workerId, free, projects, isolation: config.isolation ?? 'isolated', ...(config.ready ? { ready: config.ready } : {}) });
+      const { turn } = await call<{ turn: Claimed | null }>('/worker/claim', { protocol: PROTOCOL_VERSION, workerId: config.workerId, free, projects, isolation: config.isolation ?? 'isolated', ...(config.ready ? { ready: config.ready } : {}) });
       if (!turn) return false;
       const lane: Lane = turn.kind === 'work' ? 'work' : turn.kind === 'deliver' || turn.kind === 'publish' ? 'deliver' : 'bounded';
       busy[lane]++;
@@ -335,7 +338,8 @@ export function createWorker(config: WorkerConfig) {
     },
     // Turns a previous run of this worker left behind: their processes are ended and they are reported, never resumed.
     sweep: () => sweepOrphans(config.stateDir, record => call(`/worker/turns/${record.turnId}/orphaned`, { workerId: config.workerId, leaseToken: record.leaseToken })),
-    async loop() { await this.sweep().catch(() => []); while (!stopped) { if (!await this.tick().catch(() => false)) await new Promise(resolve => setTimeout(resolve, config.pollMs ?? 2000)); } },
+    // A worker of the wrong version stops, saying which to update: it takes no work it might misread.
+    async loop() { await this.sweep().catch(() => []); while (!stopped) { if (!await this.tick().catch(error => { if (error instanceof WrongVersion) { console.error(error.message); stopped = true; } return false; })) await new Promise(resolve => setTimeout(resolve, config.pollMs ?? 2000)); } },
     idle: () => Promise.all([...running]).then(() => undefined),
     cleanReviews,
     // Why this worker serves nothing for a project, by project: a disposable host whose repository does not authorize publishing.

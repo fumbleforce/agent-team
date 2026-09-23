@@ -52,10 +52,11 @@ export function createWorkspace(context: Context) {
       if (existing) {
         // What was connected in the app (the code host, its repository, the task board) stays when the checkout says nothing about it.
         // Nothing that authorizes anything is kept this way: that comes from the committed manifest only.
-        const before = JSON.parse(existing.manifest) as { scm?: unknown; tracker?: unknown; delivery?: { repository?: unknown; baseBranch?: unknown } };
+        const before = JSON.parse(existing.manifest) as { scm?: unknown; tracker?: unknown; worker?: unknown; delivery?: { repository?: unknown; baseBranch?: unknown } };
         const next = { ...input.manifest } as typeof before & Record<string, unknown>;
         if (next.scm === undefined && before.scm !== undefined) next.scm = before.scm;
         if (next.tracker === undefined && before.tracker !== undefined) next.tracker = before.tracker;
+        if (next.worker === undefined && before.worker !== undefined) next.worker = before.worker;
         const kept = { ...(before.delivery?.repository !== undefined ? { repository: before.delivery.repository } : {}), ...(before.delivery?.baseBranch !== undefined ? { baseBranch: before.delivery.baseBranch } : {}) };
         if (Object.keys(kept).length) next.delivery = { ...kept, ...(next.delivery as object | undefined) };
         await db.updateTable('projects').set({ name: input.name, manifest: JSON.stringify(next) }).where('id', '=', existing.id).execute();

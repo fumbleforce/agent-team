@@ -5,7 +5,7 @@ import { can, type Viewer } from '../auth/rbac.ts';
 import { forbidden, HttpError, type Context } from '../context.ts';
 import { notifySettingsOf, type createNotifications } from '../runtime/notifications.ts';
 import { createCursors } from '../sync/cursors.ts';
-import { parseBody } from './conventions.ts';
+import { parseBody, publicOrigin } from './conventions.ts';
 
 type Env = { Variables: { viewer: Viewer } };
 const NotifyBody = z.object({ kind: z.string().max(40), values: z.record(z.string().max(40), z.string().trim().max(400)).default({}), token: z.string().trim().max(400).optional(), summaryHour: z.number().int().min(0).max(23).default(8) });
@@ -41,7 +41,7 @@ export function registerNotifyRoutes(app: Hono<Env>, context: Context, notificat
     if (Object.keys(fields).length) throw new HttpError(400, 'invalid', 'Some fields need another look', fields);
     if (input.token && entry.credential) await context.secrets.set(entry.credential.variable, input.token, userId);
     // Links in a message lead back to the app at the address it was set up from.
-    const appUrl = new URL(c.req.url).origin;
+    const appUrl = publicOrigin(c);
     const row = await org();
     const published = await context.storage.transaction(async tx => {
       await tx.updateTable('org').set({ settings: JSON.stringify({ ...(JSON.parse(row.settings) as Record<string, unknown>), notify: { kind: entry.kind, values, appUrl, summaryHour: input.summaryHour } }) }).where('id', '=', row.id).execute();

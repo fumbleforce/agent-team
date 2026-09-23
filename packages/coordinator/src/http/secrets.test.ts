@@ -35,7 +35,7 @@ test('a key typed into the app is kept sealed, makes the provider ready at once,
     await call('/worker/claim', { headers: machine, body: { workerId: 'atlas', free: {}, projects: [], ready: { engines: ['opencode'], variables: [] } } });
     assert.deepEqual([(await entry()).readiness.need, (await entry()).keySaved], ['key', false]);
     assert.match((await call('/api/providers/setup', { cookie, body: { kind: 'openrouter', key: 'short', values: { models: 'openrouter/vendor/model-a' } } })).json.error.fields.key, /does not look like a key/);
-    assert.match((await call('/api/providers/setup', { cookie, body: { kind: 'claude-subscription', key: KEY, values: { models: 'sonnet' } } })).json.error.fields.key, /takes no key/);
+    assert.match((await call('/api/providers/setup', { cookie, body: { kind: 'codex-subscription', key: KEY, values: { models: 'gpt-5.5' } } })).json.error.fields.key, /takes no key/);
 
     // Typed once in the app: ready at once, nothing restarted, and the value is nowhere in what the app is told or in the database.
     const made = await call('/api/providers/setup', { cookie, body: { kind: 'openrouter', key: KEY, values: { models: 'openrouter/vendor/model-a' } } });

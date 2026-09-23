@@ -47,6 +47,13 @@ export function fromThisMachine(c: Hc): boolean {
   return socket && host && (site === undefined || site === 'same-origin' || site === 'none');
 }
 
+// The address a person reached the app at, for links that lead back to it: behind a proxy that ends TLS the request itself says http and an
+// inner host, so the proxy's forwarded headers are read first. A forged header only makes a wrong link for whoever sent it.
+export function publicOrigin(c: Hc): string {
+  const url = new URL(c.req.url), proto = c.req.header('x-forwarded-proto')?.split(',')[0]?.trim(), host = c.req.header('x-forwarded-host')?.split(',')[0]?.trim() ?? c.req.header('host');
+  return `${proto && /^https?$/.test(proto) ? proto : url.protocol.replace(':', '')}://${host && /^[\w.-]+(:\d{1,5})?$/.test(host) ? host : url.host}`;
+}
+
 // `?after=&limit=`: the cursor is whatever the list's `next` last returned.
 export function pageOf(c: Hc): PageQuery {
   const parsed = PageQuery.safeParse({ after: c.req.query('after') || undefined, limit: c.req.query('limit') || undefined });

@@ -2,9 +2,9 @@ import type { Launcher } from './contract.ts';
 import { create as local } from './local.ts';
 import { create as ec2, type Ec2Options } from './ec2.ts';
 import { create as fargate } from './fargate.ts';
-import { create as flyMachine } from './fly-machine.ts';
+import { create as sprite } from './sprite.ts';
 
-const ADAPTERS: Record<string, (options: Ec2Options) => Launcher> = { local, ec2, fargate, 'fly-machine': flyMachine };
+const ADAPTERS: Record<string, (options: Ec2Options) => Launcher> = { local, ec2, fargate, sprite };
 export const LAUNCHER_KINDS = Object.keys(ADAPTERS);
 export const DEFAULT_LAUNCHER = 'local';
 

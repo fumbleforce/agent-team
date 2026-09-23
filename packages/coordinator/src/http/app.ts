@@ -4,7 +4,7 @@ import { Hono, type Context as Hc } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
 import { streamSSE } from 'hono/streaming';
 import { z } from 'zod';
-import { AcceptInviteBody, CaptureBody, InviteBody, LoginBody, newId, ProductEnvBody, PostMessageBody, SetupBody, TaskState, type ProjectView, type StoredEvent, type ThreadMessagesView } from '@agent-team/protocol';
+import { AcceptInviteBody, CaptureBody, InviteBody, LoginBody, newId, ProductEnvBody, PostMessageBody, SetupBody, TaskState, type ProjectView, type StoredEvent, type ThreadMessagesView, PROTOCOL_VERSION, Password } from '@agent-team/protocol';
 import { createAccounts } from '../auth/accounts.ts';
 import { createOidc } from '../auth/oidc.ts';
 import { can, canSeeProject, type Action, type Viewer } from '../auth/rbac.ts';
@@ -146,6 +146,8 @@ export function createApp(context: Context) {
   const servedBy = new Map<string, Map<string, number>>();
   app.post('/worker/claim', async c => {
     const claim = await body(c, ClaimBody);
+    // A worker that speaks another version of the protocol is turned away before it is given anything, with what to update.
+    if ((claim.protocol ?? 1) !== PROTOCOL_VERSION) return c.json({ error: { code: 'version', message: (claim.protocol ?? 1) < PROTOCOL_VERSION ? `Update this worker: it speaks version ${claim.protocol ?? 1} of the protocol and the coordinator speaks ${PROTOCOL_VERSION}.` : `Update the coordinator: this worker speaks version ${claim.protocol} of the protocol and the coordinator speaks ${PROTOCOL_VERSION}.` } }, 426);
     // Every poll records the worker as seen, with what it serves: the Team page and the launcher read it.
     // Two processes may still report under one name (configurations written before workers were named per project). What the name
     // serves is then everything reported under it in the last minutes, so they add to each other instead of overwriting each other.
@@ -283,6 +285,9 @@ export function createApp(context: Context) {
   });
   app.use('/api/*', idempotency(context));
 
+  // Your own password: set one where there is none (the owner of a coordinator on this machine), or change it with the one you have.
+  app.get('/api/me/password', async c => c.json({ has: (await context.storage.db.selectFrom('users').select('password_hash').where('id', '=', c.get('viewer').userId).executeTakeFirstOrThrow()).password_hash !== null }));
+  app.post('/api/me/password', async c => { const input = await body(c, z.object({ current: z.string().max(200).nullable().default(null), next: Password })); await accounts.setPassword(c.get('viewer').userId, input.current, input.next); return c.json({ ok: true }); });
   app.get('/api/me', async c => {
     const viewer = c.get('viewer');
     const user = await context.storage.db.selectFrom('users').select(['id', 'email', 'name', 'org_role']).where('id', '=', viewer.userId).executeTakeFirstOrThrow();

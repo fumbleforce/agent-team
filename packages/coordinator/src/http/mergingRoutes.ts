@@ -32,6 +32,28 @@ export function mountMergingRoutes(app: Hono<any>, deps: Deps) {
     });
   });
 
+  // Where a project's work runs: on a worker that connects by itself, or on a machine the deployment starts when work waits.
+  app.get('/api/projects/:slug/runs-on', async c => {
+    const { project } = await deps.projectFor(c, 'project.read');
+    const manifest = JSON.parse((await db.selectFrom('projects').select('manifest').where('id', '=', project.id).executeTakeFirstOrThrow()).manifest) as { worker?: { launcher?: string } };
+    return c.json({ launcher: manifest.worker?.launcher ?? null, canLaunch: context.launching, choices: context.launching ? ['sprite'] : [] });
+  });
+  app.post('/api/projects/:slug/runs-on', async c => {
+    const { project } = await deps.projectFor(c, 'project.configure');
+    const input = await deps.body(c, z.object({ launcher: z.enum(['sprite']).nullable() }));
+    if (input.launcher && !context.launching) throw new HttpError(409, 'no_launcher', 'This deployment starts no machines; connect a worker instead');
+    const published = await context.storage.transaction(async tx => {
+      const row = await tx.selectFrom('projects').select('manifest').where('id', '=', project.id).executeTakeFirstOrThrow();
+      const manifest = JSON.parse(row.manifest) as { worker?: Record<string, unknown> };
+      const { launcher: _launcher, ...worker } = manifest.worker ?? {};
+      manifest.worker = { ...worker, ...(input.launcher ? { launcher: input.launcher } : {}) };
+      await tx.updateTable('projects').set({ manifest: JSON.stringify(manifest) }).where('id', '=', project.id).execute();
+      return context.events.append(tx, [{ type: 'settings.changed', category: 'audit', actorKind: 'user', userId: deps.userId(c), projectId: project.id, payload: { what: 'runs-on', launcher: input.launcher } }]);
+    });
+    context.events.published(published);
+    return c.json({ ok: true });
+  });
+
   app.post('/api/projects/:slug/merging', async c => {
     const { project } = await deps.projectFor(c, 'project.configure');
     const input = await deps.body(c, MergingBody);

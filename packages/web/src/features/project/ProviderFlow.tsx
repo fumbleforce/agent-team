@@ -2,12 +2,12 @@ import { useEffect, useState } from 'react';
 import { api, ApiError } from '../../data/client';
 import { useResource } from '../../data/useResource';
 import { ChoiceCard, More, MultiPicker, SecretField, StatusLine, type PickOption } from '../../patterns';
-import { Button, Chip, CodeBlock, Dialog, Field, Input, SectionLabel, type DotTone } from '../../ui';
+import { Button, Chip, CodeBlock, Dialog, Field, Input, SectionLabel, Text, type DotTone } from '../../ui';
 
 export interface Readiness { state: 'ready' | 'waiting' | 'none'; message: string; workers: string[]; need?: 'worker' | 'tool' | 'key' | null }
 export interface Provider { id: string; name: string; kind: string; engine: string; catalog: string | null; models: string[]; fallbacks?: { providerId: string; model: string | null }[]; status: string; agents: number; readiness: Readiness; efforts?: string[]; modelEfforts?: Record<string, string[]>; keyLabel?: string | null; keySaved?: boolean; limits: { concurrency: number | null; windowTokens: number | null; windowHours: number | null } }
 interface CatalogEntry { kind: string; title: string; summary: string; billing: string; install: string; signIn?: string; named?: boolean; window: boolean; hasList: boolean; keySaved: boolean; providerId: string | null; readiness: Readiness;
-  key?: { variable: string; label: string; getAt: string; placeholder?: string }; aliases?: string[] }
+  key?: { variable: string; label: string; getAt: string; placeholder?: string; optional?: boolean; help?: string }; aliases?: string[] }
 
 export const BILLING: Record<string, string> = { subscription: 'Subscription', metered: 'Pay per use', local: 'Runs on your hardware' };
 export const READY_TONE: Record<Readiness['state'], DotTone> = { ready: 'working', waiting: 'attention', none: 'off' };
@@ -65,7 +65,8 @@ export function ProviderFlow({ open, kind, providers, onOpenChange, onDone }: { 
           <div className="flex items-center gap-2"><span className="grow"><StatusLine tone={READY_TONE[entry.readiness.state]}>{entry.readiness.message}</StatusLine></span><Chip tone={entry.billing === 'metered' ? 'attention' : 'neutral'}>{BILLING[entry.billing]}</Chip></div>
           {entry.readiness.need === 'tool' && <CodeBlock text={entry.install} />}
           {entry.readiness.state !== 'ready' && entry.signIn && <section className="flex flex-col gap-1.5"><SectionLabel>Sign in once on the worker</SectionLabel><CodeBlock text={entry.signIn} /></section>}
-          {entry.key && <SecretField onLeave={value => { void withKey(value); }} name="key" label={entry.key.label} saved={entry.keySaved} getAt={entry.key.getAt} placeholder={entry.key.placeholder} error={errors.key} />}
+          {entry.key && !entry.key.optional && <SecretField onLeave={value => { void withKey(value); }} name="key" label={entry.key.label} saved={entry.keySaved} getAt={entry.key.getAt} placeholder={entry.key.placeholder} error={errors.key} />}
+          {entry.key?.optional && <More label={`${entry.key.label}${entry.keySaved ? ' (saved)' : ''}`}>{entry.key.help && <Text size="small" tone="muted">{entry.key.help}</Text>}<SecretField name="key" label={entry.key.label} saved={entry.keySaved} getAt={entry.key.getAt} placeholder={entry.key.placeholder} error={errors.key} /></More>}
           {entry.named && <Field label="Name" error={errors.name}><Input name="name" defaultValue={existing?.name ?? ''} placeholder="Company gateway" required /></Field>}
           <MultiPicker name="models" label="Models" options={typed ?? list.data?.models ?? []} value={models} onChange={setModels} loading={entry.hasList && !list.data} error={errors.models ?? list.data?.error ?? undefined} />
           <More label="Limits">

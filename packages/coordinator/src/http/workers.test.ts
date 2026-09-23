@@ -52,3 +52,26 @@ test('a worker configured with the name of a project, as `up` writes it, ends up
     assert.equal((await codeStep()).done, true);
   } finally { await coordinator.close(); }
 });
+
+test('behind a proxy that ends TLS, a pairing link leads to the address the person reached, not the one inside', async () => {
+  const { coordinator, call, owner } = await boot();
+  try {
+    const cookie = await owner();
+    await call('/api/projects', { cookie, body: { name: 'Shop' } });
+    const link = (await call('/api/projects/shop/worker/pair', { cookie, body: {}, headers: { 'x-forwarded-proto': 'https', 'x-forwarded-host': 'team.example.org' } })).json.link as string;
+    assert.match(link, /^https:\/\/team\.example\.org\/pair\/[A-Za-z0-9-]+$/);
+    assert.match((await call('/api/projects/shop/worker/pair', { cookie, body: {}, headers: { 'x-forwarded-host': 'bad host!' } })).json.link, /^http:\/\/127\.0\.0\.1:\d+\/pair\//, 'a host that is not one is not used');
+  } finally { await coordinator.close(); }
+});
+
+test('a worker that speaks another version of the protocol is turned away with what to update; one that says none is taken to speak the first', async () => {
+  const { coordinator, call, machine } = await boot();
+  try {
+    const claim = (protocol?: number) => call('/worker/claim', { headers: machine, body: { workerId: 'w1', free: { work: 1 }, projects: [], ...(protocol === undefined ? {} : { protocol }) } });
+    const newer = await claim(99);
+    assert.equal(newer.status, 426);
+    assert.match(newer.json.error.message, /^Update the coordinator: this worker speaks version 99/);
+    assert.equal((await claim()).status, 200);
+    assert.equal((await claim(1)).status, 200);
+  } finally { await coordinator.close(); }
+});

@@ -8,6 +8,7 @@ import { z } from 'zod';
 import { ENTRYPOINTS, packageRoot, workerIdFor } from '@agent-team/protocol';
 import { HttpError, type Context } from '../context.ts';
 import { publishTarget } from '../../../../adapters/hosting/local/up.ts';
+import { publicOrigin } from './conventions.ts';
 import type { Viewer } from '../auth/rbac.ts';
 
 interface Deps {
@@ -42,7 +43,7 @@ export function mountWorkerSetupRoutes(app: Hono<any>, deps: Deps) {
     for (const [code, entry] of codes) if (entry.expires < context.now()) codes.delete(code);
     const code = newCode();
     codes.set(code, { projectId: project.id, slug: project.slug, by: viewer, expires: context.now() + PAIR_MS });
-    return c.json({ code, link: `${new URL(c.req.url).origin}/pair/${code}`, expiresAt: context.now() + PAIR_MS });
+    return c.json({ code, link: `${publicOrigin(c)}/pair/${code}`, expiresAt: context.now() + PAIR_MS });
   });
 
   // Called by `agent-team connect`. The code is the only credential: single use, short-lived, and it yields a token only this worker ever sees.
@@ -83,7 +84,7 @@ export function mountWorkerSetupRoutes(app: Hono<any>, deps: Deps) {
     const running = started.get(project.id), current = progress.get(project.id);
     if ((running && running.exitCode === null) || current?.phase === 'cloning' || current?.phase === 'starting') return c.json({ ok: true, already: true });
 
-    const origin = new URL(c.req.url).origin;
+    const origin = publicOrigin(c);
     const set = (phase: StartProgress['phase'], detail: string | null = null, error: string | null = null) => {
       const before = progress.get(project.id);
       progress.set(project.id, { phase, detail, error, since: before?.phase === phase ? before.since : context.now() });

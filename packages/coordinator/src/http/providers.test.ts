@@ -6,12 +6,12 @@ test('a model provider is added through the guided flow, in plain words, and rea
   const { coordinator, db, call, owner, person, machine } = await boot();
   try {
     const cookie = await owner(), member = await person('mia', 'member');
-    const catalog = (await call('/api/providers/catalog', { cookie })).json.entries as { kind: string; title: string; summary: string; billing: string; engine: string; install: string; signIn?: string; key?: { variable: string }; keySaved: boolean; listModels?: unknown; readiness: { state: string; message: string } }[];
+    const catalog = (await call('/api/providers/catalog', { cookie })).json.entries as { kind: string; title: string; summary: string; billing: string; engine: string; install: string; signIn?: string; key?: { variable: string; optional?: boolean }; keySaved: boolean; listModels?: unknown; readiness: { state: string; message: string } }[];
     assert.ok(catalog.length >= 6 && catalog.every(entry => entry.title && entry.install && entry.listModels === undefined));
     // Few words: nothing a person has to read runs past one line.
     assert.ok(catalog.every(entry => entry.summary.length <= 80), 'summaries stay short');
     // A subscription login is never offered with a key: that is how it would quietly become metered.
-    assert.ok(catalog.filter(entry => entry.billing === 'subscription').every(entry => entry.signIn && !entry.key));
+    assert.ok(catalog.filter(entry => entry.billing === 'subscription').every(entry => entry.signIn && (!entry.key || entry.key.optional)), 'a subscription signs in; a key it takes is only for machines nobody signs in on');
     assert.match(catalog[0]!.readiness.message, /No worker is running yet/);
 
     // Only the organization's admins set providers up; what was typed is checked field by field.
@@ -138,5 +138,17 @@ test('a provider names where its work goes when it cannot take it, from the othe
     assert.equal((await call(`/api/providers/${main}/change`, { cookie, body: { fallbacks: [{ providerId: spare, model: 's2' }] } })).status, 200);
     const listed = ((await call('/api/providers', { cookie })).json.providers as { id: string; fallbacks: unknown }[]).find(item => item.id === main)!;
     assert.deepEqual(listed.fallbacks, [{ providerId: spare, model: 's2' }]);
+  } finally { await coordinator.close(); }
+});
+
+test('a subscription may be given its sign-in token for machines started for a job; a worker signed in by hand needs none', async () => {
+  const { coordinator, db, call, owner } = await boot();
+  try {
+    const cookie = await owner();
+    await db.insertInto('workers').values({ id: 'laptop', name: 'laptop', lanes: '{}', isolation: 'isolated', providers: JSON.stringify({ engines: ['claude'], variables: [] }), projects: '[]', last_seen_at: Date.now() }).execute();
+    const entry = async () => ((await call('/api/providers/catalog', { cookie })).json.entries as { kind: string; readiness: { state: string }; keySaved: boolean; key: { optional?: boolean } }[]).find(item => item.kind === 'claude-subscription')!;
+    assert.deepEqual([(await entry()).readiness.state, (await entry()).key.optional], ['ready', true], 'signed in on the worker is enough');
+    assert.equal((await call('/api/providers/setup', { cookie, body: { kind: 'claude-subscription', key: 'sk-ant-oat01-abcdefgh', values: { models: 'sonnet' } } })).status, 200);
+    assert.equal((await entry()).keySaved, true);
   } finally { await coordinator.close(); }
 });

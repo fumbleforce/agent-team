@@ -1,5 +1,6 @@
 import type { Hono } from 'hono';
 import { CATALOG } from '../../../../adapters/integration/catalog.ts';
+import { publicOrigin } from './conventions.ts';
 import type { Context } from '../context.ts';
 
 export interface OnboardingStep { key: 'project' | 'code' | 'board' | 'provider' | 'worker' | 'task' | 'people'; done: boolean; optional: boolean; detail: string | null }
@@ -40,7 +41,7 @@ export function mountOnboardingRoutes(app: Hono<any>, deps: { context: Context; 
     ];
     const required = steps.filter(step => !step.optional);
     return c.json({ repository: manifest.delivery?.repository ?? null, boards: CATALOG.filter(item => item.category === 'issue-boards').map(item => item.title), project: project ? { slug: project.slug, name: project.name } : null, steps, done: required.filter(step => step.done).length, total: required.length, complete: required.every(step => step.done),
-      dismissed: Boolean((org ? JSON.parse(org.settings) as { onboardingDismissed?: boolean } : {}).onboardingDismissed), canAdmin: deps.canAdmin(c), url: new URL(c.req.url).origin });
+      dismissed: Boolean((org ? JSON.parse(org.settings) as { onboardingDismissed?: boolean } : {}).onboardingDismissed), canAdmin: deps.canAdmin(c), url: publicOrigin(c) });
   });
 
   app.post('/api/onboarding/dismiss', async c => {

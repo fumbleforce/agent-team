@@ -80,6 +80,26 @@ export function MembersPage({ me, projects }: { me: Me; projects: ProjectNode[] 
   );
 }
 
+// Your own password. The owner of a coordinator on this machine has none and is never asked for one; setting one is what lets that
+// account sign in once the organization moves to a hosted coordinator.
+function YourPassword() {
+  const state = useResource<{ has: boolean }>('/api/me/password');
+  const action = useAction();
+  const [done, setDone] = useState(false);
+  if (!state.data) return null;
+  return (
+    <SettingsSection title="Your password" {...(state.data.has ? {} : { note: 'You sign in on this machine without one. Set one before this organization moves to a hosted coordinator.' })}>
+      <form className="flex flex-wrap items-end gap-2.5" onSubmit={action.submit(async form => { await api('/api/me/password', { current: state.data?.has ? String(form.get('current') ?? '') : null, next: String(form.get('next') ?? '') }); setDone(true); state.reload(); })}>
+        {state.data.has && <Field label="Current password"><Input name="current" type="password" autoComplete="current-password" required /></Field>}
+        <Field label={state.data.has ? 'New password' : 'Password'} error={action.error?.fields.next}><Input name="next" type="password" autoComplete="new-password" minLength={12} required /></Field>
+        <Button type="submit" variant="primary" disabled={action.busy}>{state.data.has ? 'Change it' : 'Set it'}</Button>
+      </form>
+      {done && !action.error && <Text size="small" tone="muted">Saved.</Text>}
+      <ActionError error={action.error} />
+    </SettingsSection>
+  );
+}
+
 export function AuthPage({ me, projects }: { me: Me; projects: ProjectNode[] }) {
   const auth = useResource<AuthSettings>(isOrgAdmin(me) ? '/api/settings/auth' : null);
   const sso = useResource<SsoCatalog>(isOrgAdmin(me) ? '/api/settings/sso/catalog' : null);
@@ -92,6 +112,7 @@ export function AuthPage({ me, projects }: { me: Me; projects: ProjectNode[] }) 
   return (
     <OrgShell me={me} projects={projects} title="Sign-in" active="/settings/auth">
       <SettingsBody>
+        <YourPassword />
         <SettingsSection title="Passwords">
           <Card tone="raised" pad="sm" className="flex flex-col gap-1">
             <Text size="small" tone="soft">A password has at least {data?.password.minimumLength ?? 12} characters.</Text>

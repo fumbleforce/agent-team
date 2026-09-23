@@ -11,7 +11,8 @@ export interface ProviderEntry {
   engine: string; install: string;
   // A key typed into the app: kept sealed by the coordinator and handed to a worker only for a turn on this provider.
   // The same variable set on a worker by hand still counts, unless the adapter drops it from a worker's own environment (`inAppOnly`).
-  key?: { variable: string; label: string; getAt: string; placeholder?: string; inAppOnly?: boolean };
+  // `optional`: a worker signed in by hand needs none; the key is how a machine nobody signs in on (one started for a job) runs it.
+  key?: { variable: string; label: string; getAt: string; placeholder?: string; inAppOnly?: boolean; optional?: boolean; help?: string };
   // Or the tool's own sign-in, run once on the worker.
   signIn?: string;
   // Asked only when there can be several of the kind.
@@ -50,6 +51,8 @@ export const PROVIDERS: ProviderEntry[] = [
   {
     kind: 'claude-subscription', title: 'Claude subscription', billing: 'subscription', engine: 'claude', install: 'npm install -g @anthropic-ai/claude-code',
     summary: 'Your Pro or Max plan, through Claude Code.', signIn: 'claude', responsive: 'sonnet', window: true,
+    // The plan's own long-lived sign-in token, for machines started for a job, where nobody signs in by hand. It is still the plan, never metered use.
+    key: { variable: 'CLAUDE_CODE_OAUTH_TOKEN', label: 'Sign-in token', getAt: 'https://docs.claude.com/en/docs/claude-code/setup', placeholder: 'sk-ant-oat01-…', inAppOnly: true, optional: true, help: 'Only for machines started for a job. Make one with “claude setup-token” on a computer where you are signed in.' },
   },
   {
     kind: 'anthropic-api', title: 'Anthropic API', billing: 'metered', engine: 'opencode', install: OPENCODE,

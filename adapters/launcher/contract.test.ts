@@ -88,12 +88,12 @@ test('an ssm: image reference resolves through Parameter Store and must hold an 
 });
 
 test('the index creates launchers by kind and rejects unknown kinds', async () => {
-  assert.deepEqual(LAUNCHER_KINDS, ['local', 'ec2', 'fargate', 'fly-machine']);
+  assert.deepEqual(LAUNCHER_KINDS, ['local', 'ec2', 'fargate', 'sprite']);
   const local = createLauncher('local');
   assert.equal((await local.start(job)).jobId, job.id);
   assert.deepEqual(await local.status({}), { state: 'external' });
   assert.deepEqual(await local.stop({}), { stopped: false });
-  for (const kind of ['fargate', 'fly-machine']) await assert.rejects(createLauncher(kind).start(job), /not implemented yet/);
+  await assert.rejects(createLauncher('fargate').start(job), /not implemented yet/);
   assert.throws(() => createLauncher('balloon'), /Unknown launcher/);
 });
 
