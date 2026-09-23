@@ -20,9 +20,12 @@ if (Object.keys(named.projects).length === 0 && !file.desks) { console.error('No
 
 // A launched host is gone after its turn, so its config names where the branch is pushed when a work turn completes.
 const exec: NonNullable<WorkerConfig['publish']>['exec'] = (bin, args, { cwd }) => new Promise((resolve, reject) => execFile(bin, args, { cwd, maxBuffer: 8 * 1024 * 1024 }, (error, stdout, stderr) => error ? reject(new Error(String(stderr).trim().slice(-400) || error.message)) : resolve(stdout)));
-// What the tools on this machine say they offer (models, effort levels) is asked once, here, and reported with every claim.
+// What the tools on this machine say they offer (models, effort levels) is asked here and reported with every claim. It is asked
+// again every hour, in place, so a model the provider adds or a tool installed since shows up without restarting the worker.
 const adapters = Object.fromEntries(ENGINES.map(name => [name, engineAdapter(name)]));
-const ready = await discovered(adapters, readiness(adapters, PROVIDER_VARIABLES, { defaultEngine: file.engine }));
+const ask = () => discovered(adapters, readiness(adapters, PROVIDER_VARIABLES, { defaultEngine: file.engine }));
+const ready = await ask();
+setInterval(() => { void ask().then(fresh => Object.assign(ready, fresh), () => {}); }, 60 * 60_000).unref();
 const worker = createWorker({
   coordinatorUrl: file.coordinatorUrl, token, workerId: file.workerId, stateDir: file.stateDir, engine: engineAdapter(file.engine),
   engines: Object.fromEntries(ENGINES.map(name => [name, engineAdapter(name)])),

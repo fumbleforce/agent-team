@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { boot, PASSWORD, TOKEN } from '../http/testing.ts';
 import { startCoordinator } from '../server.ts';
+import { createAccounts } from './accounts.ts';
 import { LOGIN_LIMITS } from './rateLimit.ts';
 
 test('an account locks after repeated failures, the lock lives in storage, and the right password does not lift it', async () => {
@@ -75,6 +76,38 @@ test('named machine tokens work next to the root token until revoked, and are st
 
 test('the trusted header is refused on any bind but loopback', async () => {
   await assert.rejects(startCoordinator({ host: '100.64.0.1', port: 0, storage: { kind: 'sqlite', path: ':memory:' }, machineToken: TOKEN, webRoot: null, trustedHeader: 'X-Proxy-User' }), /loopback/);
+});
+
+test('no sign-in on this machine is refused on any bind but loopback', async () => {
+  await assert.rejects(startCoordinator({ host: '100.64.0.1', port: 0, storage: { kind: 'sqlite', path: ':memory:' }, machineToken: TOKEN, webRoot: null, localOwner: { name: 'Me', email: 'me@example.com', orgName: 'shop' } }), /loopback/);
+});
+
+test('a coordinator for the person at this machine signs its own pages in as the owner, and nothing else', async () => {
+  const { coordinator, db, call, machine } = await boot({ localOwner: { name: 'Me', email: 'Me@Example.com', orgName: 'shop' } });
+  try {
+    assert.equal((await call('/machine/setup-link', { method: 'POST', headers: machine })).json.path, null, 'there is nobody to set up');
+    const mine = await call('/api/me');
+    assert.equal(mine.status, 200);
+    assert.deepEqual([mine.json.user.email, mine.json.user.name, mine.json.user.orgRole, mine.json.org.name], ['me@example.com', 'Me', 'owner', 'shop']);
+    assert.ok(mine.cookie, 'it opens an ordinary session');
+    assert.equal((await call('/api/me', { headers: { 'sec-fetch-site': 'same-origin' } })).json.user.email, 'me@example.com', 'the same owner every time');
+    assert.equal(Number((await db.selectFrom('users').select(eb => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow()).n), 1);
+
+    // Another site in the browser, or a name that resolves here, gets nothing.
+    assert.equal((await call('/api/me', { headers: { 'sec-fetch-site': 'cross-site' } })).status, 401);
+    const port = new URL(coordinator.url).port;
+    const rebound = await new Promise<number>((resolve, reject) => { (async () => { const http = await import('node:http'); http.get({ host: '127.0.0.1', port, path: '/api/me', headers: { host: `attacker.example:${port}` } }, response => { response.resume(); resolve(response.statusCode ?? 0); }).on('error', reject); })().catch(reject); });
+    assert.equal(rebound, 401);
+  } finally { await coordinator.close(); }
+});
+
+test('an owner made earlier with a password stays the owner when the coordinator becomes one for this machine', async () => {
+  const { coordinator, db, owner } = await boot();
+  try {
+    await owner();
+    const before = await db.selectFrom('users').select('id').where('org_role', '=', 'owner').executeTakeFirstOrThrow();
+    assert.equal(await createAccounts(coordinator.context).localOwner({ name: 'Me', email: 'me@example.com', orgName: 'shop' }), before.id);
+  } finally { await coordinator.close(); }
 });
 
 test('on loopback the trusted header signs in a known person or a pending invitation, and nobody else', async () => {

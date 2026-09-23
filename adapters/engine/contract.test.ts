@@ -104,12 +104,12 @@ test('claude: the context size is what the latest model call carried, not the su
   assert.equal(state.tokensIn, 81_022);
 });
 
-test('what a tool offers is read from the tool itself: codex from the list it keeps, with the effort levels of each model; claude from its own help text', async () => {
+test('what a tool offers is read from the tool itself: codex from the list it keeps, with the effort levels of each model; claude from its handshake, else its help text', async () => {
   const { mkdtempSync, writeFileSync } = await import('node:fs'), os = await import('node:os'), path = await import('node:path');
   const home = mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
   writeFileSync(path.join(home, 'models_cache.json'), JSON.stringify({ models: [{ slug: 'model-next', display_name: 'Model Next', description: 'The newest one', visibility: 'list', supported_reasoning_levels: [{ effort: 'low' }, { effort: 'high' }] }, { slug: 'internal-review', visibility: 'hide' }] }));
-  assert.deepEqual(await engineAdapter('codex').discover?.({ env: { CODEX_HOME: home }, help: async () => '' }), { models: [{ id: 'model-next', name: 'Model Next', note: 'The newest one', efforts: ['low', 'high'] }], efforts: ['low', 'high'] });
-  assert.deepEqual(await engineAdapter('codex').discover?.({ env: { CODEX_HOME: path.join(home, 'missing') }, help: async () => '' }), { models: [], efforts: [] });
+  assert.deepEqual(await engineAdapter('codex').discover?.({ env: { CODEX_HOME: home }, run: async () => '' }), { models: [{ id: 'model-next', name: 'Model Next', note: 'The newest one', efforts: ['low', 'high'] }], efforts: ['low', 'high'] });
+  assert.deepEqual(await engineAdapter('codex').discover?.({ env: { CODEX_HOME: path.join(home, 'missing') }, run: async () => '' }), { models: [], efforts: [] });
 
   // The help text as the tool prints it, wrapped over lines.
   const help = `  --effort <level>                      Effort level for the current session
@@ -119,7 +119,29 @@ test('what a tool offers is read from the tool itself: codex from the list it ke
                                         'newest', 'middle', or 'small') or a
                                         model's full name (e.g.
                                         'vendor-model-1-2').`;
-  assert.deepEqual(await engineAdapter('claude').discover?.({ env: {}, help: async () => help }), { models: ['newest', 'middle', 'small'].map(id => ({ id, name: id, note: 'always the newest of its family' })), efforts: ['quick', 'steady', 'deep'] });
+  const helpOnly = async (args: string[]) => (args[0] === '--help' ? help : '');
+  assert.deepEqual(await engineAdapter('claude').discover?.({ env: {}, run: helpOnly }), { models: ['newest', 'middle', 'small'].map(id => ({ id, name: id, note: 'always the newest of its family' })), efforts: ['quick', 'steady', 'deep'] });
   // A tool that says nothing yields nothing; nothing is made up in its place.
-  assert.deepEqual(await engineAdapter('claude').discover?.({ env: {}, help: async () => '' }), { models: [], efforts: [] });
+  assert.deepEqual(await engineAdapter('claude').discover?.({ env: {}, run: async () => '' }), { models: [], efforts: [] });
+
+  // The handshake's answer is the sign-in's own list, with names, notes and the effort levels of each model. It is asked on stdin.
+  const asked: { args: string[]; input?: string }[] = [];
+  const answer = [
+    JSON.stringify({ type: 'system', subtype: 'noise' }),
+    JSON.stringify({ type: 'control_response', response: { subtype: 'success', request_id: 'models', response: { models: [
+      { value: 'default', displayName: 'Default (recommended)', description: 'Whatever the tool picks' },
+      { value: 'big[1m]', displayName: 'Big (1M context)', description: 'For hard work', supportedEffortLevels: ['low', 'high', 'x y'] },
+      { value: 'small', displayName: 'Small' },
+      { value: 'has space', displayName: 'Refused' },
+    ] } } }),
+  ].join('\n');
+  const handshake = async (args: string[], input?: string) => { asked.push({ args, ...(input === undefined ? {} : { input }) }); return args.includes('--input-format') ? answer : help; };
+  assert.deepEqual(await engineAdapter('claude').discover?.({ env: {}, run: handshake }), { models: [{ id: 'big[1m]', name: 'Big (1M context)', note: 'For hard work', efforts: ['low', 'high'] }, { id: 'small', name: 'Small' }], efforts: ['low', 'high'] });
+  assert.equal(asked.length, 1, 'the help text is not read when the handshake answers');
+  assert.equal(JSON.parse(asked[0]!.input!).request.subtype, 'initialize');
+
+  // Cursor and opencode list what their sign-in or configuration may use.
+  const cursorList = '\x1b[2KLoading models…\nAvailable models\n\nauto - Auto  (current)\nfast-one - Fast One\nTip: use --model <id> to switch.\n';
+  assert.deepEqual(await engineAdapter('cursor').discover?.({ env: {}, run: async args => (args[0] === 'models' ? cursorList : '') }), { models: [{ id: 'auto', name: 'Auto' }, { id: 'fast-one', name: 'Fast One' }], efforts: [] });
+  assert.deepEqual(await engineAdapter('opencode').discover?.({ env: {}, run: async args => (args[0] === 'models' ? 'vendor/model-a\nlocal/model-b:7b\nsome log line\nvendor/model-a\n' : '') }), { models: [{ id: 'vendor/model-a', name: 'vendor/model-a' }, { id: 'local/model-b:7b', name: 'local/model-b:7b' }], efforts: [] });
 });

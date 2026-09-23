@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import os from 'node:os';
@@ -27,6 +27,14 @@ export function webBuildIsStale(root: string): boolean {
   return newest(source) > statSync(built).mtimeMs;
 }
 
+// Who that is, as git on this machine knows them, else the account's name; the organization is named after the project folder.
+export function localOwner(checkout: string, env: NodeJS.ProcessEnv = process.env) {
+  const git = (key: string) => { const result = spawnSync('git', ['-C', checkout, 'config', key], { encoding: 'utf8', env, windowsHide: true }); return result.status === 0 ? result.stdout.trim() : ''; };
+  const account = (() => { try { return os.userInfo().username; } catch { return env.USER ?? env.USERNAME ?? 'owner'; } })();
+  const email = git('user.email');
+  return { name: (git('user.name') || account).slice(0, 80), email: (/^[^\s@]+@[^\s@]+$/.test(email) ? email : `${account.replace(/[^\w.-]/g, '') || 'owner'}@localhost`).slice(0, 200), orgName: path.basename(checkout).slice(0, 80) || 'This machine' };
+}
+
 export const localDir = (projectId: string, env: NodeJS.ProcessEnv = process.env) => path.join(configDir(env), 'local', projectId);
 
 // Private configuration for the two processes; the machine token is generated once and reused. The worker also keeps desks, so a team
@@ -43,7 +51,8 @@ export function writeLocalConfigs(options: LocalOptions) {
   const write = (name: string, value: unknown) => { const file = path.join(dir, name); writeFileSync(file, typeof value === 'string' ? value : `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 }); return file; };
   return {
     dir, url, machineToken,
-    coordinator: write('coordinator.json', { host: '127.0.0.1', port, storage: { kind: 'sqlite', path: path.join(data, 'coordinator.sqlite') } }),
+    // Only the person at this machine can reach it, so they are its owner and are never asked to sign in.
+    coordinator: write('coordinator.json', { host: '127.0.0.1', port, storage: { kind: 'sqlite', path: path.join(data, 'coordinator.sqlite') }, localOwner: localOwner(options.checkout, options.env) }),
     worker: write('worker.json', { coordinatorUrl: url, workerId: workerIdFor(os.hostname(), options.projectId), stateDir: path.join(data, 'worker'), engine: options.engine, projects: { [options.projectId]: options.checkout }, desks: true, ...(publishTarget(options.checkout) ? { publish: publishTarget(options.checkout) } : {}) }),
     envFile: write('service.env', `AGENT_TEAM_TOKEN=${machineToken}\nAGENT_TEAM_URL=${url}\n`),
   };

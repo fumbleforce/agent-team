@@ -49,3 +49,21 @@ test('a project registered from a checkout already knows its repository, for the
     assert.deepEqual(shown.map(item => [item.name, item.statusDetail]), [['GitHub', 'Uses the sign-in on each worker']]);
   } finally { await coordinator.close(); }
 });
+
+test('what was connected in the app survives the checkout registering again without saying it, and a board keeps its hand-set settings', async () => {
+  const { coordinator, db, call, owner, machine } = await boot();
+  try {
+    const cookie = await owner();
+    await call('/machine/projects', { headers: machine, body: { slug: 'shop', name: 'Shop', manifest: { name: 'Shop' } } });
+    assert.equal((await call('/api/projects/shop/integrations/setup', { cookie, body: { kind: 'github', values: { repository: 'acme/shop', baseBranch: 'trunk' } } })).status, 200);
+    await db.updateTable('projects').set({ manifest: JSON.stringify({ ...JSON.parse((await db.selectFrom('projects').select('manifest').where('slug', '=', 'shop').executeTakeFirstOrThrow()).manifest), tracker: { kind: 'linear', projectId: '9d6c1c2e-0000-0000-0000-000000000000', readyLabel: 'agent:ready' } }) }).where('slug', '=', 'shop').execute();
+    await call('/machine/projects', { headers: machine, body: { slug: 'shop', name: 'Shop', manifest: { name: 'Shop', delivery: { publishAuthorized: false } } } });
+    const kept = JSON.parse((await db.selectFrom('projects').select('manifest').where('slug', '=', 'shop').executeTakeFirstOrThrow()).manifest);
+    assert.deepEqual([kept.scm, kept.delivery, kept.tracker.kind], [{ kind: 'github' }, { repository: 'acme/shop', baseBranch: 'trunk', publishAuthorized: false }, 'linear']);
+
+    // Connecting the same board again in the app changes what was entered and keeps the rest; an empty field blanks nothing.
+    assert.equal((await call('/api/projects/shop/integrations/setup', { cookie, body: { kind: 'linear', values: { projectId: '5f1e7a2b-0000-0000-0000-000000000000', teamId: '' } } })).status, 200);
+    const board = JSON.parse((await db.selectFrom('projects').select('manifest').where('slug', '=', 'shop').executeTakeFirstOrThrow()).manifest).tracker;
+    assert.deepEqual(board, { kind: 'linear', projectId: '5f1e7a2b-0000-0000-0000-000000000000', readyLabel: 'agent:ready' });
+  } finally { await coordinator.close(); }
+});

@@ -5,6 +5,7 @@ import path from 'node:path';
 import { configDir, packageRoot } from '@agent-team/protocol';
 import { SCM_KINDS, scmAdapter } from '../../scm/index.ts';
 import { terminalAsk, yes, type Ask } from '../shared/ask.ts';
+import { parseRemote } from '../shared/repository.ts';
 import { BOUNDARY_ARN, boundariesInUse, defaultAws, deploy, DeployError, destroy, discover, newDeployment, parameterName, STEPS, TOOLKIT_REPO, type Aws, type DeployOptions, type Deployment, type DeploymentFacts, type Step } from './deploy.ts';
 
 // The `init aws`, `deploy aws`, `status aws` and `destroy aws` commands. The deployment description is one JSON file
@@ -79,11 +80,7 @@ interface Manifest {
 const TRACKER_SECRETS: Record<string, string> = { linear: 'LINEAR_API_KEY' };
 const git = (checkout: string, args: string[]) => { const result = spawnSync('git', ['-C', checkout, ...args], { encoding: 'utf8' }); return result.status === 0 ? result.stdout.trim() : ''; };
 
-// `git@host:owner/name.git` and `https://host/owner/name.git` alike.
-export function parseRemote(remote: string): { host: string; repository: string } | null {
-  const found = /^(?:[\w.-]+@([\w.-]+):|(?:https?|ssh):\/\/(?:[^@/]+@)?([\w.-]+)(?::\d+)?\/)(.+?)(?:\.git)?\/?$/.exec(remote.trim());
-  return found ? { host: (found[1] ?? found[2])!, repository: found[3]! } : null;
-}
+export { parseRemote };
 
 // Workers set a fresh clone up, so only files the repository tracks count.
 function guessSetup(checkout: string): string {

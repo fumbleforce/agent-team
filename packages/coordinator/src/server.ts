@@ -7,7 +7,7 @@ import path from 'node:path';
 import { serve, type ServerType } from '@hono/node-server';
 import { DEFAULT_PORT, packageRoot } from '@agent-team/protocol';
 import { createStorage, type StorageConfig } from '@agent-team/storage';
-import { createContext, type ArtifactsConfig, type Context } from './context.ts';
+import { createContext, type ArtifactsConfig, type Context, type LocalOwner } from './context.ts';
 import type { Decider } from '../../../adapters/decider/contract.ts';
 import { createDecisions } from './runtime/decisions.ts';
 import { createTraceStore } from './runtime/traceStore.ts';
@@ -22,6 +22,7 @@ import { createSlackInbound, createSlackMirror } from './sync/slack.ts';
 import { createVersionedDocs } from './repos/versionedDocs.ts';
 import { readFileSync } from 'node:fs';
 import { createTrackerSync, type TrackerClient } from './sync/tracker.ts';
+import { createCursors } from './sync/cursors.ts';
 import { trackerClient } from '../../../adapters/tracker/index.ts';
 import { createScmSync, type ScmApi } from './sync/scm.ts';
 import { scmApi } from '../../../adapters/scm/index.ts';
@@ -32,13 +33,11 @@ import { createLaunches, type LauncherFactory } from './runtime/launch.ts';
 import { SKILL_SCOPE, shippedSkills } from './runtime/skills.ts';
 export type { LauncherFactory } from './runtime/launch.ts';
 export type TrackerFactory = (kind: string) => Promise<TrackerClient | null>;
-// The tracker clients are adapters; a project without a credential for its tracker is simply not polled.
-const adapterTrackers: TrackerFactory = async kind => trackerClient(kind);
 export type ScmFactory = (kind: string) => Promise<ScmApi | null>;
 // So are the code hosts: review state, test reports and environments are polled only where the host's token is present.
 const adapterScm: ScmFactory = async kind => scmApi(kind);
 
-export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; webRoot?: string | null; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; scm?: ScmFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string; /* Where large step artifacts are kept: `{ kind: 'local', dir }` by default, in a folder under the data directory. */ artifacts?: ArtifactsConfig; /* Days a trace outlives its terminal task; 30 by default. */ traceRetentionDays?: number; /* The model that answers typed questions; by default the one the keys in the environment or the app name, or none. */ decider?: Decider | null }
+export interface CoordinatorConfig { host?: string; port?: number; storage: StorageConfig; machineToken: string; secureCookies?: boolean; /* Names the identity header of a proxy on this machine; only honoured on a loopback bind. */ trustedHeader?: string; /* The person a coordinator on this machine is for: written by `up`, only honoured on a loopback bind. */ localOwner?: LocalOwner; webRoot?: string | null; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; demoLogin?: Context['demoLogin']; trackers?: TrackerFactory | null; scm?: ScmFactory | null; trackerPollMs?: number; launchers?: LauncherFactory | null; knowledgeMirror?: string; /* Where large step artifacts are kept: `{ kind: 'local', dir }` by default, in a folder under the data directory. */ artifacts?: ArtifactsConfig; /* Days a trace outlives its terminal task; 30 by default. */ traceRetentionDays?: number; /* The model that answers typed questions; by default the one the keys in the environment or the app name, or none. */ decider?: Decider | null }
 
 export const isLoopback = (host: string): boolean => host === '127.0.0.1' || host === '::1' || host === 'localhost';
 
@@ -54,12 +53,13 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const host = config.host ?? '127.0.0.1';
   if (!validBind(host)) throw new Error(`Refusing to bind ${host}`);
   if (config.trustedHeader && !isLoopback(host)) throw new Error(`Refusing to trust the ${config.trustedHeader} header on ${host}: trusted-header sign-in needs a loopback bind`);
+  if (config.localOwner && !isLoopback(host)) throw new Error(`Refusing to sign anyone in without a password on ${host}: that needs a loopback bind`);
   if (config.machineToken.length < 24) throw new Error('The machine token must be at least 24 characters');
   const storage = await createStorage(config.storage);
   await storage.migrate();
   const built = path.join(packageRoot(), 'packages', 'web', 'dist');
   const webRoot = config.webRoot === undefined ? (existsSync(built) ? built : null) : config.webRoot;
-  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), local: isLoopback(host), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, demoLogin: config.demoLogin ?? null, ...(config.env ? { env: config.env } : {}), ...(config.fetch ? { fetch: config.fetch } : {}), ...(config.decider !== undefined ? { decider: config.decider } : {}) });
+  const context = createContext({ storage, ...(config.storage.kind === 'sqlite' && config.storage.path !== ':memory:' ? { dataDir: path.dirname(path.resolve(config.storage.path)) } : {}), local: isLoopback(host), machineToken: config.machineToken, webRoot, ...(config.artifacts ? { artifacts: config.artifacts } : {}), ...(config.traceRetentionDays !== undefined ? { traceRetentionDays: config.traceRetentionDays } : {}), secureCookies: config.secureCookies ?? false, trustedHeader: config.trustedHeader ?? null, localOwner: config.localOwner ?? null, demoLogin: config.demoLogin ?? null, ...(config.env ? { env: config.env } : {}), ...(config.fetch ? { fetch: config.fetch } : {}), ...(config.decider !== undefined ? { decider: config.decider } : {}) });
   await context.secrets.load();
   await createIssues(context, path.join(context.dataDir, 'blobs')).backfillInbox();
   // The shipped skills, which the shipped roles name. Like every shipped document, one an owner edited is never overwritten.
@@ -85,7 +85,10 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
   const timer = setInterval(() => { void turns.sweep().then(() => deliberation.sweep()).then(() => retro.sweep()).then(() => traceStore.sweep()).then(() => checkWake.sweep()).then(() => memory.sweepStale()).then(() => trials.sweep()).then(() => duties.sweep()).then(() => decisions.sweep()).catch(error => console.error(error)); }, 15_000);
   timer.unref();
 
-  const sync = createTrackerSync(context, turns), trackers = config.trackers === undefined ? adapterTrackers : config.trackers;
+  // The tracker clients are adapters. They read their key where the coordinator keeps them, so one typed into the app counts;
+  // a project whose tracker has no key is not polled, and its board says why.
+  const adapterTrackers: TrackerFactory = async kind => trackerClient(kind, { env: context.env, fetch: context.fetch });
+  const sync = createTrackerSync(context, turns), trackers = config.trackers === undefined ? adapterTrackers : config.trackers, cursors = createCursors(context);
   // A deployment that turns outside polling off for trackers has it off for code hosts too, unless it names a factory.
   const scmSync = createScmSync(context, turns), hosts = config.scm === undefined ? (config.trackers === null ? null : adapterScm) : config.scm;
   const slack = createSlackMirror(context), drive = createDriveSync(context), gitMirror = config.knowledgeMirror ? createGitMirror(context, config.knowledgeMirror) : null;
@@ -101,6 +104,7 @@ export async function startCoordinator(config: CoordinatorConfig): Promise<{ con
       const client = kind && trackers ? await trackers(kind).catch(() => null) : null;
       // One project failing to sync never stops the others, and never takes the coordinator down.
       if (client) await sync.syncProject(project.id, client).catch(error => console.error(`Tracker sync failed for ${project.id}: ${(error as Error).message}`));
+      else if (kind && trackers === adapterTrackers) await cursors.fail(project.id, 'tracker', new Error(`There is no key for the ${kind} board on the coordinator: add it where the board is connected`)).catch(() => undefined);
       const host = manifest.scm?.kind && hosts ? await hosts(manifest.scm.kind).catch(() => null) : null;
       if (host) await scmSync.syncProject(project.id, host).catch(error => console.error(`Code host sync failed for ${project.id}: ${(error as Error).message}`));
     }

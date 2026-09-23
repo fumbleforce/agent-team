@@ -10,7 +10,11 @@ interface Page { nodes: RawIssue[]; pageInfo: { hasNextPage: boolean; endCursor:
 const ISSUES = 'query ProjectIssues($filter: IssueFilter!, $after: String) { issues(filter: $filter, first: 100, after: $after) { nodes { identifier title description url updatedAt archivedAt parent { id } state { name type } labels(first: 50) { nodes { name } } inverseRelations(first: 50) { nodes { type issue { archivedAt state { type } } } } } pageInfo { hasNextPage endCursor } } }';
 const ISSUE_SCOPE = 'query IssueScope($id: String!) { issue(id: $id) { id team { id states(first: 100) { nodes { id name type position } } labels(first: 250) { nodes { id name } } } labels(first: 100) { nodes { id name } } } }';
 const TEAM_SCOPE = 'query TeamScope($id: String!) { team(id: $id) { id states(first: 100) { nodes { id name type position } } labels(first: 250) { nodes { id name } } } }';
-const COMMENTS = 'query IssueComments($id: String!, $filter: CommentFilter) { issue(id: $id) { comments(first: 100, filter: $filter) { nodes { id body createdAt user { name } } } } }';
+const COMMENTS = 'query IssueComments($id: String!, $filter: CommentFilter, $after: String) { issue(id: $id) { comments(first: 100, filter: $filter, after: $after) { nodes { id body createdAt user { name } } pageInfo { hasNextPage endCursor } } } }';
+const PROJECT_TEAMS = 'query ProjectTeams($id: String!) { project(id: $id) { teams(first: 10) { nodes { id } } } }';
+// Labels by name across the workspace: a team's own and the workspace-wide ones, which every team may use.
+const LABELS = 'query Labels($name: String!) { issueLabels(first: 50, filter: { name: { eq: $name } }) { nodes { id name team { id } } } }';
+const CREATE_LABEL = 'mutation CreateLabel($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success issueLabel { id } } }';
 const UPDATE = 'mutation UpdateIssue($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }';
 const COMMENT = 'mutation Comment($input: CommentCreateInput!) { commentCreate(input: $input) { success comment { id } } }';
 const CREATE = 'mutation CreateIssue($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { identifier url } } }';
@@ -25,7 +29,7 @@ export function linearTracker(options: TrackerOptions = {}): FullTrackerClient {
 
   async function gql<T>(query: string, variables: Record<string, unknown>): Promise<T> {
     const response = await request('https://api.linear.app/graphql', { method: 'POST', headers: { authorization: key!, 'content-type': 'application/json' }, body: JSON.stringify({ query, variables }), signal: AbortSignal.timeout(30_000) }).catch(() => { throw new Error('Linear network request failed'); });
-    if (!response.ok) throw new Error('Linear HTTP request failed');
+    if (!response.ok) throw new Error(response.status === 401 || response.status === 403 ? `Linear did not accept the API key (${response.status})` : response.status === 429 ? 'Linear is rate-limiting requests (429)' : `Linear HTTP request failed (${response.status})`);
     const payload = await response.json().catch(() => null) as { data?: T; errors?: unknown[] } | null;
     if (!payload?.data || payload.errors?.length) throw new Error('Linear GraphQL request failed');
     return payload.data;
@@ -38,6 +42,26 @@ export function linearTracker(options: TrackerOptions = {}): FullTrackerClient {
     const found = (await gql<{ issue?: Scope | null }>(ISSUE_SCOPE, { id: issue })).issue;
     if (!found?.id || !found.team?.id || (text(manifest.teamId) && found.team.id !== manifest.teamId)) throw new Error('Issue is not in the configured team');
     return found;
+  }
+  // The team a project's issues are made in: the manifest's, else the project's own when it belongs to exactly one.
+  async function teamOf(manifest: Record<string, unknown>): Promise<string> {
+    const named = text(manifest.teamId), projectId = text(manifest.projectId);
+    if (named) return named;
+    if (!projectId) throw new Error('Missing Linear configuration');
+    const teams = (await gql<{ project?: { teams?: { nodes?: { id: string }[] } } | null }>(PROJECT_TEAMS, { id: projectId })).project?.teams?.nodes ?? [];
+    if (teams.length !== 1) throw new Error(teams.length ? 'The Linear project belongs to several teams; name one as teamId' : 'The Linear project belongs to no team');
+    return teams[0]!.id;
+  }
+  // A label the team may use, made in the team when there is none yet, as GitHub makes a missing label on first use.
+  async function labelFor(teamId: string, name: string): Promise<string> {
+    const found = ((await gql<{ issueLabels?: { nodes?: (Named & { team?: { id: string } | null })[] } }>(LABELS, { name })).issueLabels?.nodes ?? []).filter(label => label.name === name);
+    const own = found.filter(label => label.team?.id === teamId), shared = found.filter(label => !label.team);
+    const usable = own.length ? own : shared;
+    if (usable.length > 1) throw new Error('The label is ambiguous in the configured team');
+    if (usable.length === 1) return usable[0]!.id;
+    const created = (await gql<{ issueLabelCreate?: { success?: boolean; issueLabel?: { id?: string } } }>(CREATE_LABEL, { input: { name, teamId } })).issueLabelCreate;
+    if (!created?.success || !created.issueLabel?.id) throw new Error('Linear label creation failed');
+    return created.issueLabel.id;
   }
   const update = async (id: string, input: Record<string, unknown>) => { if (!(await gql<{ issueUpdate?: { success?: boolean } }>(UPDATE, { id, input })).issueUpdate?.success) throw new Error('Linear issue update failed'); };
   // The first state of the type by position; review is a started state named so, else the last started one.
@@ -82,27 +106,36 @@ export function linearTracker(options: TrackerOptions = {}): FullTrackerClient {
 
     async comments(_manifest, issue, since) {
       if (!ISSUE.test(issue)) throw new Error('Not an issue of this tracker');
-      const found = (await gql<{ issue?: { comments?: { nodes?: { id: string; body?: string | null; createdAt?: string; user?: { name?: string } | null }[] } } | null }>(COMMENTS, { id: issue, filter: since ? { createdAt: { gt: since } } : null })).issue;
-      return (found?.comments?.nodes ?? []).filter(node => typeof node.body === 'string' && node.body.trim()).map(node => ({ id: node.id, body: node.body!, author: node.user?.name ?? 'unknown', createdAt: node.createdAt ?? '' })).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+      type Node = { id: string; body?: string | null; createdAt?: string; user?: { name?: string } | null };
+      const nodes: Node[] = [], cursors = new Set<string>();
+      for (let after: string | null = null; ;) {
+        const page: { nodes?: Node[]; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } } | undefined = (await gql<{ issue?: { comments?: { nodes?: Node[]; pageInfo?: { hasNextPage?: boolean; endCursor?: string | null } } } | null }>(COMMENTS, { id: issue, filter: since ? { createdAt: { gt: since } } : null, after })).issue?.comments;
+        nodes.push(...(page?.nodes ?? []));
+        if (!page?.pageInfo?.hasNextPage) break;
+        after = page.pageInfo.endCursor ?? null;
+        if (!after || cursors.has(after) || cursors.size >= 50) throw new Error('Invalid Linear pagination');
+        cursors.add(after);
+      }
+      return nodes.filter(node => typeof node.body === 'string' && node.body.trim()).map(node => ({ id: node.id, body: node.body!, author: node.user?.name ?? 'unknown', createdAt: node.createdAt ?? '' })).sort((a, b) => a.createdAt.localeCompare(b.createdAt));
     },
 
     async addLabel(manifest, issue, label) {
       const found = await scope(manifest, issue);
       if (found.labels.nodes.some(item => item.name === label)) return;
-      const wanted = found.team.labels.nodes.filter(item => item.name === label);
-      if (wanted.length !== 1) throw new Error('The label is missing or ambiguous in the configured team');
-      await update(found.id, { labelIds: [...new Set([...found.labels.nodes.map(item => item.id), wanted[0]!.id])] });
+      await update(found.id, { labelIds: [...new Set([...found.labels.nodes.map(item => item.id), await labelFor(found.team.id, label)])] });
     },
 
-    // The state and the labels are named by the manifest and resolved in the team, never guessed.
+    // The state is named by the manifest and resolved in the team, never guessed; a missing label is made, as `addLabel` does.
     async createIssue(manifest, input) {
-      const teamId = text(manifest.teamId), projectId = text(manifest.projectId);
-      if (!teamId || !projectId) throw new Error('Missing Linear configuration');
+      const projectId = text(manifest.projectId);
+      if (!projectId) throw new Error('Missing Linear configuration');
+      const teamId = await teamOf(manifest);
       const team = (await gql<{ team?: Scope['team'] | null }>(TEAM_SCOPE, { id: teamId })).team;
       const state = team?.states.nodes.filter(item => item.name === input.state) ?? [];
-      const labels = input.labels.map(name => team?.labels.nodes.filter(item => item.name === name) ?? []);
-      if (state.length !== 1 || labels.some(matches => matches.length !== 1)) throw new Error('A required workflow state or label is missing or ambiguous in the configured team');
-      const created = (await gql<{ issueCreate?: { success?: boolean; issue?: { identifier?: string; url?: string } } }>(CREATE, { input: { teamId, projectId, title: input.title, description: input.body, stateId: state[0]!.id, labelIds: labels.map(matches => matches[0]!.id) } })).issueCreate;
+      if (state.length !== 1) throw new Error(`The team has ${state.length ? 'several workflow states' : 'no workflow state'} named "${input.state.slice(0, 80)}"`);
+      const labelIds = [];
+      for (const name of input.labels) labelIds.push(await labelFor(teamId, name));
+      const created = (await gql<{ issueCreate?: { success?: boolean; issue?: { identifier?: string; url?: string } } }>(CREATE, { input: { teamId, projectId, title: input.title, description: input.body, stateId: state[0]!.id, labelIds } })).issueCreate;
       if (!created?.success || !created.issue?.identifier) throw new Error('Linear issue creation failed');
       return { identifier: created.issue.identifier, url: created.issue.url ?? null };
     },

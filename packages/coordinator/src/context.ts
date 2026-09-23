@@ -36,20 +36,24 @@ export interface Context {
   trustedHeader: string | null;
   // True when the coordinator listens on this machine only; some conveniences (starting a worker from the app) exist only then.
   local: boolean;
+  // Set only by `agent-team up` on a loopback bind: the one person this machine's coordinator is for, signed in without a password.
+  localOwner: LocalOwner | null;
   // Set only by the demo command: the account that /demo/enter signs in.
   demoLogin: { email: string; password: string } | null;
 }
 
+export interface LocalOwner { name: string; email: string; orgName: string }
+
 // Tests never reach a paid model: under the test runner a context that was not given a decider has none, whatever keys the shell holds.
 const underTest = 'NODE_TEST_CONTEXT' in process.env;
 
-export function createContext(options: { storage: StorageAdapter; machineToken: string; webRoot?: string | null; dataDir?: string; artifacts?: ArtifactsConfig; traceRetentionDays?: number; secureCookies?: boolean; trustedHeader?: string | null; local?: boolean; now?: () => number; demoLogin?: Context['demoLogin']; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; decider?: Decider | null }): Context {
+export function createContext(options: { storage: StorageAdapter; machineToken: string; webRoot?: string | null; dataDir?: string; artifacts?: ArtifactsConfig; traceRetentionDays?: number; secureCookies?: boolean; trustedHeader?: string | null; local?: boolean; localOwner?: LocalOwner | null; now?: () => number; demoLogin?: Context['demoLogin']; env?: NodeJS.ProcessEnv; fetch?: typeof fetch; decider?: Decider | null }): Context {
   const now = options.now ?? Date.now;
   const dataDir = options.dataDir ?? mkdtempSync(path.join(os.tmpdir(), 'agent-team-data-'));
   const { kind, dir, ...rest } = options.artifacts ?? {};
   const artifacts = createArtifacts(kind, { ...rest, root: dir ?? path.join(dataDir, 'artifacts') });
   const env = options.env ?? process.env, request = options.fetch ?? fetch;
-  return { storage: options.storage, env, fetch: request, decider: options.decider !== undefined ? options.decider : underTest ? null : environmentDecider(env, request), secrets: createSecretStore({ storage: options.storage, dataDir, env, now }), artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, demoLogin: options.demoLogin ?? null };
+  return { storage: options.storage, env, fetch: request, decider: options.decider !== undefined ? options.decider : underTest ? null : environmentDecider(env, request), secrets: createSecretStore({ storage: options.storage, dataDir, env, now }), artifacts, traceRetentionDays: options.traceRetentionDays ?? 30, events: createEventLog(options.storage, now), now, local: options.local ?? false, machineToken: options.machineToken, webRoot: options.webRoot ?? null, dataDir, secureCookies: options.secureCookies ?? false, trustedHeader: options.trustedHeader?.toLowerCase() ?? null, localOwner: options.localOwner ?? null, demoLogin: options.demoLogin ?? null };
 }
 
 export class HttpError extends Error {

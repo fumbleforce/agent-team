@@ -63,8 +63,9 @@ test('a key typed into the app is kept sealed, makes the provider ready at once,
 
 test('a token pasted while connecting something is saved, used for the check, and survives a restart of the coordinator', async () => {
   const env: NodeJS.ProcessEnv = { AGENT_TEAM_NO_CLI_LOGIN: '1' };
+  const TEAM = { id: '5f1e7a2b-0000-4000-8000-000000000002', name: 'Web' };
   const seen: string[] = [];
-  const request = (async (_input: unknown, init?: { headers?: Record<string, string> }) => { seen.push(init?.headers?.authorization ?? ''); return new Response(JSON.stringify({ data: { project: { name: 'Checkout' }, projects: { nodes: [{ id: '9d6c1c2e-0000-4000-8000-000000000001', name: 'Checkout' }] } } }), { status: 200 }); }) as typeof fetch;
+  const request = (async (_input: unknown, init?: { headers?: Record<string, string> }) => { seen.push(init?.headers?.authorization ?? ''); return new Response(JSON.stringify({ data: { project: { name: 'Checkout', teams: { nodes: [TEAM] }, issues: { nodes: [{ id: 'i-1' }] } }, projects: { nodes: [{ id: '9d6c1c2e-0000-4000-8000-000000000001', name: 'Checkout', teams: { nodes: [TEAM] } }] } } }), { status: 200 }); }) as typeof fetch;
   const { coordinator, call, owner } = await boot({ env, fetch: request });
   try {
     const cookie = await owner();
@@ -75,10 +76,11 @@ test('a token pasted while connecting something is saved, used for the check, an
     const field = ((await call('/api/projects/shop/integrations/catalog', { cookie })).json.entries as { kind: string; fields: { key: string; pickable: boolean; choices?: unknown }[] }[]).find(item => item.kind === 'linear')!.fields[0]!;
     assert.deepEqual([field.pickable, field.choices], [true, undefined]);
     assert.match((await call('/api/projects/shop/integrations/choices', { cookie, body: { kind: 'linear', field: 'projectId' } })).json.message, /Paste the Linear API key first/);
-    assert.deepEqual((await call('/api/projects/shop/integrations/choices', { cookie, body: { kind: 'linear', field: 'projectId', token: 'lin_api_0123456789' } })).json.choices, [{ value: values.projectId, label: 'Checkout' }]);
+    assert.deepEqual((await call('/api/projects/shop/integrations/choices', { cookie, body: { kind: 'linear', field: 'projectId', token: 'lin_api_0123456789' } })).json.choices, [{ value: values.projectId, label: 'Checkout (Web)', also: { teamId: TEAM.id } }], 'a project of one team fills in its team');
     // The check uses what was pasted, before anything is saved.
     const checkedNow = (await call('/api/projects/shop/integrations/test', { cookie, body: { kind: 'linear', values, token: 'lin_api_0123456789' } })).json;
     assert.deepEqual([checkedNow.ok, seen.at(-1), env.LINEAR_API_KEY], [true, 'lin_api_0123456789', undefined]);
+    assert.equal(checkedNow.message, 'Reached the Linear project "Checkout" in the Web team: 1 issue to read.');
     assert.equal((await call('/api/projects/shop/integrations/setup', { cookie, body: { kind: 'linear', values, token: 'lin_api_0123456789' } })).status, 200);
     assert.equal(env.LINEAR_API_KEY, 'lin_api_0123456789');
     const connection = ((await call('/api/projects/shop/integrations', { cookie })).json.connections as { name: string; status: string; statusDetail: string }[]).find(item => item.name === 'Linear')!;

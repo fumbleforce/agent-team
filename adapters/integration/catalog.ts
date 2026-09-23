@@ -69,17 +69,26 @@ export const CATALOG: SetupEntry[] = [
   {
     kind: 'linear', title: 'Linear', category: 'issue-boards', target: 'tracker', mode: 'two-way',
     summary: 'Use a Linear project as the task board.',
-    steps: ['In Linear: Settings → Security & access → Personal API keys → New key.'],
-    fields: [{ key: 'projectId', label: 'Project', placeholder: '9d6c1c2e-…', required: true, pattern: '[0-9a-fA-F\\-]{36}', async choices(token, request) {
-      const response = await ok(await request('https://api.linear.app/graphql', { method: 'POST', headers: { authorization: token, 'content-type': 'application/json' }, body: JSON.stringify({ query: '{ projects(first: 100) { nodes { id name } } }' }) }), 'Linear');
-      return ((await response.json()) as { data?: { projects?: { nodes?: { id: string; name: string }[] } } }).data?.projects?.nodes?.map(project => ({ value: project.id, label: project.name })) ?? [];
-    } }],
+    steps: ['In Linear: Settings → Security & access → Personal API keys → New key.', 'Give it access to the team the project belongs to. Labels the team needs (agent:ready, say) are made on first use.'],
+    fields: [
+      { key: 'projectId', label: 'Project', placeholder: '9d6c1c2e-…', required: true, pattern: '[0-9a-fA-F\\-]{36}', async choices(token, request) {
+        const response = await ok(await request('https://api.linear.app/graphql', { method: 'POST', headers: { authorization: token, 'content-type': 'application/json' }, body: JSON.stringify({ query: '{ projects(first: 100) { nodes { id name teams(first: 5) { nodes { id name } } } } }' }) }), 'Linear');
+        const projects = ((await response.json()) as { data?: { projects?: { nodes?: { id: string; name: string; teams?: { nodes?: { id: string; name: string }[] } }[] } } }).data?.projects?.nodes ?? [];
+        // A project of one team makes its issues there; one shared by several names its teams, and the team is typed.
+        return projects.map(project => { const teams = project.teams?.nodes ?? []; return { value: project.id, label: teams.length ? `${project.name} (${teams.map(team => team.name).join(', ')})` : project.name, ...(teams.length === 1 ? { also: { teamId: teams[0]!.id } } : {}) }; });
+      } },
+      { key: 'teamId', filledBy: 'projectId', label: 'Team ID', placeholder: '5f1e7a2b-…', help: 'Only when the project belongs to several teams: the team new issues go to.', pattern: '[0-9a-fA-F\\-]{36}' },
+    ],
     credential: { variable: 'LINEAR_API_KEY', label: 'Linear API key', runsOn: 'coordinator', getAt: 'https://linear.app/settings/account/security', placeholder: 'lin_api_…' },
     async test(values, token, request) {
-      const response = await ok(await request('https://api.linear.app/graphql', { method: 'POST', headers: { authorization: token, 'content-type': 'application/json' }, body: JSON.stringify({ query: 'query Project($id: String!) { project(id: $id) { name } }', variables: { id: values.projectId } }) }), 'Linear');
-      const name = (await response.json() as { data?: { project?: { name?: string } } }).data?.project?.name;
-      if (!name) throw new Error('Linear accepted the key but has no project with that ID. Copy the project\'s UUID, not its name.');
-      return `Reached the Linear project "${name}".`;
+      const response = await ok(await request('https://api.linear.app/graphql', { method: 'POST', headers: { authorization: token, 'content-type': 'application/json' }, body: JSON.stringify({ query: 'query Project($id: String!) { project(id: $id) { name teams(first: 5) { nodes { id name } } issues(first: 50) { nodes { id } } } }', variables: { id: values.projectId } }) }), 'Linear');
+      const project = (await response.json() as { data?: { project?: { name?: string; teams?: { nodes?: { id: string; name: string }[] }; issues?: { nodes?: unknown[] } } } }).data?.project;
+      if (!project?.name) throw new Error('Linear accepted the key but has no project with that ID. Copy the project\'s UUID, not its name.');
+      const teams = project.teams?.nodes ?? [], team = values.teamId ? teams.find(item => item.id === values.teamId) : teams.length === 1 ? teams[0] : undefined;
+      if (values.teamId && !team) throw new Error(`The project "${project.name}" does not belong to that team.`);
+      if (!team) throw new Error(`The project "${project.name}" belongs to ${teams.length ? 'several teams' : 'no team'}. Name the team new issues go to.`);
+      const count = project.issues?.nodes?.length ?? 0;
+      return `Reached the Linear project "${project.name}" in the ${team.name} team: ${count === 50 ? '50 or more' : count} issue${count === 1 ? '' : 's'} to read.`;
     },
   },
   {

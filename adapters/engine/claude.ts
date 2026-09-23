@@ -1,7 +1,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import type { TraceStepInput } from '@agent-team/protocol';
-import { allowlistedEnvironment, mcpServers, type EngineAdapter, type EngineStep, type ParseState } from './contract.ts';
+import { allowlistedEnvironment, mcpServers, type DiscoveredModel, type EngineAdapter, type EngineStep, type ParseState } from './contract.ts';
 
 const LIMIT = /rate.?limit|usage limit|limit reached|hit your limit|out of (?:extra )?usage|too many requests|\b429\b/i;
 const READ_TOOLS = ['Read', 'Grep', 'Glob'];
@@ -12,6 +12,23 @@ const DENIED = ['Bash(git push:*)', 'Bash(git reset --hard:*)', 'Bash(gh pr merg
 type Block = { type?: string; text?: string; name?: string; input?: Record<string, unknown> };
 type StreamEvent = { type?: string; subtype?: string; session_id?: string; is_error?: boolean; result?: string; total_cost_usd?: number; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number }; message?: { content?: Block[]; usage?: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number } }; rate_limit_info?: { status?: string } };
 
+const HANDSHAKE = { type: 'control_request', request_id: 'models', request: { subtype: 'initialize' } };
+type Offered = { value?: unknown; displayName?: unknown; description?: unknown; supportedEffortLevels?: unknown };
+// The models of the handshake's answer. "default" is left out: it is what a turn that names no model gets anyway.
+function listedModels(output: string): DiscoveredModel[] {
+  for (const line of output.split('\n')) {
+    let event: { type?: string; response?: { request_id?: string; response?: { models?: Offered[] } } };
+    try { event = JSON.parse(line); } catch { continue; }
+    if (event.type !== 'control_response' || event.response?.request_id !== HANDSHAKE.request_id) continue;
+    return (event.response.response?.models ?? []).flatMap(model => {
+      if (typeof model.value !== 'string' || !/^\S{1,120}$/.test(model.value) || model.value === 'default') return [];
+      const efforts = Array.isArray(model.supportedEffortLevels) ? model.supportedEffortLevels.filter((word): word is string => typeof word === 'string' && /^[a-z]{2,12}$/.test(word)) : [];
+      return [{ id: model.value, name: typeof model.displayName === 'string' && model.displayName ? model.displayName.slice(0, 120) : model.value, ...(typeof model.description === 'string' && model.description ? { note: model.description.slice(0, 160) } : {}), ...(efforts.length ? { efforts } : {}) }];
+    });
+  }
+  return [];
+}
+
 const detail = (input: Record<string, unknown> = {}) => String(input.description ?? input.command ?? input.file_path ?? input.pattern ?? input.query ?? '').replace(/\s+/g, ' ').slice(0, 120);
 
 export const claude: EngineAdapter = {
@@ -21,9 +38,12 @@ export const claude: EngineAdapter = {
 
   // Subscription billing: no key, token, base URL or cloud switch may select metered billing behind the owner's back.
   environment: env => allowlistedEnvironment(env),
-  // The tool's help names the effort levels it takes and the aliases that always point at its newest models.
-  async discover({ help }) {
-    const text = (await help()).replace(/\s+/g, ' ');
+  // The tool's opening handshake names the models this sign-in may use, in the tool's own words and with the effort levels each takes.
+  // It calls no model. A tool too old to answer it still names, in its help, the effort levels and the aliases for its newest models.
+  async discover({ run }) {
+    const models = listedModels(await run(['--print', '--input-format', 'stream-json', '--output-format', 'stream-json', '--verbose', '--setting-sources', 'user', '--strict-mcp-config'], `${JSON.stringify(HANDSHAKE)}\n`));
+    if (models.length) return { models, efforts: [...new Set(models.flatMap(model => model.efforts ?? []))] };
+    const text = (await run(['--help'])).replace(/\s+/g, ' ');
     const efforts = /--effort <[^>]+>[^()]*\(([^)]+)\)/.exec(text)?.[1]?.split(',').map(word => word.trim()).filter(word => /^[a-z]{2,12}$/.test(word)) ?? [];
     const aliases = [.../'([a-z][a-z0-9-]{1,20})'/g[Symbol.matchAll](/--model <[^>]+>.*?alias[^()]*\(([^)]*)\)/.exec(text)?.[1] ?? '')].map(match => match[1]!);
     return { models: aliases.map(id => ({ id, name: id, note: 'always the newest of its family' })), efforts };

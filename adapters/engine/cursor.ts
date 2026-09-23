@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from 'node:util';
 import { allowlistedEnvironment, type EngineAdapter } from './contract.ts';
 
 const LIMIT = /rate.?limit|usage limit|too many requests|\b429\b|quota/i;
@@ -10,6 +11,12 @@ export const cursor: EngineAdapter = {
   bin: 'agent',
   capabilities: { resume: 'id', mcp: 'none', toolPolicy: 'prompt', bounded: false, structuredOutput: false, usageLimits: 'detect', cost: 'none' },
   environment: env => allowlistedEnvironment(env),
+  // The tool lists the models this account may use, one "id - Name" a line; "(current)" and "(default)" marks are dropped.
+  async discover({ run }) {
+    const lines = stripVTControlCharacters(await run(['models'])).split(/\r?\n/);
+    const models = lines.flatMap(line => { const found = /^\s*([a-z0-9][\w.:-]{0,119})\s+-\s+(.+?)\s*(?:\((?:current|default)\)\s*)*$/i.exec(line); return found ? [{ id: found[1]!, name: found[2]!.slice(0, 120) }] : []; });
+    return { models, efforts: [] };
+  },
 
   prepare(spec, _turnDir, env) {
     return {

@@ -56,6 +56,8 @@ const HOSTS = {
     answer: (call: Call) => /IssueScope/.test(call.body.query) ? { data: { issue: { id: 'uuid-7', team: TEAM, labels: { nodes: [{ id: 'l-idea', name: 'Idea' }] } } } }
       : /TeamScope/.test(call.body.query) ? { data: { team: TEAM } }
         : /IssueComments/.test(call.body.query) ? { data: { issue: { comments: { nodes: [{ id: 'c-1', body: 'Seen on Safari too', createdAt: '2026-01-02T10:00:00Z', user: { name: 'owner' } }, { id: 'c-2', body: '  ', createdAt: '2026-01-02T11:00:00Z' }] } } } }
+          : /query Labels/.test(call.body.query) ? { data: { issueLabels: { nodes: call.body.variables.name === 'Idea' ? [{ id: 'l-idea', name: 'Idea', team: { id: 'team-1' } }, { id: 'l-other', name: 'Idea', team: { id: 'team-2' } }] : [] } } }
+            : /CreateLabel/.test(call.body.query) ? { data: { issueLabelCreate: { success: true, issueLabel: { id: 'l-ready' } } } }
           : /UpdateIssue/.test(call.body.query) ? { data: { issueUpdate: { success: true } } } : /mutation Comment/.test(call.body.query) ? { data: { commentCreate: { success: true, comment: { id: 'c-9' } } } }
             : { data: { issueCreate: { success: true, issue: { identifier: 'ACM-12', url: 'https://tracker.example/ACM-12' } } } },
     wroteState: (calls: Call[]) => { const update = calls.find(call => /UpdateIssue/.test(call.body.query))!; return [update.body.variables.id === 'uuid-7', update.body.variables.input.stateId]; },
@@ -106,4 +108,22 @@ test('an approved idea reads as approved on both: by its label where states are 
   const linear = trackerClient('linear', { env: { LINEAR_API_KEY: 'lin-key' }, fetch: (async () => json({ data: { issues: { nodes: [{ identifier: 'ACM-1', title: 'Idea', state: { name: 'Todo', type: 'unstarted' }, labels: { nodes: [{ name: 'Idea' }] }, parent: null, inverseRelations: { nodes: [{ type: 'blocks', issue: { state: { type: 'started' } } }] } }], pageInfo: { hasNextPage: false, endCursor: null } } } })) as typeof fetch })!;
   const [blocked] = (await linear.snapshot({ projectId: 'project-1' })).allIssues;
   assert.deepEqual([blocked!.state.name, blocked!.blocked, blocked!.child], ['Todo', true, false]);
+});
+
+test('linear: a missing label is made in the team, the team comes from the project when the manifest names none, and every comment page is read', async () => {
+  const pages = [{ nodes: [{ id: 'c-1', body: 'First', createdAt: '2026-01-02T10:00:00Z', user: { name: 'owner' } }], pageInfo: { hasNextPage: true, endCursor: 'next' } }, { nodes: [{ id: 'c-2', body: 'Second', createdAt: '2026-01-02T11:00:00Z', user: null }], pageInfo: { hasNextPage: false, endCursor: null } }];
+  const http = recorded(call => /ProjectTeams/.test(call.body.query) ? { data: { project: { teams: { nodes: [{ id: 'team-1' }] } } } }
+    : /TeamScope/.test(call.body.query) ? { data: { team: TEAM } }
+      : /query Labels/.test(call.body.query) ? { data: { issueLabels: { nodes: [{ id: 'l-shared', name: call.body.variables.name, team: null }] } } }
+        : /IssueComments/.test(call.body.query) ? { data: { issue: { comments: pages[call.body.variables.after ? 1 : 0] } } }
+          : { data: { issueCreate: { success: true, issue: { identifier: 'ACM-13', url: null } } } });
+  const client = trackerClient('linear', { env: { LINEAR_API_KEY: 'lin-key' }, fetch: http.fetch })!;
+  assert.equal((await client.createIssue({ projectId: 'project-1' }, { title: 'Idea', body: 'Why', labels: ['Idea'], state: 'Backlog' })).identifier, 'ACM-13');
+  const input = http.calls.at(-1)!.body.variables.input;
+  assert.deepEqual([input.teamId, input.labelIds], ['team-1', ['l-shared']], 'a workspace label is used as it is, in the project\'s one team');
+  await assert.rejects(client.createIssue({ projectId: 'project-1', teamId: 'team-1' }, { title: 'Idea', body: 'Why', labels: [], state: 'Nowhere' }), /no workflow state named "Nowhere"/);
+  assert.deepEqual((await client.comments({}, 'ACM-7', null)).map(comment => comment.body), ['First', 'Second']);
+
+  const refused = trackerClient('linear', { env: { LINEAR_API_KEY: 'lin-key' }, fetch: (async () => json({ errors: [{ message: 'lin-key is bad' }] }, 401)) as typeof fetch })!;
+  await assert.rejects(refused.snapshot({ projectId: 'project-1' }), error => /did not accept the API key \(401\)/.test((error as Error).message) && !/lin-key/.test((error as Error).message));
 });

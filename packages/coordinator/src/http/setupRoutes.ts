@@ -103,7 +103,9 @@ export function mountSetupRoutes(app: Hono<any>, deps: Deps) {
       const row = await context.storage.db.selectFrom('projects').select('manifest').where('id', '=', project.id).executeTakeFirstOrThrow();
       const manifest = JSON.parse(row.manifest) as { tracker?: unknown; scm?: unknown; delivery?: Record<string, unknown> };
       const kind = entry.adapterKind ?? entry.kind;
-      if (entry.target === 'tracker') manifest.tracker = { kind, ...values };
+      // Settings written by hand for the same board (its ready label, say) stay; a field left empty does not blank one out.
+      const before = (manifest.tracker ?? {}) as Record<string, unknown>;
+      if (entry.target === 'tracker') manifest.tracker = { ...(before.kind === kind ? before : {}), kind, ...Object.fromEntries(Object.entries(values).filter(([, value]) => value !== '')) };
       else { manifest.scm = { kind }; manifest.delivery = { requiredChecks: [], autoMergeAuthorized: false, ...manifest.delivery, repository: values.repository, baseBranch: values.baseBranch ?? 'main' }; }
       await context.storage.db.updateTable('projects').set({ manifest: JSON.stringify(manifest) }).where('id', '=', project.id).execute();
     }

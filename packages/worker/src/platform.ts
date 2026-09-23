@@ -33,27 +33,28 @@ export function installed(name: string, { env = process.env, platform = process.
   return searchPath(env).split(':').some(directory => { try { return directory !== '' && statSync(path.posix.join(directory, name)).isFile(); } catch { return false; } });
 }
 type Listed = { id: string; name: string; note?: string; efforts?: string[] };
-type Engine = { bin: string; defaultModel?(env: NodeJS.ProcessEnv): string | null; discover?(host: { env: NodeJS.ProcessEnv; help(): Promise<string> }): Promise<{ models: Listed[]; efforts: string[] }> };
+type Engine = { bin: string; defaultModel?(env: NodeJS.ProcessEnv): string | null; discover?(host: { env: NodeJS.ProcessEnv; run(args: string[], input?: string): Promise<string> }): Promise<{ models: Listed[]; efforts: string[] }> };
 export interface Readiness { engines: string[]; variables: string[]; models: Record<string, Listed[]>; efforts: Record<string, string[]>; runs?: { engine: string; model: string | null } }
 export function readiness(engines: Record<string, Engine>, variables: readonly string[], host: Host & { defaultEngine?: string } = {}): Readiness {
   const env = host.env ?? process.env;
   const runs = host.defaultEngine && engines[host.defaultEngine] ? { runs: { engine: host.defaultEngine, model: engines[host.defaultEngine]!.defaultModel?.(env)?.slice(0, 120) ?? null } } : {};
   return { engines: Object.keys(engines).filter(name => installed(engines[name]!.bin, host)), variables: variables.filter(name => Boolean(env[name])), models: {}, efforts: {}, ...runs };
 }
-// What each tool says it offers, asked once when the worker starts: from the tool's own files, and from its help text where it is installed.
+// What each tool says it offers, asked once when the worker starts: from the tool's own files, and from what it prints where it is installed.
 // A tool that does not answer within a few seconds simply says nothing.
 export async function discovered(engines: Record<string, Engine>, ready: Readiness, host: Host = {}): Promise<Readiness> {
   const env = host.env ?? process.env, models: Record<string, Listed[]> = {}, efforts: Record<string, string[]> = {};
   await Promise.all(Object.entries(engines).map(async ([name, engine]) => {
     if (!engine.discover) return;
-    const help = () => (ready.engines.includes(name) ? new Promise<string>(resolve => {
-      const child = spawnCommand(engine.bin, ['--help'], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+    const run = (args: string[], input?: string) => (ready.engines.includes(name) ? new Promise<string>(resolve => {
+      const child = spawnCommand(engine.bin, args, { env, stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe'] });
       let out = '';
       const timer = setTimeout(() => { killTree(child.pid); resolve(out); }, 8000);
-      child.stdout!.on('data', chunk => { out = (out + String(chunk)).slice(0, 200_000); }); child.stderr!.on('data', chunk => { out = (out + String(chunk)).slice(0, 200_000); });
+      child.stdout!.on('data', chunk => { out = (out + String(chunk)).slice(0, 500_000); }); child.stderr!.on('data', chunk => { out = (out + String(chunk)).slice(0, 500_000); });
       child.on('error', () => { clearTimeout(timer); resolve(''); }); child.on('close', () => { clearTimeout(timer); resolve(out); });
+      if (input !== undefined) { child.stdin!.on('error', () => {}); child.stdin!.end(input); }
     }) : Promise.resolve(''));
-    const found = await engine.discover({ env, help }).catch(() => ({ models: [], efforts: [] }));
+    const found = await engine.discover({ env, run }).catch(() => ({ models: [], efforts: [] }));
     if (found.models.length) models[name] = found.models.slice(0, 100);
     if (found.efforts.length) efforts[name] = found.efforts.slice(0, 12);
   }));

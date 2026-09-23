@@ -13,6 +13,11 @@ export const opencode: EngineAdapter = {
   bin: 'opencode',
   capabilities: { resume: 'id', mcp: 'http', toolPolicy: 'config', bounded: true, structuredOutput: false, usageLimits: 'detect', cost: 'tokens' },
   environment: env => allowlistedEnvironment(env, ['OPENROUTER_API_KEY', 'OLLAMA_HOST']),
+  // The tool lists every model of the providers set up in it, one "provider/model" a line.
+  async discover({ run }) {
+    const models = [...new Set((await run(['models'])).split(/\r?\n/).map(line => line.trim()).filter(line => /^[\w.-]+\/\S{1,100}$/.test(line)))];
+    return { models: models.map(id => ({ id, name: id })), efforts: [] };
+  },
 
   prepare(spec, turnDir, env) {
     const readOnly = spec.toolProfile !== 'write';

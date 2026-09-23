@@ -3,6 +3,7 @@ import type { TraceStepInput, TurnKind } from '@agent-team/protocol';
 
 export interface DiscoveredModel { id: string; name: string; note?: string; efforts?: string[] }
 export interface Discovered { models: DiscoveredModel[]; efforts: string[] }
+export interface DiscoverHost { env: NodeJS.ProcessEnv; run(args: string[], input?: string): Promise<string> }
 
 export interface EngineCapabilities {
   resume: 'id' | 'none';
@@ -61,8 +62,9 @@ export interface EngineAdapter {
   environment(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv;
   // What the tool itself says it offers on this machine: its models (each with the effort levels it takes, when the tool says so per model)
   // and the effort levels it takes at all. Nothing of this is written down here: it is read from the tool's own files and help text on the
-  // worker, once at its start, and reported with its readiness. `help` runs the tool with --help and gives its output.
-  discover?(host: { env: NodeJS.ProcessEnv; help(): Promise<string> }): Promise<Discovered>;
+  // worker, once at its start, and reported with its readiness. `run` starts the tool with the given arguments (and `input` on stdin),
+  // and gives what it printed; a tool that is not installed or does not answer within a few seconds gives an empty string.
+  discover?(host: DiscoverHost): Promise<Discovered>;
   // The model the tool uses on this machine when a turn names none, as its own settings say. Null when they say nothing.
   defaultModel?(env: NodeJS.ProcessEnv): string | null;
   prepare(spec: TurnSpec, turnDir: string, env: NodeJS.ProcessEnv): PreparedTurn;

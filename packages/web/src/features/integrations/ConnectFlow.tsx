@@ -11,7 +11,9 @@ export interface CatalogEntry { kind: string; title: string; category: string; s
 export const CATEGORY: Record<string, string> = { code: 'Code', 'issue-boards': 'Task boards', comms: 'Chat', storage: 'Documents', business: 'Business tools', 'ai-workspaces': 'AI workspaces', media: 'Media', other: 'Anything else' };
 
 // A field that is picked from the product's own list once its token is known. Until then, and if the list cannot be had, it is typed.
-function PickField({ slug, kind, field, error, ready, autoFocus }: { slug: string; kind: string; field: SetupField; error: string | undefined; ready: boolean; autoFocus: boolean }) {
+// The fields it fills (`followers`) are asked for only when the picked item does not fill them.
+function PickField({ slug, kind, field, followers, errors, ready, autoFocus }: { slug: string; kind: string; field: SetupField; followers: SetupField[]; errors: Record<string, string>; ready: boolean; autoFocus: boolean }) {
+  const error = errors[field.key];
   const [choices, setChoices] = useState<Choice[] | null>(null), [message, setMessage] = useState<string | null>(null), [busy, setBusy] = useState(false), [value, setValue] = useState('');
   const load = async (form: HTMLFormElement | null) => {
     const token = String(form ? new FormData(form).get('token') ?? '' : '');
@@ -21,13 +23,17 @@ function PickField({ slug, kind, field, error, ready, autoFocus }: { slug: strin
   };
   useEffect(() => { if (ready) void load(null); }, [ready]);
   const also = choices?.find(choice => choice.value === value)?.also ?? {};
+  const unfilled = choices && value ? followers.filter(follower => also[follower.key] === undefined) : [];
   return (
+    <>
     <Field label={field.label} error={error ?? message ?? undefined}>
       {choices
         ? <Select name={field.key} required={field.required} value={value} onChange={event => setValue(event.target.value)}><option value="">Choose…</option>{choices.map(choice => <option key={choice.value} value={choice.value}>{choice.label}</option>)}</Select>
         : <div className="flex gap-2"><Input name={field.key} placeholder={field.placeholder} required={field.required} autoFocus={autoFocus} /><Button disabled={busy} onClick={event => { void load(event.currentTarget.closest('form')); }}>{busy ? 'Loading…' : 'Pick'}</Button></div>}
       {Object.entries(also).map(([key, extra]) => <input key={key} type="hidden" name={key} value={extra} />)}
     </Field>
+    {unfilled.map(follower => <Field key={follower.key} label={follower.label} help={follower.help} error={errors[follower.key]}><Input name={follower.key} placeholder={follower.placeholder} /></Field>)}
+    </>
   );
 }
 
@@ -95,7 +101,7 @@ export function ConnectFlow({ slug, connectedKinds, onDone, only, label = '+ Con
           {here && (entry.credentialPresent && entry.credentialSource !== 'saved here'
             ? <StatusLine tone="working">Signed in through {entry.credentialSource}</StatusLine>
             : <SecretField name="token" label={entry.credential!.label} saved={entry.credentialPresent === true} getAt={entry.credential!.getAt} placeholder={entry.credential!.placeholder} error={errors.token} />)}
-          {asked.filter(field => field.pickable).map(field => <PickField key={field.key} slug={slug} kind={entry.kind} field={field} error={errors[field.key]} ready={entry.credentialPresent === true} autoFocus={false} />)}
+          {asked.filter(field => field.pickable).map(field => <PickField key={field.key} slug={slug} kind={entry.kind} field={field} followers={asked.filter(other => other.filledBy === field.key)} errors={errors} ready={entry.credentialPresent === true} autoFocus={false} />)}
           {asked.filter(field => !field.pickable && !(field.filledBy && asked.some(other => other.pickable && other.key === field.filledBy))).map((field, index) => <Field key={field.key} label={field.required ? field.label : `${field.label} (optional)`} help={field.help} error={errors[field.key]}><Input name={field.key} placeholder={field.placeholder} required={field.required} autoFocus={index === 0 && !here} defaultValue={manual ? entry.prefill[field.key] ?? '' : ''} /></Field>)}
           {entry.steps.length > 0 && (here ? !entry.credentialPresent : true) && <More label={here ? 'Where do I get this?' : 'How it signs in'}><Steps items={entry.steps} /></More>}
           {check && <StatusLine boxed tone={check.ok ? 'working' : 'stop'}>{check.message}</StatusLine>}

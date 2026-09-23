@@ -2,7 +2,7 @@ import { newId, type OrgRole, type ProjectRole } from '@agent-team/protocol';
 import type { z } from 'zod';
 import type { AcceptInviteBody, InviteBody, SetupBody } from '@agent-team/protocol';
 import type { Tx } from '@agent-team/storage';
-import { forbidden, HttpError, type Context } from '../context.ts';
+import { forbidden, HttpError, type Context, type LocalOwner } from '../context.ts';
 import { createLoginLimiter, loginSubjects } from './rateLimit.ts';
 import type { Viewer } from './rbac.ts';
 import { hashPassword, hashToken, newToken, verifyPassword } from './secrets.ts';
@@ -19,6 +19,8 @@ export interface Accounts {
   sessionFor(userId: string, method?: string): Promise<string>;
   // The email a loopback identity proxy vouches for: a known active account signs in, a pending invitation is accepted, anyone else is refused.
   trustedSession(email: string): Promise<string | null>;
+  // The owner of a coordinator that is only for the person at this machine: the one there is, or one made now without a password.
+  localOwner(input: LocalOwner): Promise<string>;
   logout(sessionToken: string): Promise<void>;
   viewer(sessionToken: string | undefined): Promise<Viewer | null>;
   invite(by: Viewer, input: z.infer<typeof InviteBody>): Promise<string>;
@@ -109,6 +111,23 @@ export function createAccounts(context: Context): Accounts {
       if (!joined) return null;
       events.published(joined.published);
       return this.sessionFor(joined.userId, 'trusted_header');
+    },
+
+    async localOwner(input) {
+      const existing = await storage.db.selectFrom('users').select('id').where('org_role', '=', 'owner').where('status', '=', 'active').orderBy('created_at').executeTakeFirst();
+      if (existing) return existing.id;
+      const userId = newId(now());
+      const published = await storage.transaction(async tx => {
+        if (await tx.selectFrom('users').select('id').where('org_role', '=', 'owner').executeTakeFirst()) return null;
+        // A row left from before anyone owned the organization is kept, with its settings, and takes the new name.
+        const org = await tx.selectFrom('org').select(['id']).executeTakeFirst();
+        if (org) await tx.updateTable('org').set({ name: input.orgName }).where('id', '=', org.id).execute();
+        else await tx.insertInto('org').values({ id: newId(now()), name: input.orgName, accent: 'amber', currency: 'EUR', settings: '{}', created_at: now() }).execute();
+        await tx.insertInto('users').values({ id: userId, email: input.email.toLowerCase(), name: input.name, password_hash: null, org_role: 'owner', status: 'active', created_at: now(), last_login_at: now() }).execute();
+        return events.append(tx, [{ type: 'auth.owner_created', category: 'audit', actorKind: 'user', userId, payload: { method: 'local' } }]);
+      });
+      if (published) { events.published(published); return userId; }
+      return (await storage.db.selectFrom('users').select('id').where('org_role', '=', 'owner').orderBy('created_at').executeTakeFirstOrThrow()).id;
     },
 
     async logout(sessionToken) {

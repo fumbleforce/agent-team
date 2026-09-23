@@ -37,6 +37,16 @@ export function clientAddress(c: Hc): string {
   return (local ? c.req.header('x-forwarded-for')?.split(',')[0]?.trim() : undefined) || remote;
 }
 
+// A request from a browser on this machine to this machine by its loopback name: the socket is loopback (a proxy's forwarded address is not
+// looked at), the Host header names loopback, so a page on another name that resolves here is refused, and the browser does not call it cross-site.
+export function fromThisMachine(c: Hc): boolean {
+  const remote = (c.env as { incoming?: { socket?: { remoteAddress?: string } } } | undefined)?.incoming?.socket?.remoteAddress ?? 'local';
+  const socket = remote === 'local' || remote === '::1' || remote.startsWith('127.') || remote.startsWith('::ffff:127.');
+  const host = /^(?:127\.0\.0\.1|localhost|\[::1\])(?::\d{1,5})?$/.test(c.req.header('host') ?? '');
+  const site = c.req.header('sec-fetch-site');
+  return socket && host && (site === undefined || site === 'same-origin' || site === 'none');
+}
+
 // `?after=&limit=`: the cursor is whatever the list's `next` last returned.
 export function pageOf(c: Hc): PageQuery {
   const parsed = PageQuery.safeParse({ after: c.req.query('after') || undefined, limit: c.req.query('limit') || undefined });

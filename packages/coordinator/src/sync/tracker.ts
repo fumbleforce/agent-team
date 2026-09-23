@@ -189,6 +189,8 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
       const existing = new Map((await tx.selectFrom('tasks').select(['id', 'key', 'title', 'brief', 'state', 'tag', 'blocked_reason']).where('project_id', '=', projectId).where('source', '=', 'tracker').execute()).map(task => [task.key, task]));
       // A local move made after the outbound pass has not reached the tracker yet; this poll must not undo it.
       const pending = new Set([...out.pushed, ...(await tx.selectFrom('events').select('task_id').where('project_id', '=', projectId).where('type', '=', 'task.state_changed').where('seq', '>', out.cursor).execute()).map(row => row.task_id ?? '')]);
+      const clashing = allIssues.map(issue => issue.identifier).filter(key => /^(TASK|ISSUE)-/.test(key));
+      const taken = new Set(clashing.length ? (await tx.selectFrom('tasks').select('key').where('project_id', '=', projectId).where('source', '!=', 'tracker').where('key', 'in', clashing).execute()).map(task => task.key) : []);
       const drafts: EventDraft[] = [];
       let created = 0, updated = 0, canceled = 0, comments = 0, approved = 0;
       const agree = (taskId: string, column: string) => tx.updateTable('external_refs').set({ synced_state: column }).where('entity_type', '=', 'task').where('entity_id', '=', taskId).where('system', '=', system).execute();
@@ -205,6 +207,8 @@ export function createTrackerSync(context: Context, turns: Pick<Turns, 'enqueue'
           // Everything in the tracker is on the board. An idea its owner has not approved, or one on hold, is shown held in the
           // backlog with the reason; holding it is what keeps it from being worked on, not hiding it.
           if (state === 'canceled') continue;
+          // A key the app gave one of its own tasks (a team keyed TASK or ISSUE, say) cannot be taken; the issue is left out rather than failing the poll.
+          if (taken.has(issue.identifier)) continue;
           const heldBecause = approval && !terminal(issue) && (!approval.allowed || unprepared.has(issue.identifier)) ? (approval.allowed ? 'Approved; being marked ready' : approval.reason) : null;
           const id = newId(now());
           await tx.insertInto('tasks').values({ id, project_id: projectId, key: issue.identifier, source: 'tracker', title: issue.title, brief: issue.description ?? '', tag, priority: index, milestone_id: null, state: heldBecause ? 'backlog' : state, assignee_agent_id: null, author_agent_id: null, branch: null, head_sha: null, pr_url: null, blocked_reason: heldBecause, created_at: now(), updated_at: now() }).execute();

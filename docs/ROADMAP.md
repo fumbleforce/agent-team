@@ -8,7 +8,7 @@ A project that improves itself. The team finds what is worth doing, does it, che
 
 The team is better than the best single model working alone, and much cheaper. It gets there by being several different minds rather than one large one: seats whose prompts are deliberately unlike each other (the builder, the one who tries to break it, the one who asks whether it is what was wanted, the one who counts the cost), that do not see each other's answers before giving their own, and that check each other's work. Most of the tokens go to open-weight models; a frontier model is used where the numbers show it pays. "Better than one model alone" is measured against Claude Fable 5.1 given the same task, tools and time, and it is a claim we do not make until the scorecard shows it.
 
-The team also improves itself. It looks at its own numbers and changes how it works: who is on it, what each seat is told, and which steps the process has, including cutting steps that do not pay for themselves. Its agents think critically. They are given the goal, the constraints and what done means, and are expected to question a brief that is wrong, not to walk through a long list of steps.
+The team also improves itself. It remembers what it learns (about the code, the product, the owner, and what failed and why), keeps that memory true as things change, and brings the right part of it to each turn, so nothing has to be found out twice. It looks at its own numbers and changes how it works: who is on it, what each seat is told, and which steps the process has, including cutting steps that do not pay for themselves. Its agents think critically. They are given the goal, the constraints and what done means, and are expected to question a brief that is wrong, not to walk through a long list of steps.
 
 The team is not only for code. A marketing manager that owns a campaign brief is as much the target as a senior developer that owns a change. Agents do their work through scoped tools and a working folder; general control of a computer is not part of the plan.
 
@@ -69,6 +69,7 @@ Baselines are empty because nothing has been measured. Milestone 0 fills them in
 | P3 | Gap between one turn of a task and the next, when nothing blocks | From a turn's finish to the next turn's start, same task | not measured; at least 8 minutes by construction | median under 30 seconds, 90th percentile under 2 minutes |
 | P4 | Cost of a finished task | Cost entries over done tasks, in dollars; and tokens per feedback block | not measured | set after the baseline; feedback stays within its 3k-token packet |
 | P5 | Accepted at first review | Tasks approved with no change requested, over tasks reviewed | not measured | 70 % or more |
+| P6 | Work held by one provider | Minutes that queued work waited on a limited, signed-out or unavailable provider while another connected provider could have run it | not measured; nothing moves such work today | 90th percentile under 5 minutes |
 | **Delivery** | | | | |
 | D1 | Started work that gets finished | Tasks done within 7 days of their first work turn, over tasks that had one | not measured | 85 % or more |
 | D2 | Finished work that comes back | Done tasks with a linked follow-up issue or a reopening within 14 days | not measured | 10 % or fewer |
@@ -77,11 +78,17 @@ Baselines are empty because nothing has been measured. Milestone 0 fills them in
 | O1 | Every waiting task says why | Open tasks without a running turn that show one typed reason and who acts next, over all such tasks | not measured | 100 % |
 | O2 | Every turn can be read afterwards | Finished turns with a complete trace (steps, tools called, cost, outcome) | not measured | 100 % |
 | O3 | The scorecard is current | Age of the newest figure on the scorecard | no scorecard | under 5 minutes |
+| O4 | The owner hears of it | Needs-you items and system problems (no worker, an engine signed out, a provider limited while work waits, a failing sync, a budget reached) that reached the owner outside the app within 5 minutes, over all of them | nothing reaches the owner outside the app | 100 % |
 | **Safety** | | | | |
 | S1 | The invariants of `AGENTS.md` hold | Violations found by the seeded simulation in CI, and by the same checks run on real data | 0 in the simulation; never checked on real data | 0 in both |
 | S2 | Nothing is published or merged without authorization | Publishes and merges with no committed authorization and no recorded approvals behind them | not measured | 0 |
 | S3 | Quarantines | Per 100 turns, and the median time until a person releases one | not measured | under 1 per 100 turns; the platform itself releases one only when the worker that ran the turn has come back and ended its process |
 | S4 | Spending stays inside its caps | Agents or projects that spent past a cap | not measured | 0 |
+| **Memory** | | | | |
+| M1 | Memory that pays | Reference pairs: a task, then a related one on the same codebase. The second task's score, turns and cost with memory from the first, over the same without it | not measured | score holds, turns and cost 30 % lower or more |
+| M2 | Mistakes made twice | Review findings and failed checks that repeat one a memory of the project already records, per 100 done tasks | not measured | falling month over month |
+| M3 | Memory kept true | Of the active memories, the share that duplicate another or that later work contradicted, by a blind sample graded each month | not measured | under 10 % |
+| M4 | What memory costs | Model spend on writing and upkeep of memory per done task, and memory tokens a turn carries, per kind of turn | not measured | shown, not judged; judged by M1 |
 | **The decision model** | | | | |
 | C1 | Sure reads the PM overturned | Of the decision model's reads of a report where it was sure (0.85 or more) of the kind or the fitting seat, the share where the PM's triage decided otherwise | not measured | 10 % or fewer |
 | C2 | What a read costs | Dollars per thousand reads, from the model's own token counts at list price; shown with reads per finished task | not measured | shown, not judged |
@@ -103,6 +110,12 @@ What is built, as opposed to what is measured. A milestone's "done when" is abou
 | 5 Compute that is separate and disposable | The hosted control plane is given its launcher: `deploy aws` records where, from which image and as whom workers start, the host's entrypoint reads it, and queued work that no worker serves starts one, which is stopped when the work is done. The control plane host still runs no engine. A launched worker runs one working agent at a time unless the deployment's `worker.lanes` says otherwise. Deployments live in their project's folder, one AWS account and profile each | Never deployed from this code, so the 90 seconds from queued to first step, and the cost per task by where it ran, are unmeasured |
 | 6 A team that changes how it works | The way of working is a versioned document per project: what a kind of turn is told (in place of the shipped instruction) and three numbers of the process (turns without change before the PM is brought in, turns before the PM checks in, reviewers of a document). Three new kinds of change: a role's text, a turn's instructions, a process number, each carrying a trial (the scorecard figure it should move, which way, for how many days). The seat that staffs the team may make them by itself only when the owner turned that on (`delegation_rules.process.decides`, off as shipped); otherwise they wait as proposals. A trial takes effect at once and is judged when its time is up against the same figure over as long a time before: kept if it moved the stated way, put back if not or if it could not be measured, with the verdict in the discussion. Rows I1 and I2 count them. The approvals a change needs before it merges stay in code and are not on offer | I1 and I2 on a real project: nothing yet. No step of the change process itself can be cut by the team, by design of this first version |
 | 7 A project that improves itself | Standing duties: the PM (`duty.set`) or a person (`/api/projects/:slug/duties`) gives a seat a recurring responsibility; each time it comes round it opens a task for its owner and starts them on it, and waits while the last one is still open. An idea may name the scorecard figure it should move; the weekly retro now lists the figures that miss their target and, for each of the team's own ideas finished that week, whether its figure moved as said. Rows A4 (what a person's time goes to), A5 (finished work the team thought of itself) and A6 (ideas the owner took up) are counted | The month on a real project that this milestone is judged by has not been run |
+| 8 The main path closes without a person | Not started | |
+| 9 Memory that improves itself | Not started | |
+| 10 The owner hears about it | Not started | |
+| 11 Every engine does the whole job | Not started | |
+| 12 Hosted for real | Not started | |
+| 13 Lighter turns, and a fair test of the team | Not started | |
 
 ### First measurements, 2026-09-21
 
@@ -124,9 +137,23 @@ Mean 0.97, $2.82 in all. What this says:
 - Three harder tasks were added the same day (`money-allocation`, `iso-week-wrong-example`, `pricing-announcement`), each check proven against a right and a wrong solution. One seat alone then scored 1.00 on the first two as well, in one turn each ($1.08 in 130 s, $0.52 in 53 s), and named the wrong example in the brief; the third was not run. **So the set still has no room above one strong model.** Against a frontier model alone, quality (T1) can at best be matched on tasks like these; what a team of cheaper models can win here is cost (T2) at equal quality. Showing a quality gain needs work of another size: tasks that take hours, across a real codebase, where one context is not enough.
 - T1, T2, T3, T4, T5, T6, T7 and every figure that needs a project running for days or weeks are still unmeasured.
 
+### Findings, 2026-09-23
+
+Read from the code, and from the team's first stretch of work on this repository: 69 turns and 11 tasks, one of them done, two stopped with nowhere to publish, five held for the owner or for a repair. Milestones 8 to 13 answer them.
+
+- **A default project never merges.** The merge gate requires `delivery.autoMergeAuthorized` and a nonempty `requiredChecks` (`packages/worker/src/deliver/gate.ts`). A new project has neither and nothing in the app sets them, so every approved change ends blocked. A change merged on the code host by hand leaves its task blocked.
+- **Settling something starts no work.** The owner's answer to a decision moves every task of the project that awaits a decision to in progress and queues nothing (`runtime/needsYou.ts`); a concluded blocking deliberation does the same. The task waits for the PM's workload nudge, at most hourly. A blocked card takes no answer, only "Carry on".
+- **Failing checks wake nobody.** `tasks.branch` is written only by the demo seed, so the wake on a failed check and the code host's test-report poll skip every real task. Failing checks are met only at the merge gate, which blocks the task.
+- **Failure means a person.** A failed work turn blocks its task with no retry. A review that asks for changes can go back and forth without limit. The merge gate asks for tester, reviewer and PM approval whatever reviewing roles the team has, while the coordinator waits only for the roles it has. A task that moves to another worker starts from the base branch, not from its pushed branch.
+- **Nothing reaches the owner outside the app.** There is no notification, digest or reminder, and a missing worker, a signed-out engine, a limited provider or a failing sync is not a needs-you item. Nothing expires; an unanswered item waits indefinitely.
+- **Only `claude` takes a task through.** `codex` and `cursor` cannot call the platform's tools, so their work turns cannot hand in and their reviewers cannot record a verdict. A worker is given turns for engines it does not have, and a missing engine blocks the task. A task's work stays on its provider through a usage window with no fallback; the window is estimated from token sums that include cache reads; Codex turns on an API key are booked at no cost. Reviewers are not kept off the author's model family (T7 is counted, not enforced).
+- **A hosted deployment cannot work yet.** A launched worker has no engine sign-in (the `claude` adapter drops `CLAUDE_CODE_OAUTH_TOKEN`). The launcher holds a project's entry while work waits, so a worker that ran its one turn and stopped is followed by the next only after an hour. A launched host is given the root machine token. Pairing links are built from the request's own address. A local owner has no password and cannot sign in to a hosted copy, and nothing moves a project's database, secrets key and stored files from one coordinator to another.
+- **Memory does not reach the work.** `knowledge.assemble` is called only from tests, so a confirmed memory is never given to a turn; an agent sees one only if it searches for it. Search is lexical, with every term matched as a word prefix; semantic search is optional and only fills slots lexical search left empty. Nothing merges duplicate or contradicting memories, nothing files a memory from a review, a failed check or a retro, and a memory's rank is its hit count. Changing a memory's status and the sweep that marks unused memories stale append no event. A seat's notebook is one overwritten text of 2,400 characters with no history.
+- **Turns are heavy.** Work turns read about 290k tokens each and review turns about 170k; reviews used slightly more than the work did (4.5M against 4.4M tokens in). The always-applied `unslop` skill is about 1.2k tokens of every seat's standing instructions, and most of some. The turn rules are string literals of up to 1,500 characters in `packet.ts`, which no test snapshots.
+
 ## Milestones
 
-In order. Each ends with the system working and its numbers on the scorecard.
+In order. Each ends with the system working and its numbers on the scorecard. Milestones 0 to 7 are built and wait for real runs to be judged; 8 to 13 come from the findings of 2026-09-23 and go first, since the runs that judge 3, 5 and 7 stall without them.
 
 ### 0. Measure
 
@@ -207,6 +234,80 @@ The end goal, once the team is fast, good and cheap enough to be left alone with
 
 Done when, over a month on a real project: A5 is 50 % or more, A6 is 50 % or more, A4 is 90 % or more, A1 meets its real-project target, and the project's own health (checks passing on the base branch, open reports, D2) is no worse than when the month began.
 
+### 8. The main path closes without a person
+
+Every way a task stops either carries on by itself or asks the owner something they can answer where they read it.
+
+- Merging as the owner chooses: a project setting, written to the committed manifest by the owner, for automatic merge and the checks it waits for. Nothing merges without it, as `AGENTS.md` requires. A change merged on the code host by hand closes its task.
+- A settled decision or a concluded deliberation queues the work that waited on it, on that task only.
+- A blocked card and a decision card take an answer, and the answer starts the task's owner with it in the packet.
+- A task's branch is recorded when its change is pushed, so failing checks wake its author with the failing cases.
+- A failed work turn runs once more with the failure in its packet before the task blocks. A third request for changes on one task brings the PM in.
+- The merge gate asks for the approvals of the reviewing roles the team has, the same set the coordinator waits for.
+- A task that moves to another worker starts from its pushed branch.
+
+Done when: the reference tasks, run on a project set up only through the app, reach done with nobody acting (A1); A3 is zero across a day; this repository's own project finishes what its team starts (D1).
+
+### 9. Memory that improves itself
+
+The team remembers what it learned, finds it when it matters, and keeps it true. A model call is spent wherever it makes memory better: knowing the right thing once is cheaper than finding it out again on every task.
+
+- **Written from what happened.** When a task ends, a review asks for changes, a check fails, a turn fails or the owner answers something, a memory turn on a cheap model reads the evidence and proposes what is worth keeping: facts about the code and the product, conventions, pitfalls, the owner's preferences, what failed and why. Each memory keeps a link to its evidence (the event, the commit, the review).
+- **Consolidated when written.** Each candidate is compared with its nearest memories, and the model decides: add it, let it supersede one (recording when and why), merge the two, or drop it. Nothing is deleted; a superseded memory keeps its history. Every decision is an event, and the owner can see and undo any of them.
+- **Summaries at three depths.** Every page and memory is saved with a one-line abstract and a short overview, written when it changes; the full text stays behind `knowledge.read`.
+- **Given to the turn it bears on.** A turn is given the memories that fit its task (ranked lexically and semantically over the brief, the journal and the files involved) within a token budget per kind of turn: one-liners for many, overviews for the few that matter most. Which memories a turn was given is recorded, and a turn may still search for more.
+- **Scopes as memory is used.** Organization, project, role (what the testers of this project have learned), seat (the notebook, with history and events), and task (the journal).
+- **Learned from outcomes.** A memory rises when the turns given it pass review and falls when they fail. The retro retires memories that were never used or kept misleading, and the owner's corrections outrank everything else.
+- **Semantic search on by default** wherever an embedding model is reachable, locally or hosted; the vectors are kept in the project's own storage.
+- **One contract behind it** (`retain`, `recall`, `forget`), native first, with the coordinator as the only writer and every change in the event log. An outside system (OpenViking, mem0) can then be tried behind the same contract and kept only if M1 and M3 say it is better for what it costs.
+- Reference pairs for M1: tasks that come in twos on one codebase, where the second is easier with what the first taught.
+
+Done when: M1 meets its target on the reference pairs; M2 falls over a month on this repository's own project; M3 is under 10 %; T1 holds.
+
+### 10. The owner hears about it
+
+- A notifier adapter, one kind to start with (web push, ntfy, email or a chat message), sending each new needs-you item and each system problem with a link that opens it.
+- System problems as needs-you items: no worker for a project for ten minutes, an engine signed out (one item, not one per task), a provider limited while work waits, a failing tracker or code-host sync, a budget reached.
+- A daily summary built without a model turn: what finished, what is blocked and why, what was spent, what waits for the owner.
+- A reminder for an item unanswered for a day.
+
+Done when: O4 is met, and in a week of real use no task waited on the owner without the owner being told.
+
+### 11. Every engine does the whole job
+
+- The platform's tools reach every engine: `codex` through its own MCP configuration, `cursor` through `agent-team call` with the turn's address and token file set and a short section in the packet saying how.
+- A worker is given only turns for engines it has and is signed in to. A missing engine is a refusal, never a blocked task; a signed-out engine marks its provider, not the task.
+- Failover: each provider names its fallbacks in order, with a model for each. Work queued on a limited, signed-out or unavailable provider moves to the next, and a task's work turn may change provider after a set wait; its session is rebuilt from the packet, as it already is on a change of provider.
+- Usage windows from the engine's own signal (the reset time and use it reports), not from token sums. As a window fills, work of low priority moves to metered or local providers.
+- A record per model: context size, tool use, price, family, open weights, and the kinds of turn it has been proven on. Session rotation, routing defaults and cost read it; a metered engine that reports no dollar figure is priced from it.
+- Reviewers run on another model family than the author's wherever one is connected.
+- The pilot work and delivery scripts run once on each engine.
+
+Done when: a reference task finishes on each of the four engines; P6 meets its target; T7 is 100 %.
+
+### 12. Hosted for real
+
+Running locally is for debugging. The team lives on a hosted control plane, with workers on the owner's machines or started when work waits. This finishes what milestone 5 began.
+
+- Launched workers sign in: a subscription token made with the tool's own command (`claude setup-token`) is kept sealed and handed to a turn like a key; Bedrock settings pass where that is the provider.
+- The launcher keeps a worker while the project has queued work and stops it when the queue is empty, gives each job a token of its own instead of the root machine token, and stops instances it has lost track of.
+- Pairing links use the address the owner reached the app at, behind a proxy too.
+- A worker and its coordinator check each other's version.
+- Moving a project: `export` and `import` of a project with its secrets key and stored files, into either storage adapter; the local owner sets a password before moving.
+- One real deployment, on Fly first.
+
+Done when: milestone 5's conditions hold on the deployment, and a project moved from a local coordinator to the hosted one kept its history and its sealed keys.
+
+### 13. Lighter turns, and a fair test of the team
+
+- Standing instructions cut: `unslop` kept to its core, or given in full only on turns whose words a person reads; the turn rules moved out of the code into files that can be reviewed, with a snapshot test per kind of turn.
+- Context per turn counted per kind of turn on the scorecard (P4), and a budget per kind that the packet keeps to.
+- Reference tasks with room above one strong model: work of hours across a real codebase, defects that show only under a second kind of check, briefs whose flaw needs knowledge of the domain.
+- The team arm on open-weight models, and the runs without each seat (T6).
+- Until T1 and T4 have figures, no new kind of turn and no new standing process.
+
+Done when: T1, T2 and T4 have baselines on tasks where one model alone scores under 0.8, and tokens in per work turn have halved with T1 holding.
+
 ## Not building
 
-General control of a computer, a personal-assistant gateway, more chat channels than the owner asks for, a machine per turn before the numbers say it pays, a frontier model on any kind of turn where the numbers do not show it is needed, and a decision model deciding anything a seat may not: publishing, merging, approving its own work, releasing a quarantine, spending past a cap.
+General control of a computer, a personal-assistant gateway, more chat channels than the owner asks for, a machine per turn before the numbers say it pays, a frontier model on any kind of turn where the numbers do not show it is needed, a decision model deciding anything a seat may not: publishing, merging, approving its own work, releasing a quarantine, spending past a cap. No background service for local runs either: running locally is for debugging, and the hosted control plane is where the team keeps working.

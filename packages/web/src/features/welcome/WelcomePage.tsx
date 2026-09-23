@@ -9,7 +9,7 @@ import { ConnectFlow } from '../integrations/ConnectFlow';
 import { ProviderFlow, type Provider } from '../project/ProviderFlow';
 
 type Key = 'project' | 'code' | 'board' | 'provider' | 'worker' | 'task' | 'people';
-interface Guide { repository: string | null; project: { slug: string; name: string } | null; steps: { key: Key; done: boolean; optional: boolean; detail: string | null }[]; done: number; total: number; complete: boolean; dismissed: boolean; canAdmin: boolean }
+interface Guide { repository: string | null; boards: string[]; project: { slug: string; name: string } | null; steps: { key: Key; done: boolean; optional: boolean; detail: string | null }[]; done: number; total: number; complete: boolean; dismissed: boolean; canAdmin: boolean }
 
 // The way from an empty organization to a team that is working, in four steps. Each is done with the same guided dialogs the
 // rest of the app uses, and ticks itself off from what exists, so nothing here has to be "saved".
@@ -29,14 +29,14 @@ export function WelcomePage({ me, projects }: { me: Me; projects: ProjectNode[] 
   const current = data?.steps.find(item => !item.done && !item.optional)?.key ?? null;
   const card = (key: Key, number: number, title: string, why: string, body: ReactNode, doneText: string) => {
     const state = step(key);
-    return <StepCard key={key} number={number} title={title} note={state?.done ? `${doneText}${state.detail ? `: ${state.detail}` : ''}` : why} state={state?.done ? 'done' : current === key ? 'current' : 'later'} optional={false} locked={key !== 'project' && !slug}>{body}</StepCard>;
+    return <StepCard key={key} number={number} title={title} note={state?.done ? `${doneText}${state.detail ? `: ${state.detail}` : ''}` : why} state={state?.done ? 'done' : current === key ? 'current' : 'later'} optional={state?.optional ?? false} locked={key !== 'project' && !slug}>{body}</StepCard>;
   };
 
   return (
     <AppShell sidebar={<Sidebar orgName={me.org?.name ?? 'Organization'} projects={projects} activeSlug={null} roster={[]} links={[]} />}>
       <PageHeader title={data?.complete ? 'Your team is set up' : `Welcome, ${me.user.name.split(' ')[0]}`} crumbs={[{ label: me.org?.name ?? 'Organization', href: '/org' }]}>
         <div className="flex items-center gap-3 pb-3">
-          <Text size="small" tone="muted" className="grow">{data?.complete ? 'Everything a team needs is connected.' : `Four steps to a team that picks up work on its own. ${data ? `${data.done} of ${data.total} done.` : ''}`}</Text>
+          <Text size="small" tone="muted" className="grow">{data?.complete ? 'Everything a team needs is connected.' : `Four steps to a team that picks up work on its own, and your task board if you keep one. ${data ? `${data.done} of ${data.total} done.` : ''}`}</Text>
           {data?.canAdmin && !data.dismissed && <Button variant="ghost" onClick={() => { void api('/api/onboarding/dismiss', {}).then(guide.reload); }}>Hide this guide</Button>}
         </div>
       </PageHeader>
@@ -45,11 +45,11 @@ export function WelcomePage({ me, projects }: { me: Me; projects: ProjectNode[] 
           {card('project', 1, 'Create your first project', 'One product or body of work, with its own team of agents, board and discussion.', <NewProject projects={projects} primary to="welcome" />, 'Project')}
           {card('code', 2, 'Connect the code', 'The team works on its own copy and opens draft pull requests.', slug && data && <CodeStep slug={slug} repository={data.repository} onChanged={guide.reload} />, 'Connected')}
           {card('provider', 3, 'Choose how the models are paid for', 'A plan you already have, pay per use, or models on your own machine.', <Button variant="primary" onClick={() => setProviderFlow({ open: true, kind: null })}>Add a model provider</Button>, 'Added')}
-          {card('task', 4, 'Give the team something to do', 'Write the first task in the discussion, or let the board fill from your tracker.', slug && <Link href={`/p/${slug}/tasks`}><Button variant="primary">Open the board</Button></Link>, 'The board has work')}
+          {card('board', 4, 'Bring in your task board', `Tasks from ${data?.boards.join(' or ') || 'your tracker'}, kept in step both ways. Skip it to write tasks here.`, slug && <ConnectFlow slug={slug} only={['issue-boards']} label={data?.boards.length ? `Choose ${data.boards.join(' or ')}` : 'Choose a task board'} connectedKinds={[]} onDone={guide.reload} />, 'Connected')}
+          {card('task', 5, 'Give the team something to do', 'Write the first task in the discussion, or let the board fill from your tracker.', slug && <Link href={`/p/${slug}/tasks`}><Button variant="primary">Open the board</Button></Link>, 'The board has work')}
           {slug && (
             <div className="flex flex-wrap items-center gap-2 pt-2">
               <Text size="small" tone="muted">Also useful:</Text>
-              {!step('board')?.done && <ConnectFlow slug={slug} only={['issue-boards']} label="Connect a task board" quiet connectedKinds={[]} onDone={guide.reload} />}
               {!step('people')?.done && <Link href="/settings/members"><Button>Invite people</Button></Link>}
               <Link href={`/p/${slug}/integrations`}><Button>Chat, documents and other tools</Button></Link>
             </div>

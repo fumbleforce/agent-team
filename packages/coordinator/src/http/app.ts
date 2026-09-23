@@ -9,7 +9,7 @@ import { createAccounts } from '../auth/accounts.ts';
 import { createOidc } from '../auth/oidc.ts';
 import { can, canSeeProject, type Action, type Viewer } from '../auth/rbac.ts';
 import { createMachineTokens } from '../auth/machineTokens.ts';
-import { clientAddress, idempotency, ifMatch, onError, onNotFound, pageOf, parseBody, preconditioned } from './conventions.ts';
+import { clientAddress, fromThisMachine, idempotency, ifMatch, onError, onNotFound, pageOf, parseBody, preconditioned } from './conventions.ts';
 import { registerOrgRoutes } from './orgRoutes.ts';
 import { registerRuleRoutes } from './ruleRoutes.ts';
 import { registerKnowledgeRoutes } from './knowledgeRoutes.ts';
@@ -133,7 +133,8 @@ export function createApp(context: Context) {
     if (!row) throw new HttpError(404, 'not_found', 'No such project');
     return c.json(await scorecardFor(row.id, c.req.query('days')));
   });
-  app.post('/machine/setup-link', async c => { await machine(c); return c.json({ path: await accounts.setupLink() }); });
+  // There is nobody to set up where the coordinator is only for the person at this machine.
+  app.post('/machine/setup-link', async c => { await machine(c); return c.json({ path: context.localOwner ? null : await accounts.setupLink() }); });
 
   // Worker routes: machine token plus, per turn, the lease. A lost lease answers 409 and the worker stops.
   app.use('/worker/*', async (c, next) => { await machine(c); await next(); });
@@ -264,6 +265,12 @@ export function createApp(context: Context) {
     if (vouched) {
       const token = await accounts.trustedSession(vouched);
       if (token) { startSession(c, token); viewer = await accounts.viewer(token); }
+    }
+    // A coordinator `up` started for the person at this machine signs them in without a password, but only for a request that plainly
+    // comes from a page of its own on this machine: another site, or a name that merely resolves here, never gets a session.
+    if (!viewer && context.localOwner && fromThisMachine(c)) {
+      const token = await accounts.sessionFor(await accounts.localOwner(context.localOwner), 'local');
+      startSession(c, token); viewer = await accounts.viewer(token);
     }
     if (!viewer) throw new HttpError(401, 'unauthenticated', 'Sign in');
     c.set('viewer', viewer);

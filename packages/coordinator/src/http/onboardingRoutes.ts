@@ -1,4 +1,5 @@
 import type { Hono } from 'hono';
+import { CATALOG } from '../../../../adapters/integration/catalog.ts';
 import type { Context } from '../context.ts';
 
 export interface OnboardingStep { key: 'project' | 'code' | 'board' | 'provider' | 'worker' | 'task' | 'people'; done: boolean; optional: boolean; detail: string | null }
@@ -24,18 +25,21 @@ export function mountOnboardingRoutes(app: Hono<any>, deps: { context: Context; 
     const people = await db.selectFrom('users').select(eb => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow();
     const invites = await db.selectFrom('invites').select(eb => eb.fn.countAll<number>().as('n')).executeTakeFirstOrThrow();
     const org = await db.selectFrom('org').select('settings').executeTakeFirst();
+    // The board by its product's name, and what its last poll said when that was a failure.
+    const board = manifest.tracker?.kind ? CATALOG.find(item => item.target === 'tracker' && (item.adapterKind ?? item.kind) === manifest.tracker!.kind)?.title ?? manifest.tracker.kind : null;
+    const boardError = board && project ? (await db.selectFrom('sync_cursors').select('error').where('scope_id', '=', project.id).where('resource', '=', 'tracker').executeTakeFirst())?.error ?? null : null;
     const steps: OnboardingStep[] = [
       { key: 'project', optional: false, done: Boolean(project), detail: project?.name ?? null },
       // One step for the code: it is connected, and a worker on some machine has it and reports in.
       { key: 'code', optional: false, done: Boolean(manifest.scm?.kind && manifest.delivery?.repository) && everWorked.length > 0, detail: manifest.delivery?.repository ? `${manifest.delivery.repository}${workers.length ? `, worked on from ${workers.map(worker => worker.name.split('.')[0]).join(', ')}` : everWorked.length ? ', no worker running right now' : ''}` : null },
-      { key: 'board', optional: true, done: Boolean(manifest.tracker?.kind), detail: null },
+      { key: 'board', optional: true, done: Boolean(manifest.tracker?.kind), detail: board ? `${board}${boardError ? `, not syncing: ${boardError}` : ''}` : null },
       { key: 'provider', optional: false, done: providers.length > 0, detail: providers.map(row => row.name).join(', ') || null },
       { key: 'worker', optional: true, done: workers.length > 0, detail: workers.length ? `${workers.map(worker => worker.name).join(', ')}${engines.length ? ` can run ${engines.join(', ')}` : ''}` : null },
       { key: 'task', optional: false, done: Number(tasks.n) > 0, detail: null },
       { key: 'people', optional: true, done: Number(people.n) + Number(invites.n) > 1, detail: null },
     ];
     const required = steps.filter(step => !step.optional);
-    return c.json({ repository: manifest.delivery?.repository ?? null, project: project ? { slug: project.slug, name: project.name } : null, steps, done: required.filter(step => step.done).length, total: required.length, complete: required.every(step => step.done),
+    return c.json({ repository: manifest.delivery?.repository ?? null, boards: CATALOG.filter(item => item.category === 'issue-boards').map(item => item.title), project: project ? { slug: project.slug, name: project.name } : null, steps, done: required.filter(step => step.done).length, total: required.length, complete: required.every(step => step.done),
       dismissed: Boolean((org ? JSON.parse(org.settings) as { onboardingDismissed?: boolean } : {}).onboardingDismissed), canAdmin: deps.canAdmin(c), url: new URL(c.req.url).origin });
   });
 

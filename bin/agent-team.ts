@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { chooseLocal, publishTarget, setupLink, slugFor, startLocal, webBuildIsStale, writeLocalConfigs } from '../adapters/hosting/local/up.ts';
 import { terminalAsk } from '../adapters/hosting/shared/ask.ts';
+import { detectRepository } from '../adapters/hosting/shared/repository.ts';
 import { ENGINES } from '../adapters/engine/index.ts';
 import { configDir, DEFAULT_PORT, ENTRYPOINTS, packageRoot, workerIdFor } from '@agent-team/protocol';
 import { createStorage, type StorageConfig } from '@agent-team/storage';
@@ -34,7 +35,11 @@ else if (command === 'up') {
   const manifestFile = path.join(checkout, '.agent-team.json');
   if (!existsSync(checkout)) { console.error(`${checkout} does not exist`); process.exit(1); }
   // A checkout without a manifest still comes up; what it connects to is then set in the app.
-  const manifest = (existsSync(manifestFile) ? JSON.parse(readFileSync(manifestFile, 'utf8')) : {}) as { name?: string; queueProjectId?: string; engine?: { default?: string } };
+  const manifest = (existsSync(manifestFile) ? JSON.parse(readFileSync(manifestFile, 'utf8')) : {}) as { name?: string; queueProjectId?: string; engine?: { default?: string }; scm?: { kind?: string }; delivery?: Record<string, unknown> };
+  // Where the code lives is read from the checkout (its remote, else package.json) when the manifest does not say, so nobody types it.
+  // Only the repository and its main branch are filled in: publishing still needs the committed manifest's authorization.
+  const found = manifest.scm?.kind && manifest.delivery?.repository ? null : detectRepository(checkout);
+  if (found) Object.assign(manifest, { scm: { ...found.scm, ...manifest.scm }, delivery: { ...found.delivery, ...manifest.delivery } });
   const slug = (manifest.queueProjectId ?? path.basename(checkout)).toLowerCase().replace(/[^a-z0-9-]/g, '-');
   const engine = flag('--engine') ?? manifest.engine?.default ?? 'claude';
   if (!ENGINES.includes(engine)) { console.error(`Engine "${engine}" is not available here; choose one of: ${ENGINES.join(', ')}`); process.exit(1); }
@@ -49,7 +54,7 @@ else if (command === 'up') {
   const link = await setupLink(configs.url, configs.machineToken);
   const registered = await fetch(`${configs.url}/machine/projects`, { method: 'POST', headers: { 'content-type': 'application/json', authorization: `Bearer ${configs.machineToken}` }, body: JSON.stringify({ slug, name: manifest.name ?? slug, manifest }) });
   if (!registered.ok) { console.error(`Registering the project failed (${registered.status})`); services.stop(); process.exit(1); }
-  console.log(link ? `First run: create the owner account at ${link}` : `Open ${configs.url}`);
+  console.log(link ? `First run: create the owner account at ${link}` : `Open ${configs.url} (no sign-in on this machine)`);
   await services.finished;
 } else if (command === 'connect' || command === 'work') {
   // A worker for a project made in the app. `connect` trades the app's single-use link for a token of this machine's own and
