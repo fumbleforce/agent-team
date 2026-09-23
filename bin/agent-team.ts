@@ -19,6 +19,8 @@ const USAGE = `agent-team <command>
   scorecard [--project SLUG] [--days N] [--json]   the roadmap's figures for a project: autonomy, speed, delivery, safety
   migrate [--config FILE]                    bring a database up to date (default: the local project's)
   backup [--config FILE] [--out FILE]        copy a database into one file, while it is in use (default: the local project's)
+  export [--config FILE] [--out DIR]         everything a coordinator holds, in one folder: its database, secrets key and stored files
+  import <dir> [--config FILE]               load an export into a coordinator's empty database, of either kind, with its key and files
   init aws [checkout]                        set up an AWS deployment for a project, kept in its folder: asks what it cannot work out, then offers the plan
              [--region R] [--profile P] [--permissions-boundary ARN] [--toolkit-ref COMMIT] [--instance-type T] [--setup CMD] [--force]
   deploy aws [--plan|--apply] [--only STEP] [--skip STEP]   plan the AWS deployment, then apply it on a yes (or at once with --apply)
@@ -133,6 +135,48 @@ else if (command === 'up') {
   await storage.backup(path.resolve(out));
   await storage.close();
   console.log(`Backed up to ${path.resolve(out)}`);
+} else if (command === 'export' || command === 'import') {
+  // Moving a coordinator, from this machine to a hosted one say: the database (copied row by row, so it can change kind), the key its
+  // secrets are sealed with, and the stored files. Nothing is overwritten: an export goes to a new folder, an import into an empty database.
+  const ask = terminalAsk();
+  const local = flag('--config') ? null : await chooseLocal(process.cwd(), ask);
+  const file = flag('--config') ?? local?.coordinator;
+  if (!file) { console.error(`There is no project set up with \`agent-team up\` on this machine. Name a coordinator config: agent-team ${command} --config FILE`); process.exit(1); }
+  const config = JSON.parse(readFileSync(file, 'utf8')) as { storage: StorageConfig; dataDir?: string };
+  const dataDir = config.dataDir ?? (config.storage.kind === 'sqlite' ? path.dirname(path.resolve(path.dirname(file), config.storage.path)) : null);
+  const { copyDatabase } = await import('@agent-team/storage');
+  const { cpSync } = await import('node:fs');
+  // The key is copied where there is none (the same key already there is fine: it was checked); stored files are added, never replaced.
+  const files = (from: string, to: string) => { for (const name of ['secret.key', 'blobs', 'artifacts']) if (existsSync(path.join(from, name)) && !(name === 'secret.key' && existsSync(path.join(to, name)))) cpSync(path.join(from, name), path.join(to, name), { recursive: true, force: false }); };
+  if (command === 'export') {
+    const out = path.resolve(flag('--out') ?? `agent-team-export-${new Date().toISOString().slice(0, 10)}`);
+    if (existsSync(out)) { console.error(`${out} already exists; an export never overwrites. Name another with --out.`); process.exit(1); }
+    mkdirSync(out, { recursive: true, mode: 0o700 });
+    const source = await createStorage(config.storage);
+    // A database file is read from a copy taken under its own locks, so the export is consistent while the coordinator runs.
+    const snapshot = source.backup ? path.join(out, '.snapshot.sqlite') : null;
+    if (snapshot) await source.backup!(snapshot);
+    const from = snapshot ? await createStorage({ kind: 'sqlite', path: snapshot }) : source;
+    const target = await createStorage({ kind: 'sqlite', path: path.join(out, 'coordinator.sqlite') });
+    await target.migrate();
+    const rows = await copyDatabase(from, target);
+    await target.close(); await from.close(); if (from !== source) await source.close();
+    if (snapshot) { const { rmSync } = await import('node:fs'); rmSync(snapshot, { force: true }); }
+    if (dataDir) files(dataDir, out);
+    console.log(`Exported ${rows} rows to ${out}${existsSync(path.join(out, 'secret.key')) ? ', with the key the secrets are sealed with: keep this folder private' : '. The secrets were sealed with AGENT_TEAM_SECRET_KEY: set the same on the coordinator that imports it'}`);
+  } else {
+    const from = path.resolve(rest.find(item => !item.startsWith('--') && item !== flag('--config')) ?? '');
+    if (!existsSync(path.join(from, 'coordinator.sqlite'))) { console.error('Usage: agent-team import <export folder> [--config FILE]'); process.exit(1); }
+    if (!dataDir) { console.error(`${file} names a database server; add "dataDir" to it, the folder its secrets key and stored files are kept in`); process.exit(1); }
+    if (existsSync(path.join(dataDir, 'secret.key')) && existsSync(path.join(from, 'secret.key')) && readFileSync(path.join(dataDir, 'secret.key'), 'utf8').trim() !== readFileSync(path.join(from, 'secret.key'), 'utf8').trim()) { console.error(`${dataDir} already has a different secrets key; import into a coordinator that has not been started yet`); process.exit(1); }
+    const source = await createStorage({ kind: 'sqlite', path: path.join(from, 'coordinator.sqlite') }), target = await createStorage(config.storage);
+    await target.migrate();
+    const rows = await copyDatabase(source, target);
+    await source.close(); await target.close();
+    mkdirSync(dataDir, { recursive: true, mode: 0o700 });
+    files(from, dataDir);
+    console.log(`Imported ${rows} rows into the database named in ${file}, and the secrets key and stored files into ${dataDir}`);
+  }
 } else if (['init', 'deploy', 'status', 'destroy'].includes(command ?? '') && rest[0] === 'aws') {
   process.exit(await (await import('../adapters/hosting/aws/cli.ts')).awsCli(command!, rest.slice(1)));
 } else if (command === 'call') {

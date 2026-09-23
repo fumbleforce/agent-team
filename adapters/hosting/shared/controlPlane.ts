@@ -15,7 +15,7 @@ export async function startControlPlane(options: { publicUrl: string; env?: Node
   mkdirSync(data, { recursive: true, mode: 0o700 });
   const storage = env.AGENT_TEAM_DATABASE_URL ? { kind: 'postgres' as const, url: env.AGENT_TEAM_DATABASE_URL } : { kind: 'sqlite' as const, path: path.join(data, 'coordinator.sqlite') };
   process.env.AGENT_TEAM_PUBLIC_BIND = '1';
-  const coordinator = await startCoordinator({ host: '0.0.0.0', port: Number(env.PORT ?? 4310), storage, machineToken, secureCookies: options.publicUrl.startsWith('https://'), launchers: options.launcher ? launcherFactory(options.launcher, options.internalUrl ?? options.publicUrl) : null });
+  const coordinator = await startCoordinator({ host: '0.0.0.0', port: Number(env.PORT ?? 4310), storage, dataDir: data, machineToken, secureCookies: options.publicUrl.startsWith('https://'), launchers: options.launcher ? launcherFactory(options.launcher, options.internalUrl ?? options.publicUrl) : null });
   console.log(options.launcher ? 'Workers are started for queued work, one project at a time, and stopped when it is done' : 'No launcher is configured: queued work waits for a worker that connects by itself');
   console.log(`Coordinator listening on ${coordinator.url}`);
   // The first visitor needs an owner account; the one-time link goes to the service log.

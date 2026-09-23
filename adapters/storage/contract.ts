@@ -54,6 +54,11 @@ export interface StorageAdapter {
   migrate(upTo?: string): Promise<void>;
   // A consistent copy of the whole database in one file, taken while it is in use. Only where the database is a file.
   backup?(path: string): Promise<void>;
+  // For moving a coordinator to another database: its tables in an order that loads without breaking a reference, each with the columns
+  // a copy leaves to the database (generated ones). Indexes the database keeps by itself (full text, native vectors) are not listed.
+  copyPlan(): Promise<{ name: string; skip: string[] }[]>;
+  // What a copy puts right afterwards: counters that must continue past the rows it brought.
+  afterCopy?(): Promise<void>;
   close(): Promise<void>;
 }
 

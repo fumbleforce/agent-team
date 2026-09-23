@@ -5,6 +5,7 @@ import type { Schema } from '../schema.ts';
 import { createBus } from '../shared/bus.ts';
 import { runMigrations } from '../shared/migrate.ts';
 import { createSearch } from '../shared/search.ts';
+import { inLoadOrder } from '../shared/copy.ts';
 import { CHANNEL, createSharedBus, type ListenerClient } from './bus.ts';
 
 const MIGRATION_CONTEXT: MigrationContext = {
@@ -80,6 +81,18 @@ export async function createPostgresAdapter(config: { url: string; poolSize?: nu
     // Taken before the queue is read, and always before the append lock, so the two never wait on each other.
     claimLock: async tx => { await sql`select pg_advisory_xact_lock(${CLAIM_LOCK})`.execute(tx); },
     migrate: async upTo => { if (config.schema) await sql`create schema if not exists ${sql.id(config.schema)}`.execute(db); return runMigrations(db, MIGRATION_CONTEXT, upTo); },
+    async copyPlan() {
+      const tables = (await sql<{ name: string }>`select table_name as name from information_schema.tables where table_schema = current_schema() and table_type = 'BASE TABLE' and table_name not like 'kysely_%' and table_name <> 'embedding_vectors'`.execute(db)).rows.map(row => row.name);
+      const refs = new Map<string, string[]>(tables.map(name => [name, []]));
+      for (const row of (await sql<{ name: string; ref: string }>`select tc.table_name as name, ccu.table_name as ref from information_schema.table_constraints tc join information_schema.constraint_column_usage ccu on ccu.constraint_name = tc.constraint_name and ccu.table_schema = tc.table_schema where tc.constraint_type = 'FOREIGN KEY' and tc.table_schema = current_schema()`.execute(db)).rows) refs.get(row.name)?.push(row.ref);
+      const generated = (await sql<{ name: string; column: string }>`select table_name as name, column_name as column from information_schema.columns where table_schema = current_schema() and is_generated = 'ALWAYS'`.execute(db)).rows;
+      return inLoadOrder(tables, refs).map(name => ({ name, skip: generated.filter(row => row.name === name).map(row => row.column) }));
+    },
+    // A copy brings its own row numbers; each serial counter continues past the highest.
+    async afterCopy() {
+      const serial = (await sql<{ name: string; column: string }>`select table_name as name, column_name as column from information_schema.columns where table_schema = current_schema() and column_default like 'nextval(%'`.execute(db)).rows;
+      for (const { name, column } of serial) await sql`select setval(pg_get_serial_sequence(${name}, ${column}), coalesce((select max(${sql.id(column)}) from ${sql.id(name)}), 0) + 1, false)`.execute(db);
+    },
     close: async () => { await shared?.stop(); await db.destroy(); },
   };
 }

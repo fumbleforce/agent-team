@@ -6,6 +6,7 @@ import type { Db, MigrationContext, StorageAdapter, Tx, VectorPort } from '../co
 import { BOOLEAN_COLUMNS, type Schema } from '../schema.ts';
 import { createBus } from '../shared/bus.ts';
 import { runMigrations } from '../shared/migrate.ts';
+import { inLoadOrder } from '../shared/copy.ts';
 import { createSearch, storeVector } from '../shared/search.ts';
 
 type Param = null | number | bigint | string | Uint8Array;
@@ -94,6 +95,15 @@ export function createSqliteAdapter(config: { path: string; vectorExtension?: st
     migrate: upTo => runMigrations(db, MIGRATION_CONTEXT, upTo),
     // The online backup API copies pages under the database's own locks, so the copy is consistent and keeps its row ids.
     backup: async target => { mkdirSync(path.dirname(path.resolve(target)), { recursive: true }); await backup(database, target); chmodSync(target, 0o600); },
+    async copyPlan() {
+      const tables = (await sql<{ name: string; sql: string | null }>`select name, sql from sqlite_master where type = 'table' and name not like 'sqlite_%' and name not like 'kysely_%'`.execute(db)).rows;
+      // A virtual table (full text, vectors) and its shadow tables are kept by SQLite itself from the rows of the tables they index.
+      const virtual = tables.filter(table => /^create virtual table/i.test(table.sql ?? '')).map(table => table.name);
+      const plain = tables.map(table => table.name).filter(name => !virtual.includes(name) && !virtual.some(prefix => name.startsWith(`${prefix}_`)));
+      const refs = new Map<string, string[]>();
+      for (const name of plain) refs.set(name, (await sql<{ table: string }>`select "table" from pragma_foreign_key_list(${name})`.execute(db)).rows.map(row => row.table));
+      return inLoadOrder(plain, refs).map(name => ({ name, skip: [] }));
+    },
     close: () => db.destroy(),
   };
 }
