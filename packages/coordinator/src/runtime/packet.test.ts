@@ -5,7 +5,7 @@ import path from 'node:path';
 import type { TurnKind } from '@agent-team/protocol';
 import { seedDemo } from '../demo/seed.ts';
 import { startCoordinator } from '../server.ts';
-import { buildPacket } from './packet.ts';
+import { buildPacket, keepTo, PACKET_BUDGET } from './packet.ts';
 
 // What each kind of turn is sent, word for word, on the demo team: a change to a rule, a skill or how a packet is put together
 // shows here as a change a reviewer reads, with its size. `UPDATE_PACKETS=1 npm test` writes them again after a change you meant.
@@ -31,6 +31,7 @@ test('every kind of turn is sent what its snapshot says', async () => {
     mkdirSync(FOLDER, { recursive: true });
     for (const [kind, name, on] of turns) {
       const packet = await coordinator.context.storage.transaction(tx => buildPacket(tx, { kind, agentId: agents[name]!, projectId: project.id, taskId: on.task ? tasks[on.task]! : null, threadId: on.thread ? thread.id : null }));
+      assert.ok(packet.system.length + packet.prompt.length <= PACKET_BUDGET[kind]! * 4, `the ${kind} packet is within its budget`);
       const text = steady(`${kind} turn for ${name}: ${packet.system.length} characters of standing instructions, ${packet.prompt.length} of prompt\n\n=== system\n${packet.system}\n\n=== prompt\n${packet.prompt}\n`);
       const file = path.join(FOLDER, `${kind}.txt`);
       if (process.env.UPDATE_PACKETS === '1') writeFileSync(file, text);
@@ -38,4 +39,14 @@ test('every kind of turn is sent what its snapshot says', async () => {
       assert.equal(text, readFileSync(file, 'utf8'), `the ${kind} packet changed; if you meant it, run UPDATE_PACKETS=1 npm test and review the difference`);
     }
   } finally { await coordinator.close(); }
+});
+
+test('a packet keeps to the budget of its kind by shortening its longest context, never its rule', () => {
+  const rule = 'R'.repeat(2000), system = 'S'.repeat(8000);
+  const parts = keepTo('feedback', system, [rule, 'a'.repeat(500), 'b'.repeat(6000), 'c'.repeat(300)]);
+  assert.equal(parts[0], rule);
+  assert.equal(parts[3], 'c'.repeat(300));
+  assert.ok(system.length + parts.join('\n\n').length <= PACKET_BUDGET.feedback! * 4);
+  assert.match(parts[2]!, /^b+…$/);
+  assert.deepEqual(keepTo('feedback', '', ['short']), ['short'], 'a packet within its budget is left as it is');
 });

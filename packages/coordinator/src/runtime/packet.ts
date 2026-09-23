@@ -18,6 +18,23 @@ export interface Packet { system: string; prompt: string }
 const BRIEF_KINDS: readonly TurnKind[] = ['review', 'feedback', 'revise', 'remember'];
 const clip = (text: string, max: number) => (text.length > max ? `${text.slice(0, max)}…` : text);
 
+// What a packet of each kind may come to, in tokens (about four characters each), standing instructions and prompt together. The
+// rule and the standing instructions are never cut: when the rest runs over, its longest part is shortened until the packet fits.
+export const PACKET_BUDGET: Partial<Record<TurnKind, number>> = { work: 6000, review: 8000, triage: 4000, reply: 5000, feedback: 3000, revise: 3000, conclude: 3000, retro: 4000, ideate: 4000, remember: 3000 };
+export function keepTo(kind: TurnKind, system: string, parts: string[]): string[] {
+  const budget = (PACKET_BUDGET[kind] ?? Infinity) * 4, out = [...parts];
+  for (let over = system.length + out.join('\n\n').length - budget; over > 0;) {
+    let longest = 1;
+    for (let index = 2; index < out.length; index++) if (out[index]!.length > (out[longest]?.length ?? 0)) longest = index;
+    const part = out[longest];
+    if (!part || part.length <= 400) break;
+    const keep = Math.max(400, part.length - over - 1);
+    out[longest] = clip(part, keep);
+    over -= part.length - out[longest]!.length;
+  }
+  return out;
+}
+
 export const TASK_RULES: Record<TurnKind, string> = {
   work: rule('work'),
   feedback: rule('feedback'),
@@ -140,7 +157,8 @@ export async function buildResumePacket(tx: Tx, turn: { agentId: string; project
   const reviews = await tx.selectFrom('approvals').select(['kind', 'verdict', 'summary', 'findings', 'head_sha']).where('task_id', '=', turn.taskId).orderBy('created_at', 'desc').limit(12).execute();
   const latest = reviews.filter((row, index) => reviews.findIndex(other => other.kind === row.kind) === index).filter(row => row.verdict !== 'pass');
   if (latest.length) parts.push(`# Open findings\n${latest.map(row => [`- ${row.kind}: ${row.verdict} at ${row.head_sha.slice(0, 10)}. ${clip(row.summary, 400)}`, ...findingLines(row.findings)].join('\n')).join('\n')}`);
-  return { system: await systemFor(tx, turn.agentId, turn.projectId), prompt: parts.join('\n\n') };
+  const system = await systemFor(tx, turn.agentId, turn.projectId, 'work');
+  return { system, prompt: keepTo('work', system, parts).join('\n\n') };
 }
 
 // Advice the owner asked for on this task: each colleague's one block, as given. The decision is the owner's.
@@ -223,7 +241,7 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
   if (['reply', 'retro', 'triage', 'work', 'conclude'].includes(turn.kind) && await staffs(tx, turn.agentId)) parts.push(STAFFING_RULE);
   // The chief of staff answers the owner about the organisation, not about a task of its own.
   if (turn.kind === 'reply' && await tx.selectFrom('agent_roles').select('agent_id').where('agent_id', '=', turn.agentId).where('role_slug', '=', ORG_ROLE).executeTakeFirst()) parts[0] = ORG_RULE;
-  if (turn.kind === 'remember') return { system, prompt: [parts[0]!, await whatHappened(tx, turn)].join('\n\n') };
+  if (turn.kind === 'remember') return { system, prompt: keepTo('remember', system, [parts[0]!, await whatHappened(tx, turn)]).join('\n\n') };
   if (turn.taskId) {
     const task = await tx.selectFrom('tasks').select(['key', 'title', 'brief', 'state', 'journal', 'assignee_agent_id', 'result_kind']).where('id', '=', turn.taskId).executeTakeFirst();
     if (task) parts.push(`# Task ${task.key}: ${task.title}\n${clip(task.brief || '(no brief)', 2000)}`);
@@ -295,5 +313,5 @@ export async function buildPacket(tx: Tx, turn: { kind: TurnKind; agentId: strin
       if (first) parts.push(`# First read (a decision model, not a colleague)\n${readLines(first, Object.fromEntries(team.map(agent => [agent.id, `${agent.name} (ownerAgentId ${agent.id})`]))).join('\n')}\nYou decide; this is only a first read.`);
     }
   }
-  return { system, prompt: parts.filter(Boolean).join('\n\n') };
+  return { system, prompt: keepTo(turn.kind, system, parts.filter(Boolean)).join('\n\n') };
 }

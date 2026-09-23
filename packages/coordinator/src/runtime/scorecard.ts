@@ -242,6 +242,10 @@ export function createScorecard(context: Context, options: ScorecardOptions = {}
     const sentBackWithMemory = scoredDown.filter(row => (JSON.parse(row.payload) as { delta?: number }).delta === -1).length;
     const keptInPeriod = await db.selectFrom('memories').select(['id', 'status']).where('scope_id', '=', projectId).where('created_at', '>=', from).where('created_at', '<=', to).execute();
     const turnedWrong = keptInPeriod.filter(row => row.status === 'retired' || row.status === 'stale').length;
+    // What each kind of turn reads, the figure a lighter packet or a shorter session moves.
+    const byKind = new Map<string, number[]>();
+    for (const turn of turns) if (turn.finished_at !== null && Number(turn.tokens_in) > 0) byKind.set(turn.kind, [...(byKind.get(turn.kind) ?? []), Number(turn.tokens_in)]);
+    const contextByKind = [...byKind].sort((a, b) => b[1].length - a[1].length).map(([kind, tokens]) => `${kind} ${Math.round(median(tokens)! / 1000)}k (${tokens.length})`).join(', ');
     const upkeep = await db.selectFrom('turns').select(eb => [eb.fn.coalesce(eb.fn.sum<number>('cost_minor'), eb.lit(0)).as('minor'), eb.fn.countAll<number>().as('n')]).where('project_id', '=', projectId).where('kind', '=', 'remember').where('started_at', '>=', from).where('started_at', '<=', to).executeTakeFirstOrThrow();
     const given = await db.selectFrom('memory_injections').innerJoin('turns', 'turns.id', 'memory_injections.turn_id').select(eb => [eb.fn.countAll<number>().as('n'), eb.fn.count<number>('memory_injections.turn_id').distinct().as('turns')]).where('turns.project_id', '=', projectId).where('memory_injections.created_at', '>=', from).where('memory_injections.created_at', '<=', to).executeTakeFirstOrThrow();
 
@@ -272,7 +276,7 @@ export function createScorecard(context: Context, options: ScorecardOptions = {}
       figure({ id: 'P1', group: 'performance', measure: 'Time from created to done, median', value: median(leadTimes), unit: 'ms', sample: leadTimes.length, target: 'half the baseline', note: `90th percentile: ${percentile(leadTimes, 90) ?? 'none'} ms` }),
       figure({ id: 'P2', group: 'performance', measure: 'Share of that time someone was working', value: median(workingShares), unit: 'share', sample: workingShares.length, target: '50 % or more', meets: value => value >= 0.5 }),
       figure({ id: 'P3', group: 'performance', measure: 'Gap between one work turn of a task and the next, median', value: median(gaps), unit: 'ms', sample: gaps.length, target: 'under 30 seconds', meets: value => value < 30_000, note: `90th percentile: ${percentile(gaps, 90) ?? 'none'} ms` }),
-      figure({ id: 'P4', group: 'performance', measure: 'Cost of a finished task', value: done.length === 0 ? null : spentOnDone / 100 / done.length, unit: 'usd', sample: done.length, target: 'set after the baseline' }),
+      figure({ id: 'P4', group: 'performance', measure: 'Cost of a finished task', value: done.length === 0 ? null : spentOnDone / 100 / done.length, unit: 'usd', sample: done.length, target: 'set after the baseline', ...(contextByKind ? { note: `Tokens in per turn, median: ${contextByKind}` } : {}) }),
       figure({ id: 'P5', group: 'performance', measure: 'Accepted at first review', value: share(reviewed.size - sentBack.size, reviewed.size), unit: 'share', sample: reviewed.size, target: '70 % or more', meets: value => value >= 0.7 }),
       figure({ id: 'D1', group: 'delivery', measure: 'Started work finished within 7 days', value: share(finishedInAWeek, started.length), unit: 'share', sample: started.length, target: '85 % or more', meets: value => value >= 0.85 }),
       figure({ id: 'D2', group: 'delivery', measure: 'Finished work that came back within 14 days', value: share(cameBack.size, done.length), unit: 'share', sample: done.length, target: '10 % or fewer', meets: value => value <= 0.1 }),

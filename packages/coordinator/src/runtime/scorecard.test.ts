@@ -63,6 +63,7 @@ test('the figures are counted from what is recorded: who acted, how long it took
     assert.ok(byId.P3!.sample >= 1 && byId.P3!.value !== null);
     assert.ok(byId.T3!.value! > 0 && byId.T3!.value! <= 1, 'tokens on the model named open-weight are counted as such');
     assert.ok(byId.P4!.value! > 0);
+    assert.match(byId.P4!.note ?? '', /^Tokens in per turn, median: work 1k \(\d+\)/, 'what each kind of turn reads is shown by kind');
     // sc-3 is in progress, untouched for two hours, with nothing queued, nobody awaited and no reason given.
     assert.ok(byId.A3!.value! >= 1);
     assert.ok(byId.O1!.value! < 1);
