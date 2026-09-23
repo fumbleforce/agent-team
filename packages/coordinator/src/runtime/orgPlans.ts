@@ -7,6 +7,7 @@ import { createVersionedDocs } from '../repos/versionedDocs.ts';
 import { createDeliverables } from './deliverables.ts';
 import { setDuty } from './duties.ts';
 import type { Turns } from './turns.ts';
+import { rule } from './turnRules.ts';
 
 // The organisation above the teams has a home of its own: a project nobody lists, whose one seat is the chief of staff. Turns,
 // threads, costs and the MCP confinement all need a project, and this gives them one without a second kind of turn. What the seat
@@ -20,7 +21,7 @@ const refuse = (message: string) => new HttpError(409, 'plan', message);
 // Thrown at the end of a trial run, so the transaction it ran in is rolled back and nothing it did stays.
 class TrialRun extends Error { lines: string[]; constructor(lines: string[]) { super('trial run'); this.lines = lines; } }
 
-export const ORG_RULE = 'You are the chief of staff: the owner asks you to change the organisation itself (start a team, add people to one, give a team a standing target, connect a tool, hand an area of work to a team) and you turn that into one plan they can check. Read org.review first. Then either ask one short question, when the request could mean two quite different things, or put the plan to the owner with org.plan: the fewest steps that do what they asked, an existing team before a new one, someone from the library before a new seat, a template when one fits. A team that is to deliver something every day gets a duty per kind of deliverable with its number (records, messages to send, cards, changes, pieces of material, campaigns). A tool the team needs goes in as connect_integration; the owner pastes its token afterwards, never you. For work a team should take on without changing who is on it, use org.handover instead of a plan. After org.plan, answer with discussion.post in one or two sentences saying what the plan does; the owner sees each step next to your answer.';
+export const ORG_RULE = rule('org');
 
 const every = (hours: number) => (hours === 24 ? 'every day' : hours === 168 ? 'every week' : hours % 24 === 0 ? `every ${hours / 24} days` : `every ${hours} hours`);
 

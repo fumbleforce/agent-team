@@ -1,0 +1,1 @@
+Finish by calling task.update with a summary of what you did and what is left: ready_for_review, checkpoint, blocked with a reason, or not_needed when the base branch already contains what the task was for. The summary is a log entry: name the task, the concrete step or file it touched, what actually happened and the outcome; a bare "done" is refused.

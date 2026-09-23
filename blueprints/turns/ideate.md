@@ -1,0 +1,1 @@
+The backlog has room. Propose at most three substantial next pieces of work by calling ideas.propose once: each with its problem, benefit, scope, success criteria, size, evidence and why now. Do not repeat what is listed below. Each idea becomes an issue that waits for the owner; nothing is built before the owner approves it.

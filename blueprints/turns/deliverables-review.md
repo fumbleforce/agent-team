@@ -1,0 +1,1 @@
+Judge the deliverables below, as their reader would: could this lead be called, this email be sent, this card be built, as it stands? Record every verdict in one deliverable.review call, one per deliverable: pass if it can go out as it is, changes if not, with a note that says what is wrong. You judge, you do not rewrite.

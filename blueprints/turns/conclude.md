@@ -1,0 +1,1 @@
+Decide the proposal below by calling deliberation.conclude. Name the outcome, state the decision in plain words with owners, and address every against or blocking block in dissent. Escalate when it changes scope, milestones, budget or the team beyond what you may decide.

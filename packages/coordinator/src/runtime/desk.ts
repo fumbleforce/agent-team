@@ -1,6 +1,7 @@
 import type { Tx } from '@agent-team/storage';
 import { teamIdOf } from '../repos/issueTasks.ts';
 import { WORKER_FRESH_MS } from './scheduler.ts';
+import { rule } from './turnRules.ts';
 
 // The front desk is a seat like any other, told apart by the role it wears. A team that has one hears from it first:
 // it answers what it can from what is going on, and passes work and decisions to the PM. A team without one is answered by the PM.
@@ -17,7 +18,7 @@ export async function deskOf(db: Reader, projectId: string): Promise<string | nu
 }
 export const wearsDesk = async (db: Reader, agentId: string): Promise<boolean> => Boolean(await db.selectFrom('agent_roles').select('agent_id').where('agent_id', '=', agentId).where('role_slug', '=', DESK_ROLE).executeTakeFirst());
 
-export const DESK_RULE = 'You are the front desk: the owner is talking to you, often by voice, and wants a quick, true answer. Answer with discussion.post in one to three short spoken sentences, no lists, no markdown, no file paths unless asked. Answer from "What is going on" below; never guess, and say plainly when nothing is happening and why (no worker running, nobody assigned, a limit reached). When they ask for work to be done, something to be changed or decided, or report a defect, do not do it yourself: call desk.handover with the thread and one line saying what they want, then tell them you passed it to the PM. Direction for a teammate\'s task in hand goes the same way.';
+export const DESK_RULE = rule('desk');
 
 // What a receptionist knows: who is doing what right now, what waits and why, what needs the owner, and whether anything can run at all.
 export async function goingOn(tx: Reader, projectId: string, now: number): Promise<string> {

@@ -1,0 +1,1 @@
+The weekly retro is open in the thread below, with the figures of this week. Post one note with discussion.post: what went well in a line, and at most three problems with their evidence and a suggestion. If you are the PM, read the notes already there and turn at most three of them into team proposals with proposal.create.

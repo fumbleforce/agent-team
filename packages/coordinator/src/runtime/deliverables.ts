@@ -5,6 +5,7 @@ import { newTask } from '../repos/issueTasks.ts';
 import { reviewersFor } from './documents.ts';
 import { moveTask } from './taskMoves.ts';
 import type { Turns } from './turns.ts';
+import { rule } from './turnRules.ts';
 
 // A round of a duty that asks for deliverables is one task. Its owner hands each deliverable in as it is ready, then hands the round
 // in; one teammate judges every deliverable in one review turn. The round is done when as many as it asks for are approved; short of
@@ -51,8 +52,8 @@ export async function roundPart(tx: Tx, taskId: string, forReview: boolean): Pro
     waiting.length ? `# Handed in, waiting to be judged\n${waiting.map(row => `- ${row.title}`).join('\n')}` : ''].filter(Boolean).join('\n\n');
 }
 
-export const DELIVERABLES_WORK = 'The result of this task is a number of deliverables, not a change to a repository. Make each one so someone can act on it as it stands, and hand it in with deliverable.submit as soon as it is ready: the body is the thing itself, the fields are what its kind needs, the link is where it lives outside the platform. Do not hand in the same thing twice, and do not pad the count: fewer that are right beat more that are not. When you have handed in what the round asks for, call task.update with ready_for_review; a teammate judges them all. If some are sent back, make new ones in their place.';
-export const DELIVERABLES_REVIEW = 'Judge the deliverables below, as their reader would: could this lead be called, this email be sent, this card be built, as it stands? Record every verdict in one deliverable.review call, one per deliverable: pass if it can go out as it is, changes if not, with a note that says what is wrong. You judge, you do not rewrite.';
+export const DELIVERABLES_WORK = rule('deliverables-work');
+export const DELIVERABLES_REVIEW = rule('deliverables-review');
 
 export function createDeliverables(context: Context, turns: Turns) {
   const { storage, events, now } = context;
