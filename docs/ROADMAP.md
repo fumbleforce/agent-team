@@ -96,6 +96,8 @@ Baselines are empty because nothing has been measured. Milestone 0 fills them in
 
 Safety and observability are not a milestone. S1 to S4 and O1 to O2 are checked at the end of every milestone, and a milestone that makes one of them worse is not finished. From milestone 3 on the same holds for T1: cheaper is not progress if the work got worse.
 
+Neither is setting up. Whatever a milestone adds that a project connects or turns on (a notifier, a provider's fallbacks, an embedding model, a launcher, a board) is set up from the app, with its values picked from the product's own lists and a live check, and nothing is preconfigured or needs a file edited. Where `AGENTS.md` requires the committed manifest (publishing, merging, activating a service), the app writes the change as a commit or change request the owner approves instead of sending them to the file.
+
 ## Progress
 
 What is built, as opposed to what is measured. A milestone's "done when" is about numbers from real runs; those need an engine that costs money and, for some, weeks of a real project, so they are filled in as the runs happen.
@@ -148,6 +150,7 @@ Read from the code, and from the team's first stretch of work on this repository
 - **Nothing reaches the owner outside the app.** There is no notification, digest or reminder, and a missing worker, a signed-out engine, a limited provider or a failing sync is not a needs-you item. Nothing expires; an unanswered item waits indefinitely.
 - **Only `claude` takes a task through.** `codex` and `cursor` cannot call the platform's tools, so their work turns cannot hand in and their reviewers cannot record a verdict. A worker is given turns for engines it does not have, and a missing engine blocks the task. A task's work stays on its provider through a usage window with no fallback; the window is estimated from token sums that include cache reads; Codex turns on an API key are booked at no cost. Reviewers are not kept off the author's model family (T7 is counted, not enforced).
 - **A hosted deployment cannot work yet.** A launched worker has no engine sign-in (the `claude` adapter drops `CLAUDE_CODE_OAUTH_TOKEN`). The launcher holds a project's entry while work waits, so a worker that ran its one turn and stopped is followed by the next only after an hour. A launched host is given the root machine token. Pairing links are built from the request's own address. A local owner has no password and cannot sign in to a hosted copy, and nothing moves a project's database, secrets key and stored files from one coordinator to another.
+- **Some settings are only in a file.** Merge authorization and required checks, the tracker's ready label and ideation section, publishing and the launcher of a deployment are read from the project's manifest, and nothing in the app sets them; the web app never touches them.
 - **Memory does not reach the work.** `knowledge.assemble` is called only from tests, so a confirmed memory is never given to a turn; an agent sees one only if it searches for it. Search is lexical, with every term matched as a word prefix; semantic search is optional and only fills slots lexical search left empty. Nothing merges duplicate or contradicting memories, nothing files a memory from a review, a failed check or a retro, and a memory's rank is its hit count. Changing a memory's status and the sweep that marks unused memories stale append no event. A seat's notebook is one overwritten text of 2,400 characters with no history.
 - **Turns are heavy.** Work turns read about 290k tokens each and review turns about 170k; reviews used slightly more than the work did (4.5M against 4.4M tokens in). The always-applied `unslop` skill is about 1.2k tokens of every seat's standing instructions, and most of some. The turn rules are string literals of up to 1,500 characters in `packet.ts`, which no test snapshots.
 
@@ -238,7 +241,7 @@ Done when, over a month on a real project: A5 is 50 % or more, A6 is 50 % or mor
 
 Every way a task stops either carries on by itself or asks the owner something they can answer where they read it.
 
-- Merging as the owner chooses: a project setting, written to the committed manifest by the owner, for automatic merge and the checks it waits for. Nothing merges without it, as `AGENTS.md` requires. A change merged on the code host by hand closes its task.
+- Merging as the owner chooses: a project setting in the app for automatic merge and the checks it waits for, picked from the checks the code host reports. The app commits it to the manifest once the owner approves, so nothing merges without it, as `AGENTS.md` requires. A change merged on the code host by hand closes its task.
 - A settled decision or a concluded deliberation queues the work that waited on it, on that task only.
 - A blocked card and a decision card take an answer, and the answer starts the task's owner with it in the packet.
 - A task's branch is recorded when its change is pushed, so failing checks wake its author with the failing cases.
