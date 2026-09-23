@@ -15,6 +15,7 @@ import * as scheduler from './scheduler.ts';
 import { accessOf, laneOf, maxWritersOf, WORKER_FRESH_MS, type ClaimDraft, type Snapshot } from './scheduler.ts';
 
 import { effectiveProjects } from '../repos/org.ts';
+import { recall } from '../knowledge/recall.ts';
 import { agentTools, turnTools, type TurnTool } from './agentTools.ts';
 export const LEASE_MS = 90_000;
 export { laneOf };
@@ -268,8 +269,11 @@ export function createTurns(context: Context) {
           const session = await sessions.open(tx, { turnId, workItemId: item.id, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, workerId: request.workerId, providerId: route.providerId, model: route.model, engine });
           // Frozen with the grants: the tools the seat's roles allow now. The tokens are read from the platform's keys, never from the packet.
           const tools = ['deliver', 'capture', 'publish'].includes(kind) ? [] : turnTools(await agentTools(tx, item.agentId, item.projectId), name => context.secrets.get(name) ?? context.env[name] ?? null);
+          const packet = session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id });
+          // What the team learned that bears on this turn goes with it, fresh packet or resumed session alike; which memories it got is kept.
+          const learned = await recall(tx, { turnId, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, now: now() });
           const started = await events.append(tx, [{ type: 'turn.started', actorKind: 'worker', projectId: item.projectId, agentId: item.agentId, taskId: item.taskId, turnId, payload: { kind, workerId: request.workerId, providerId: route.providerId } }, ...moved]);
-          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, taskTitle: subject?.title ?? null, threadId: row.thread_id, grants, engine, model: route.model, effort: effortOf?.effort ?? effortOf?.default_effort ?? null, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, review, tools, resume: session.resume, packet: session.packet ?? await buildPacket(tx, { kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, threadId: row.thread_id }) } satisfies Claimed };
+          return { expired: [...expired, ...session.published, ...started], claimed: { turnId, leaseToken, leaseMs: LEASE_MS, kind, agentId: item.agentId, projectId: item.projectId, taskId: item.taskId, taskKey, taskTitle: subject?.title ?? null, threadId: row.thread_id, grants, engine, model: route.model, effort: effortOf?.effort ?? effortOf?.default_effort ?? null, capture: wanted ? { url: wanted.url, viewport: wanted.viewport as Viewport } : null, review, tools, resume: learned.text && session.resume ? { ...session.resume, prompt: `${session.resume.prompt}\n\n${learned.text}` } : session.resume, packet: learned.text ? { ...packet, prompt: `${packet.prompt}\n\n${learned.text}` } : packet } satisfies Claimed };
         }
       });
       events.published(result.expired);

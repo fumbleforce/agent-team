@@ -6,7 +6,12 @@ import { lineDiff } from './diff.ts';
 export interface Scope { type: 'org' | 'team' | 'project' | 'subproject'; id: string }
 export interface Author { kind: 'user' | 'agent' | 'system'; id: string | null }
 const PATH = /^[a-z0-9][a-z0-9._-]*(\/[a-z0-9][a-z0-9._-]*)*\.md$/;
-const tokens = (text: string) => Math.ceil(text.length / 4);
+
+export type MemorySource = 'agent' | 'remember' | 'owner';
+export interface Evidence { kind: 'task' | 'turn' | 'event' | 'review' | 'decision' | 'message'; id: string }
+const firstLine = (text: string) => text.trim().split('\n')[0]!.replace(/\s+/g, ' ');
+const projectOf = (scope: Scope) => (scope.type === 'project' || scope.type === 'subproject' ? scope.id : null);
+const actorIds = (author: Author) => ({ userId: author.kind === 'user' ? author.id : null, agentId: author.kind === 'agent' ? author.id : null });
 
 export interface Embedder { model: string; embed(text: string): Promise<number[]> }
 // What counts as near in meaning: cosine similarity, 0 to 1.
@@ -141,16 +146,43 @@ ${body}`).catch(() => []);
       return this.write(author, { scope: { type: page.scope_type as Scope['type'], id: page.scope_id }, path: page.path, title: page.title, body, note: choice === 'theirs' ? 'Used the version from the document folder' : 'Kept this version over the one from the document folder', expectedRev: page.current_rev });
     },
 
-    async fileMemory(input: { scope: Scope; agentId: string | null; type: string; title: string; body: string }) {
+    // A memory is usable as soon as it is filed; one a person confirmed, and one the owner gave, rank above the rest. `abstract` is its
+    // one line, what a turn is given when there is room for many; `evidence` is what it came from.
+    async fileMemory(input: { scope: Scope; agentId: string | null; type: string; title: string; body: string; abstract?: string | undefined; roleSlug?: string | null | undefined; evidence?: Evidence[] | undefined; source?: MemorySource | undefined; status?: 'filed' | 'confirmed' | undefined }) {
       const id = newId(now());
+      const abstract = (input.abstract?.trim() || firstLine(input.body)).slice(0, 240);
       const published = await storage.transaction(async tx => {
-        await tx.insertInto('memories').values({ id, scope_type: input.scope.type, scope_id: input.scope.id, agent_id: input.agentId, type: input.type, title: input.title, body: input.body, status: 'filed', hits: 0, last_hit_at: null, promoted_page_id: null, created_at: now() }).execute();
-        await index(tx, { type: 'memory', id, scope: input.scope, title: input.title, body: input.body });
-        return events.append(tx, [{ type: 'memory.filed', actorKind: input.agentId ? 'agent' : 'system', agentId: input.agentId, projectId: input.scope.type === 'project' || input.scope.type === 'subproject' ? input.scope.id : null, payload: { memoryId: id } }]);
+        await tx.insertInto('memories').values({ id, scope_type: input.scope.type, scope_id: input.scope.id, agent_id: input.agentId, type: input.type, title: input.title, body: input.body, abstract, role_slug: input.roleSlug ?? null, evidence: JSON.stringify(input.evidence ?? []), source: input.source ?? 'agent', status: input.status ?? 'filed', hits: 0, last_hit_at: null, promoted_page_id: null, created_at: now() }).execute();
+        await index(tx, { type: 'memory', id, scope: input.scope, title: input.title, body: `${abstract}\n${input.body}` });
+        return events.append(tx, [{ type: 'memory.filed', actorKind: input.agentId ? 'agent' : 'system', agentId: input.agentId, projectId: projectOf(input.scope), payload: { memoryId: id, source: input.source ?? 'agent', ...(input.roleSlug ? { role: input.roleSlug } : {}) } }]);
       });
       events.published(published);
-      await embedDoc('memory', id, input.title, input.body);
+      await embedDoc('memory', id, input.title, `${abstract}\n${input.body}`);
       return id;
+    },
+
+    // A newer memory takes the place of older ones: they stay, marked with what replaced them, when and why, so the change can be undone.
+    async supersede(by: Author, input: { memoryIds: string[]; by: string; reason: string }) {
+      if (input.memoryIds.length === 0) return;
+      const published = await storage.transaction(async tx => {
+        const rows = await tx.selectFrom('memories').select(['id', 'scope_type', 'scope_id', 'status']).where('id', 'in', input.memoryIds).where('superseded_by', 'is', null).execute();
+        if (rows.length === 0) return [];
+        await tx.updateTable('memories').set({ status: 'superseded', superseded_by: input.by, superseded_at: now(), supersede_reason: input.reason.slice(0, 400) }).where('id', 'in', rows.map(row => row.id)).execute();
+        return events.append(tx, [{ type: 'memory.superseded', actorKind: by.kind, ...actorIds(by), projectId: projectOf({ type: rows[0]!.scope_type as Scope['type'], id: rows[0]!.scope_id }), payload: { memoryIds: rows.map(row => row.id), by: input.by, reason: input.reason.slice(0, 400) } }]);
+      });
+      events.published(published);
+    },
+
+    // Undoing a supersession: the older memory is in use again, and the one that replaced it is retired.
+    async restoreMemory(by: Author, memoryId: string) {
+      const published = await storage.transaction(async tx => {
+        const memory = await tx.selectFrom('memories').select(['id', 'scope_type', 'scope_id', 'superseded_by']).where('id', '=', memoryId).executeTakeFirst();
+        if (!memory?.superseded_by) throw new HttpError(409, 'memory', 'That memory was not replaced');
+        await tx.updateTable('memories').set({ status: 'confirmed', superseded_by: null, superseded_at: null, supersede_reason: null }).where('id', '=', memoryId).execute();
+        await tx.updateTable('memories').set({ status: 'retired' }).where('id', '=', memory.superseded_by).where('status', 'not in', ['retired', 'promoted']).execute();
+        return events.append(tx, [{ type: 'memory.restored', actorKind: by.kind, ...actorIds(by), projectId: projectOf({ type: memory.scope_type as Scope['type'], id: memory.scope_id }), payload: { memoryId, retired: memory.superseded_by } }]);
+      });
+      events.published(published);
     },
 
     // What the team still holds: filed, confirmed and stale memories. `stale` is true for one marked so, and for one
@@ -166,11 +198,15 @@ ${body}`).catch(() => []);
     },
 
     // Confirming a stale memory is a person saying it still holds, which counts as a use: the sixty days start again.
-    async setMemoryStatus(memoryId: string, status: 'confirmed' | 'stale' | 'retired') {
-      const memory = await db.selectFrom('memories').select(['status', 'last_hit_at', 'created_at']).where('id', '=', memoryId).executeTakeFirst();
-      if (!memory) throw notFound('Memory');
-      const wasStale = memory.status === 'stale' || Number(memory.last_hit_at ?? memory.created_at) < now() - STALE_AFTER_MS;
-      await db.updateTable('memories').set(status === 'confirmed' && wasStale ? { status, last_hit_at: now() } : { status }).where('id', '=', memoryId).execute();
+    async setMemoryStatus(by: Author, memoryId: string, status: 'confirmed' | 'stale' | 'retired') {
+      const published = await storage.transaction(async tx => {
+        const memory = await tx.selectFrom('memories').select(['status', 'last_hit_at', 'created_at', 'scope_type', 'scope_id']).where('id', '=', memoryId).executeTakeFirst();
+        if (!memory) throw notFound('Memory');
+        const wasStale = memory.status === 'stale' || Number(memory.last_hit_at ?? memory.created_at) < now() - STALE_AFTER_MS;
+        await tx.updateTable('memories').set(status === 'confirmed' && wasStale ? { status, last_hit_at: now() } : { status }).where('id', '=', memoryId).execute();
+        return events.append(tx, [{ type: 'memory.status_changed', actorKind: by.kind, ...actorIds(by), projectId: projectOf({ type: memory.scope_type as Scope['type'], id: memory.scope_id }), payload: { memoryId, from: memory.status, to: status } }]);
+      });
+      events.published(published);
     },
 
     // The stale rule: a filed or confirmed memory with no hit in sixty days (or never hit and filed that long ago) is marked
@@ -178,7 +214,11 @@ ${body}`).catch(() => []);
     async sweepStale(): Promise<number> {
       const before = now() - STALE_AFTER_MS;
       const rows = await db.selectFrom('memories').select('id').where('status', 'in', ['filed', 'confirmed']).where(eb => eb.or([eb('last_hit_at', '<', before), eb.and([eb('last_hit_at', 'is', null), eb('created_at', '<', before)])])).limit(500).execute();
-      if (rows.length) await db.updateTable('memories').set({ status: 'stale' }).where('id', 'in', rows.map(row => row.id)).where('status', 'in', ['filed', 'confirmed']).execute();
+      if (rows.length === 0) return 0;
+      events.published(await storage.transaction(async tx => {
+        await tx.updateTable('memories').set({ status: 'stale' }).where('id', 'in', rows.map(row => row.id)).where('status', 'in', ['filed', 'confirmed']).execute();
+        return events.append(tx, [{ type: 'memory.swept', actorKind: 'system', payload: { memoryIds: rows.map(row => row.id), to: 'stale' } }]);
+      }));
       return rows.length;
     },
 
@@ -187,7 +227,10 @@ ${body}`).catch(() => []);
       const memory = await db.selectFrom('memories').selectAll().where('id', '=', memoryId).executeTakeFirst();
       if (!memory) throw notFound('Memory');
       const page = await this.write(author, { scope: { type: memory.scope_type as Scope['type'], id: memory.scope_id }, path: pagePath, title: memory.title, body: memory.body, note: 'Promoted from memory' });
-      await db.updateTable('memories').set({ status: 'promoted', promoted_page_id: page.id }).where('id', '=', memoryId).execute();
+      events.published(await storage.transaction(async tx => {
+        await tx.updateTable('memories').set({ status: 'promoted', promoted_page_id: page.id }).where('id', '=', memoryId).execute();
+        return events.append(tx, [{ type: 'memory.status_changed', actorKind: author.kind, ...actorIds(author), projectId: projectOf({ type: memory.scope_type as Scope['type'], id: memory.scope_id }), payload: { memoryId, from: memory.status, to: 'promoted', pageId: page.id } }]);
+      }));
       return page;
     },
 
@@ -206,21 +249,6 @@ ${body}`).catch(() => []);
       const memoryIds = options.countHits ? found.filter(hit => hit.type === 'memory').map(hit => hit.id) : [];
       if (memoryIds.length) await db.updateTable('memories').set(eb => ({ hits: eb('hits', '+', 1), last_hit_at: now() })).where('id', 'in', memoryIds).execute();
       return found;
-    },
-
-    // What a turn starts with: confirmed memories by hits and recency, cut at the token cap; injected ids are counted as hits.
-    async assemble(scopes: Scope[], capTokens: number) {
-      if (scopes.length === 0 || capTokens <= 0) return { text: '', memoryIds: [] as string[], tokens: 0 };
-      const rows = await db.selectFrom('memories').selectAll().where('status', '=', 'confirmed').where(eb => eb.or(scopes.map(scope => eb.and([eb('scope_type', '=', scope.type), eb('scope_id', '=', scope.id)])))).orderBy('hits', 'desc').orderBy('created_at', 'desc').limit(200).execute();
-      const parts: string[] = [], memoryIds: string[] = [];
-      let used = 0;
-      for (const row of rows) {
-        const part = `## ${row.title}\n${row.body}\n`;
-        if (used + tokens(part) > capTokens) continue;
-        parts.push(part); memoryIds.push(row.id); used += tokens(part);
-      }
-      if (memoryIds.length) await db.updateTable('memories').set(eb => ({ hits: eb('hits', '+', 1), last_hit_at: now() })).where('id', 'in', memoryIds).execute();
-      return { text: parts.join('\n'), memoryIds, tokens: used };
     },
   };
 }

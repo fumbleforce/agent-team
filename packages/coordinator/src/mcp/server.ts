@@ -168,8 +168,15 @@ export function createMcp(context: Context, deps: McpDeps) {
     'org.review': async (_turn, input) => orgPlans.review(input.days),
     'org.plan': async (turn, input) => { await threadInProject(turn, input.threadId); return orgPlans.propose(turn, input); },
     'org.handover': async (_turn, input) => orgPlans.handover(await orgPlans.teamBySlug(input.team), input.wants),
+    // The notebook is rewritten, not appended to; every version is kept, so what a seat unlearned can be read back.
     'notebook.write': async (turn, input) => {
-      await db.updateTable('agents').set({ notebook: input.text.trim() || null }).where('id', '=', turn.agent_id).execute();
+      events.published(await context.storage.transaction(async tx => {
+        const last = await tx.selectFrom('notebook_revisions').select(eb => eb.fn.max('rev').as('rev')).where('agent_id', '=', turn.agent_id).executeTakeFirst();
+        const rev = Number(last?.rev ?? 0) + 1;
+        await tx.updateTable('agents').set({ notebook: input.text.trim() || null }).where('id', '=', turn.agent_id).execute();
+        await tx.insertInto('notebook_revisions').values({ agent_id: turn.agent_id, rev, body: input.text.trim(), turn_id: turn.id, created_at: context.now() }).execute();
+        return events.append(tx, [{ type: 'notebook.written', actorKind: 'agent', agentId: turn.agent_id, projectId: turn.project_id, turnId: turn.id, payload: { rev, chars: input.text.trim().length } }]);
+      }));
       return { saved: true };
     },
     'knowledge.search': async (turn, input) => knowledge.search(await scopesOf(turn), input.query, 10, { countHits: true }),

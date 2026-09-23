@@ -101,7 +101,7 @@ export function registerKnowledgeRoutes(app: Hono<Env>, context: Context, deps: 
     if (!mayWrite(c.get('viewer'), level.key, found.rootId)) throw forbidden();
     const input = await parseBody(c, MemoryActionBody);
     if (input.action === 'promote') return c.json(await knowledge.promote(author(c), memoryId, input.path ?? ''));
-    await knowledge.setMemoryStatus(memoryId, input.action === 'confirm' ? 'confirmed' : 'retired');
+    await knowledge.setMemoryStatus(author(c), memoryId, input.action === 'confirm' ? 'confirmed' : 'retired');
     return c.json({ ok: true });
   });
 

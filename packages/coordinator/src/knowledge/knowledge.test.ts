@@ -28,7 +28,7 @@ test('pages keep append-only revisions, refuse stale edits and count readers', a
   await storage.close();
 });
 
-test('search is scoped and needs every term; memories are promoted and assembled under a cap', async () => {
+test('search is scoped and needs every term; memories are confirmed and promoted', async () => {
   const { storage, knowledge } = await boot();
   await knowledge.write(ada, { scope: project, path: 'payments/webhooks.md', title: 'Webhooks v2', body: 'Signature verification for the v2 payload.' });
   await knowledge.write(ada, { scope: { type: 'project', id: 'other' }, path: 'secret.md', title: 'Webhooks elsewhere', body: 'Not yours.' });
@@ -37,12 +37,7 @@ test('search is scoped and needs every term; memories are promoted and assembled
   assert.equal((await knowledge.search([project], 'webhooks unicorn')).length, 0);
   assert.equal((await knowledge.search([project], 'safari'))[0]?.type, 'memory');
 
-  assert.equal((await knowledge.assemble([project], 1000)).memoryIds.length, 0);
-  await knowledge.setMemoryStatus(memory, 'confirmed');
-  assert.equal((await knowledge.assemble([project], 5)).memoryIds.length, 0);
-  const assembled = await knowledge.assemble([project], 1000);
-  assert.deepEqual(assembled.memoryIds, [memory]);
-  assert.match(assembled.text, /AbortController/);
+  await knowledge.setMemoryStatus({ kind: 'user', id: 'u1' }, memory, 'confirmed');
 
   const page = await knowledge.promote(ada, memory, 'frontend/safari-fetch.md');
   assert.equal(page.rev, 1);
@@ -105,8 +100,8 @@ test('a memory nobody used for sixty days goes stale, stops being injected, and 
     const knowledge = createKnowledge(createContext({ storage, machineToken: 'x'.repeat(24), now: () => clock }));
     const used = await knowledge.fileMemory({ scope: project, agentId: 'bram', type: 'gotcha', title: 'Safari keeps fetch pending', body: 'Pair fetch with AbortController.' });
     const unused = await knowledge.fileMemory({ scope: project, agentId: 'cleo', type: 'observation', title: 'Staging is slow on Mondays', body: 'The nightly import runs long.' });
-    await knowledge.setMemoryStatus(used, 'confirmed');
-    await knowledge.setMemoryStatus(unused, 'confirmed');
+    await knowledge.setMemoryStatus({ kind: 'user', id: 'u1' }, used, 'confirmed');
+    await knowledge.setMemoryStatus({ kind: 'user', id: 'u1' }, unused, 'confirmed');
 
     clock += 40 * DAY;
     // An agent's search counts as a use; a person's does not.
@@ -118,9 +113,8 @@ test('a memory nobody used for sixty days goes stale, stops being injected, and 
     assert.equal(await knowledge.sweepStale(), 1);
     assert.equal(await knowledge.sweepStale(), 0);
     assert.deepEqual((await knowledge.memories(project)).map(item => [item.title, item.status, item.stale]).sort(), [['Safari keeps fetch pending', 'confirmed', false], ['Staging is slow on Mondays', 'stale', true]]);
-    assert.deepEqual((await knowledge.assemble([project], 1000)).memoryIds, [used]);
 
-    await knowledge.setMemoryStatus(unused, 'confirmed');
+    await knowledge.setMemoryStatus({ kind: 'user', id: 'u1' }, unused, 'confirmed');
     assert.equal((await knowledge.memories(project)).find(item => item.id === unused)?.stale, false);
     clock += 61 * DAY;
     assert.equal(await knowledge.sweepStale(), 2);
