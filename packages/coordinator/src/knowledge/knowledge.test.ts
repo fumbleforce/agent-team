@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { createStorage } from '@agent-team/storage';
 import { createContext } from '../context.ts';
-import { createKnowledge, type Scope } from './knowledge.ts';
+import { createKnowledge, localEmbedder, type Scope } from './knowledge.ts';
 
 async function boot() {
   const storage = await createStorage({ kind: 'sqlite', path: ':memory:' });
@@ -138,4 +138,18 @@ test('with an embedder, search also finds what shares meaning but no words; with
   const broken = createKnowledge(context, { model: 'down', embed: async () => { throw new Error('offline'); } });
   assert.deepEqual((await broken.search([project], 'release')).map(item => item.title), ['Release steps']);
   await storage.close();
+});
+
+test('a model server on this machine is asked once for a model that embeds; without one, nothing is embedded and nothing fails', async () => {
+  const asked: string[] = [];
+  const serve = (models: string[]) => (async (url: string | URL) => { asked.push(String(url)); return String(url).endsWith('/api/tags') ? new Response(JSON.stringify({ models: models.map(name => ({ name })) })) : new Response(JSON.stringify({ embedding: [0.1, 0.2] })); }) as typeof fetch;
+  const found = localEmbedder(serve(['llama3:8b', 'nomic-embed-text:latest']));
+  assert.deepEqual(await found.embed('refunds'), [0.1, 0.2]);
+  await found.embed('again');
+  assert.equal(found.model, 'nomic-embed-text:latest');
+  assert.equal(asked.filter(url => url.endsWith('/api/tags')).length, 1);
+  const none = localEmbedder(serve(['llama3:8b']));
+  assert.deepEqual(await none.embed('refunds'), []);
+  const down = localEmbedder((async () => { throw new Error('refused'); }) as typeof fetch);
+  assert.deepEqual(await down.embed('refunds'), []);
 });

@@ -11,6 +11,7 @@ interface Scorecard { from: number; to: number; computedAt: number; figures: Fig
 const GROUPS: Record<string, string> = {
   'team-vs-one': 'The team against one model',
   'self-improving': 'A team that improves itself',
+  memory: 'Memory',
   autonomy: 'Autonomy',
   performance: 'Performance',
   delivery: 'Delivery',

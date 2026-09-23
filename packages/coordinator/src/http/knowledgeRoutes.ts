@@ -63,7 +63,7 @@ export function registerKnowledgeRoutes(app: Hono<Env>, context: Context, deps: 
 
   app.get('/api/projects/:slug/knowledge', async c => {
     const { scopes, chosen, rootId } = await scopeFor(c, 'project.read');
-    const memories = (await knowledge.memories(chosen.scope)).map(row => ({ ...row, hits: Number(row.hits), lastHitAt: row.last_hit_at === null ? null : Number(row.last_hit_at), createdAt: Number(row.created_at) }));
+    const memories = (await knowledge.memories(chosen.scope)).map(row => ({ ...row, hits: Number(row.hits), score: Number(row.score), lastHitAt: row.last_hit_at === null ? null : Number(row.last_hit_at), createdAt: Number(row.created_at), roleSlug: row.role_slug, supersededBy: row.superseded_by, supersedeReason: row.supersede_reason }));
     return c.json({ scopes: scopes.map(({ key, label, note }) => ({ key, label, note })), scope: chosen.key, canWrite: mayWrite(c.get('viewer'), chosen.key, rootId), pages: await knowledge.tree(chosen.scope), memories, seq: await context.events.head() });
   });
   app.post('/api/projects/:slug/knowledge', async c => {
@@ -101,6 +101,7 @@ export function registerKnowledgeRoutes(app: Hono<Env>, context: Context, deps: 
     if (!mayWrite(c.get('viewer'), level.key, found.rootId)) throw forbidden();
     const input = await parseBody(c, MemoryActionBody);
     if (input.action === 'promote') return c.json(await knowledge.promote(author(c), memoryId, input.path ?? ''));
+    if (input.action === 'restore') { await knowledge.restoreMemory(author(c), memoryId); return c.json({ ok: true }); }
     await knowledge.setMemoryStatus(author(c), memoryId, input.action === 'confirm' ? 'confirmed' : 'retired');
     return c.json({ ok: true });
   });

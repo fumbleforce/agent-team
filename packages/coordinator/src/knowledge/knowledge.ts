@@ -22,8 +22,25 @@ const STALE_AFTER_MS = 60 * 24 * 3600_000;
 const MISLEADING = -4;
 
 // Embeddings from any endpoint that speaks the common local-model API; without one, search is lexical only.
-export function httpEmbedder(url: string, model: string): Embedder {
-  return { model, async embed(text) { const response = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, prompt: text.slice(0, 8000) }), signal: AbortSignal.timeout(20_000) }); return ((await response.json()) as { embedding?: number[] }).embedding ?? []; } };
+export function httpEmbedder(url: string, model: string, request: typeof fetch = fetch): Embedder {
+  return { model, async embed(text) { const response = await request(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model, prompt: text.slice(0, 8000) }), signal: AbortSignal.timeout(20_000) }); return ((await response.json()) as { embedding?: number[] }).embedding ?? []; } };
+}
+
+// Where no embedding endpoint is named, a model server on this machine is asked once, on first use, for a model that embeds.
+// Without one the search stays lexical; nothing fails because of it.
+export function localEmbedder(request: typeof fetch, base = 'http://127.0.0.1:11434'): Embedder {
+  let found: Promise<string | null> | null = null;
+  const embedder: Embedder = {
+    model: '',
+    async embed(text) {
+      found ??= request(`${base}/api/tags`, { signal: AbortSignal.timeout(1500) }).then(response => (response.ok ? response.json() : null)).then(body => ((body as { models?: { name: string }[] } | null)?.models ?? []).map(model => model.name).find(name => /embed/i.test(name)) ?? null).catch(() => null);
+      const model = await found;
+      if (!model) return [];
+      embedder.model = model;
+      return httpEmbedder(`${base}/api/embeddings`, model, request).embed(text);
+    },
+  };
+  return embedder;
 }
 
 export function createKnowledge(context: Context, embedder: Embedder | null = null) {
@@ -51,14 +68,16 @@ ${body}`).catch(() => []);
     },
 
     // Revisions are append-only; `expectedRev` makes a concurrent edit fail instead of overwriting.
-    async write(author: Author, input: { scope: Scope; path: string; title: string; body: string; note?: string | undefined; expectedRev?: number | undefined }) {
+    // A page is saved with its one-line abstract and short overview; where the writer gives none, they are taken from the page's start.
+    async write(author: Author, input: { scope: Scope; path: string; title: string; body: string; abstract?: string | undefined; overview?: string | undefined; note?: string | undefined; expectedRev?: number | undefined }) {
       if (!PATH.test(input.path)) throw new HttpError(400, 'path', 'A page path is lower-case segments ending in .md');
       const result = await storage.transaction(async tx => {
         const page = await tx.selectFrom('kb_pages').selectAll().where('scope_type', '=', input.scope.type).where('scope_id', '=', input.scope.id).where('path', '=', input.path).executeTakeFirst();
         if (page && input.expectedRev !== undefined && input.expectedRev !== page.current_rev) throw new HttpError(409, 'stale', `The page is at revision ${page.current_rev}`);
         const id = page?.id ?? newId(now()), rev = (page ? await lastRev(tx, page.id) : 0) + 1;
-        if (page) await tx.updateTable('kb_pages').set({ title: input.title, current_rev: rev, updated_at: now() }).where('id', '=', id).execute();
-        else await tx.insertInto('kb_pages').values({ id, scope_type: input.scope.type, scope_id: input.scope.id, path: input.path, title: input.title, current_rev: rev, archived_at: null, updated_at: now() }).execute();
+        const abstract = (input.abstract?.trim() || firstLine(input.body.replace(/^#.*\n+/, ''))).slice(0, 240), overview = (input.overview?.trim() || input.body.replace(/^#.*\n+/, '').trim()).slice(0, 1200);
+        if (page) await tx.updateTable('kb_pages').set({ title: input.title, current_rev: rev, updated_at: now(), abstract, overview }).where('id', '=', id).execute();
+        else await tx.insertInto('kb_pages').values({ id, scope_type: input.scope.type, scope_id: input.scope.id, path: input.path, title: input.title, current_rev: rev, archived_at: null, updated_at: now(), abstract, overview }).execute();
         await tx.insertInto('kb_revisions').values({ page_id: id, rev_no: rev, body: input.body, author_kind: author.kind, author_id: author.id, note: input.note ?? null, created_at: now() }).execute();
         await index(tx, { type: 'page', id, scope: input.scope, title: input.title, body: input.body });
         const published = await events.append(tx, [{ type: 'kb.page_revised', actorKind: author.kind, userId: author.kind === 'user' ? author.id : null, agentId: author.kind === 'agent' ? author.id : null, projectId: input.scope.type === 'org' || input.scope.type === 'team' ? null : input.scope.id, payload: { pageId: id, path: input.path, rev } }]);
@@ -189,8 +208,9 @@ ${body}`).catch(() => []);
 
     // What the team still holds: filed, confirmed and stale memories. `stale` is true for one marked so, and for one
     // nobody has used in sixty days even if the sweep has not reached it yet.
+    // Replaced memories of the last thirty days are listed too, with what replaced them and why, so a replacement can be undone.
     async memories(scope: Scope) {
-      const rows = await db.selectFrom('memories').selectAll().where('scope_type', '=', scope.type).where('scope_id', '=', scope.id).where('status', 'in', ['filed', 'confirmed', 'stale']).orderBy('created_at', 'desc').limit(100).execute();
+      const rows = await db.selectFrom('memories').selectAll().where('scope_type', '=', scope.type).where('scope_id', '=', scope.id).where(eb => eb.or([eb('status', 'in', ['filed', 'confirmed', 'stale']), eb.and([eb('status', '=', 'superseded'), eb('superseded_at', '>', now() - 30 * 24 * 3600_000)])])).orderBy('created_at', 'desc').limit(100).execute();
       return rows.map(row => ({ ...row, stale: row.status === 'stale' || Number(row.last_hit_at ?? row.created_at) < now() - STALE_AFTER_MS }));
     },
 

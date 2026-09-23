@@ -157,3 +157,17 @@ test('the list of figures a trial may name is the list the scorecard computes', 
     assert.deepEqual(card.figures.map(entry => entry.id).sort(), [...FIGURE_IDS].sort());
   } finally { await coordinator.close(); }
 });
+
+test('memory is on the scorecard: what turned out wrong, and work sent back although memories were given for it', async () => {
+  const coordinator = await start();
+  try {
+    const { db } = coordinator.context.storage, now = coordinator.context.now();
+    const projectId = (await db.selectFrom('projects').select('id').executeTakeFirst())?.id ?? (await (await import('../repos/workspace.ts')).createWorkspace(coordinator.context).registerProject({ slug: 'shop', name: 'Shop', kind: 'repo', manifest: {} }));
+    const memory = (id: string, status: string) => ({ id, scope_type: 'project', scope_id: projectId, agent_id: null, type: 'gotcha', title: id, body: id, status, hits: 0, last_hit_at: null, promoted_page_id: null, created_at: now - 1000 });
+    await db.insertInto('memories').values([memory('kept', 'filed'), memory('wrong', 'retired'), memory('also-kept', 'confirmed'), memory('replaced', 'superseded')]).execute();
+    const byId = Object.fromEntries((await createScorecard(coordinator.context).compute(projectId)).figures.map(item => [item.id, item]));
+    assert.equal(byId.M3!.value, 0.25, 'one of four kept turned out wrong; a replaced memory was improved on, not wrong');
+    assert.equal(byId.M1!.value, null);
+    assert.equal(byId.M2!.value, null, 'nothing finished yet');
+  } finally { await coordinator.close(); }
+});

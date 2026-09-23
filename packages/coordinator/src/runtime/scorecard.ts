@@ -7,7 +7,7 @@ import { confidenceOf, type Answer } from '../../../../adapters/decider/contract
 // computed yet (nothing to count, or a record that does not exist yet) has a null value and says why, so an empty baseline is
 // never mistaken for a good one.
 export type Unit = 'share' | 'count' | 'ms' | 'usd' | 'per100' | 'ratio';
-export type Group = 'team-vs-one' | 'self-improving' | 'autonomy' | 'performance' | 'delivery' | 'observability' | 'safety' | 'decisions';
+export type Group = 'team-vs-one' | 'self-improving' | 'memory' | 'autonomy' | 'performance' | 'delivery' | 'observability' | 'safety' | 'decisions';
 
 export interface Figure {
   id: string;
@@ -38,7 +38,7 @@ export interface ScorecardOptions {
 }
 
 // Every figure the scorecard computes. A trial names one of them as what it expects to move.
-export const FIGURE_IDS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T7', 'I1', 'I2', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'P1', 'P2', 'P3', 'P4', 'P5', 'D1', 'D2', 'O1', 'O2', 'S1', 'S2', 'S3', 'S4', 'C1', 'C2', 'C3'] as const;
+export const FIGURE_IDS = ['T1', 'T2', 'T3', 'T4', 'T5', 'T7', 'I1', 'I2', 'A1', 'A2', 'A3', 'A4', 'A5', 'A6', 'A7', 'P1', 'P2', 'P3', 'P4', 'P5', 'D1', 'D2', 'O1', 'O2', 'S1', 'S2', 'S3', 'S4', 'C1', 'C2', 'C3', 'M1', 'M2', 'M3', 'M4'] as const;
 
 const MINUTE = 60_000;
 const DAY = 24 * 3600_000;
@@ -237,6 +237,14 @@ export function createScorecard(context: Context, options: ScorecardOptions = {}
     const judgedSure = reads.filter(row => row.judged_at !== null && wasSure(row)).length, overturned = reads.filter(row => row.overturned_at !== null).length;
     const readsUsd = reads.reduce((sum, row) => sum + row.usd_micro, 0) / 1_000_000;
 
+    // --- Memory: work sent back although memories were given for it, memories that turned out wrong, and what keeping them cost.
+    const scoredDown = await db.selectFrom('events').select('payload').where('project_id', '=', projectId).where('type', '=', 'memory.scored').where('at', '>=', from).where('at', '<=', to).execute();
+    const sentBackWithMemory = scoredDown.filter(row => (JSON.parse(row.payload) as { delta?: number }).delta === -1).length;
+    const keptInPeriod = await db.selectFrom('memories').select(['id', 'status']).where('scope_id', '=', projectId).where('created_at', '>=', from).where('created_at', '<=', to).execute();
+    const turnedWrong = keptInPeriod.filter(row => row.status === 'retired' || row.status === 'stale').length;
+    const upkeep = await db.selectFrom('turns').select(eb => [eb.fn.coalesce(eb.fn.sum<number>('cost_minor'), eb.lit(0)).as('minor'), eb.fn.countAll<number>().as('n')]).where('project_id', '=', projectId).where('kind', '=', 'remember').where('started_at', '>=', from).where('started_at', '<=', to).executeTakeFirstOrThrow();
+    const given = await db.selectFrom('memory_injections').innerJoin('turns', 'turns.id', 'memory_injections.turn_id').select(eb => [eb.fn.countAll<number>().as('n'), eb.fn.count<number>('memory_injections.turn_id').distinct().as('turns')]).where('turns.project_id', '=', projectId).where('memory_injections.created_at', '>=', from).where('memory_injections.created_at', '<=', to).executeTakeFirstOrThrow();
+
     const figures: Figure[] = [
       figure({ id: 'T1', group: 'team-vs-one', measure: 'Quality against one frontier model alone', value: null, unit: 'ratio', sample: 0, target: '1.0 or more', note: 'Comes from scored reference-task runs: agent-team reference' }),
       figure({ id: 'T2', group: 'team-vs-one', measure: 'Cost against one frontier model alone', value: null, unit: 'ratio', sample: 0, target: '0.3 or less', note: 'Comes from scored reference-task runs: agent-team reference' }),
@@ -246,6 +254,10 @@ export function createScorecard(context: Context, options: ScorecardOptions = {}
       figure({ id: 'T7', group: 'team-vs-one', measure: 'Work checked by seats on different model families', value: share(acrossFamilies, checkedByTwo), unit: 'share', sample: checkedByTwo, target: '100 %', meets: value => value === 1 }),
       figure({ id: 'I1', group: 'self-improving', measure: 'Changes the team made to how it works, per month', value: trialRows.length === 0 ? null : perMonth, unit: 'count', sample: trialsStarted.length, target: '2 a month or more', meets: value => value >= 2 }),
       figure({ id: 'I2', group: 'self-improving', measure: 'Of those judged, the changes that worked and were kept', value: share(trialsJudged.filter(row => row.state === 'kept').length, trialsJudged.length), unit: 'share', sample: trialsJudged.length, target: '50 % or more, none left unjudged', meets: value => value >= 0.5 && overdue === 0, ...(overdue ? { note: `${overdue} trial${overdue === 1 ? ' is' : 's are'} past the end and not judged` } : {}) }),
+      figure({ id: 'M1', group: 'memory', measure: 'What memory from one task saves on the next', value: null, unit: 'ratio', sample: 0, target: 'turns and cost 30 % lower, score holding', note: 'Comes from reference pairs run with and without memory; none has run yet.' }),
+      figure({ id: 'M2', group: 'memory', measure: 'Work sent back although the author was given memories for it, per 100 finished tasks', value: done.length === 0 ? null : (sentBackWithMemory / done.length) * 100, unit: 'per100', sample: done.length, target: 'falling month over month' }),
+      figure({ id: 'M3', group: 'memory', measure: 'Memories kept in the period that turned out wrong', value: share(turnedWrong, keptInPeriod.length), unit: 'share', sample: keptInPeriod.length, target: 'under 10 %', meets: value => value < 0.1 }),
+      figure({ id: 'M4', group: 'memory', measure: 'What keeping memory cost, per finished task', value: done.length === 0 ? null : Number(upkeep.minor) / 100 / done.length, unit: 'usd', sample: Number(upkeep.n), target: 'shown, not judged', note: `${Number(upkeep.n)} memory turns; ${Number(given.turns) === 0 ? 'no turn was given memories' : `${(Number(given.n) / Number(given.turns)).toFixed(1)} memories given per turn that got any`}` }),
       figure({ id: 'A1', group: 'autonomy', measure: 'Tasks finished with nobody acting', value: share(handsOff, done.length), unit: 'share', sample: done.length, target: '60 % or more', meets: value => value >= 0.6 }),
       figure({ id: 'A2', group: 'autonomy', measure: 'Times a person acted, per finished task', value: done.length === 0 ? null : actionsOnDone / done.length, unit: 'count', sample: done.length, target: '0.3 or fewer', meets: value => value <= 0.3 }),
       figure({ id: 'A3', group: 'autonomy', measure: 'Unattended tasks right now', value: unattended.length, unit: 'count', sample: waiting.length, target: 'none', meets: value => value === 0 }),

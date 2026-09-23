@@ -2,7 +2,7 @@
 export type ScopeKey = 'subproject' | 'project' | 'team' | 'org';
 export interface ScopeChoice { key: ScopeKey; label: string; note: string }
 export interface PageRef { id: string; path: string; title: string }
-export interface Memory { id: string; title: string; body: string; type: string; status: string; stale: boolean; hits: number; lastHitAt: number | null; createdAt: number }
+export interface Memory { id: string; title: string; body: string; type: string; status: string; stale: boolean; hits: number; lastHitAt: number | null; createdAt: number; source?: string; score?: number; roleSlug?: string | null; supersededBy?: string | null; supersedeReason?: string | null }
 export interface Tree { scopes: ScopeChoice[]; scope: ScopeKey; canWrite: boolean; pages: PageRef[]; memories: Memory[] }
 export interface PageView { page: { id: string; path: string; title: string; rev: number; body: string; updatedAt: number; readByToday: number }; scope: ScopeKey; canWrite: boolean }
 export interface Revision { rev: number; author: string; authorKind: string; note: string | null; at: number; current: boolean; waiting: boolean }

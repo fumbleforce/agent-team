@@ -265,8 +265,8 @@ export const TOOLS = {
     permission: 'issues:edit', turnKinds: ['work', 'review', 'triage', 'conclude'], mutating: true, rateClass: 'write',
   }),
   'knowledge.write': tool({
-    description: 'Write or revise a knowledge page of this project. Pass the revision you read as expectedRev so a concurrent edit is refused instead of overwritten.',
-    input: z.object({ path: z.string().min(4).max(200), title: z.string().min(1).max(160), body: z.string().min(1).max(20000), note: z.string().max(200).optional(), expectedRev: z.number().int().min(1).optional() }),
+    description: 'Write or revise a knowledge page of this project, with a one-line abstract and a short overview of it: later turns are shown those, and read the page when it matters. Pass the revision you read as expectedRev so a concurrent edit is refused instead of overwritten.',
+    input: z.object({ path: z.string().min(4).max(200), title: z.string().min(1).max(160), abstract: z.string().max(240).optional(), overview: z.string().max(1200).optional(), body: z.string().min(1).max(20000), note: z.string().max(200).optional(), expectedRev: z.number().int().min(1).optional() }),
     output: z.object({ id: z.string(), rev: z.number() }),
     permission: null, turnKinds: ['work', 'conclude', 'triage', 'retro'], mutating: true, rateClass: 'few',
   }),

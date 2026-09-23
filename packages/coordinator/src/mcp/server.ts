@@ -262,7 +262,7 @@ export function createMcp(context: Context, deps: McpDeps) {
       await actions.link(turn, issue.id, input.to, input.rel);
       return { linked: true as const };
     },
-    'knowledge.write': async (turn, input) => knowledge.write({ kind: 'agent', id: turn.agent_id }, { scope: (await scopesOf(turn))[0]!, path: input.path, title: input.title, body: input.body, note: input.note, expectedRev: input.expectedRev }),
+    'knowledge.write': async (turn, input) => knowledge.write({ kind: 'agent', id: turn.agent_id }, { scope: (await scopesOf(turn))[0]!, path: input.path, title: input.title, body: input.body, abstract: input.abstract, overview: input.overview, note: input.note, expectedRev: input.expectedRev }),
     'cost.status': async turn => {
       const agent = await db.selectFrom('agents').select('daily_cap_minor').where('id', '=', turn.agent_id).executeTakeFirstOrThrow();
       const spentTodayMinor = await costs.spentToday(turn.agent_id), today = day(now());

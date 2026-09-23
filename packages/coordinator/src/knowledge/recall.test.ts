@@ -27,6 +27,8 @@ test('a turn is given what bears on its task, the owner\'s word first, within it
     await knowledge.supersede({ kind: 'agent', id: agents.Ada! }, { memoryIds: [replaced], by: money, reason: 'Amounts moved to integer cents.' });
     const forReviewers = await knowledge.fileMemory({ scope, agentId: agents.Rune!, type: 'convention', title: 'Run the refund suite with the card fixtures', body: 'npm test -- refunds uses the fixtures in test/cards.', roleSlug: 'reviewer' });
 
+    const page = await knowledge.write({ kind: 'agent', id: agents.Ada! }, { scope, path: 'payments/refunds.md', title: 'How refunds work', body: '# Refunds\nRefunds of card payments go through the refund queue, in integer cents.\n\nMore detail follows.' });
+    await knowledge.write({ kind: 'agent', id: agents.Ada! }, { scope, path: 'ops/backups.md', title: 'Backups', body: 'The weekly backup runs on Mondays.' });
     const given = await storage.transaction(tx => recall(tx, { turnId: 'turn-1', kind: 'work', agentId: agents.Ada!, projectId, taskId: 't1', now: 5 }));
     const ids = given.items.map(item => item.id);
     assert.deepEqual(ids.slice(0, 2).sort(), [money, owner].sort(), 'what fits the task and what the owner said come first');
@@ -34,6 +36,8 @@ test('a turn is given what bears on its task, the owner\'s word first, within it
     assert.ok(!ids.includes(replaced), 'a superseded memory is not given');
     assert.ok(!ids.includes(forReviewers), 'what is kept for another role is not given to this one');
     assert.match(given.text, /Refunds go back to the original card \(from the owner\)/);
+    assert.ok(given.text.includes(`- How refunds work (payments/refunds.md, knowledge.read ${page.id}): Refunds of card payments go through the refund queue, in integer cents.`), 'a page that fits is pointed to by its abstract');
+    assert.ok(!given.text.includes('ops/backups.md'));
     assert.deepEqual((await storage.db.selectFrom('memory_injections').select('memory_id').where('turn_id', '=', 'turn-1').execute()).map(row => row.memory_id).sort(), ids.sort());
 
     const reviewer = await storage.transaction(tx => recall(tx, { turnId: 'turn-2', kind: 'review', agentId: agents.Rune!, projectId, taskId: 't1', now: 6 }));

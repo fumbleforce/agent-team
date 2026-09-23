@@ -3,6 +3,7 @@ import { formatFigure, type Group, type Scorecard } from './scorecard.ts';
 const TITLES: Record<Group, string> = {
   'team-vs-one': 'The team against one model',
   'self-improving': 'A team that improves itself',
+  memory: 'Memory',
   autonomy: 'Autonomy',
   performance: 'Performance',
   delivery: 'Delivery',

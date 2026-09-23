@@ -27,11 +27,17 @@ export async function recall(tx: Tx, input: { turnId: string; kind: TurnKind; ag
   const rows = await tx.selectFrom('memories').select(['id', 'title', 'body', 'abstract', 'status', 'source', 'score', 'hits', 'role_slug', 'created_at']).where('status', 'in', ['filed', 'confirmed'])
     .where(eb => eb.or(scopes.map(scope => (scope.type === 'org' ? eb('scope_type', '=', 'org') : eb.and([eb('scope_type', '=', scope.type), eb('scope_id', '=', scope.id)])))))
     .where(eb => eb.or([eb('role_slug', 'is', null), ...(roles.length ? [eb('role_slug', 'in', roles)] : [])])).orderBy('created_at', 'desc').limit(CANDIDATES).execute() as Row[];
-  if (rows.length === 0) return { text: '', items: [] };
 
   // What the turn is about: the task as it reads now and where its owner said it stands.
   const task = input.taskId ? await tx.selectFrom('tasks').select(['title', 'brief', 'journal']).where('id', '=', input.taskId).executeTakeFirst() : undefined;
   const about = termsOf(`${task?.title ?? ''} ${task?.title ?? ''} ${task?.brief ?? ''} ${task?.journal ?? ''}`);
+  // Pages are pointed to, not given: the few that fit, by their one line and id, for knowledge.read.
+  const pageRows = about.length ? await tx.selectFrom('kb_pages').select(['id', 'path', 'title', 'abstract', 'overview']).where('archived_at', 'is', null).where(eb => eb.or(scopes.map(scope => (scope.type === 'org' ? eb('scope_type', '=', 'org') : eb.and([eb('scope_type', '=', scope.type), eb('scope_id', '=', scope.id)]))))).orderBy('updated_at', 'desc').limit(200).execute() : [];
+  const pageDocs = pageRows.map(row => new Set(termsOf(`${row.title} ${row.abstract} ${row.overview}`)));
+  const pageWeight = new Map(about.map(term => [term, Math.log(1 + pageRows.length / (1 + pageDocs.filter(doc => doc.has(term)).length))]));
+  const pageMost = about.reduce((sum, term) => sum + (pageWeight.get(term) ?? 0), 0) || 1;
+  const pages = pageRows.map((row, index) => ({ row, fit: about.reduce((sum, term) => sum + (pageDocs[index]!.has(term) ? pageWeight.get(term)! : 0), 0) / pageMost })).filter(item => item.fit > 0.15).sort((a, b) => b.fit - a.fit).slice(0, 3);
+  if (rows.length === 0 && pages.length === 0) return { text: '', items: [] };
   // A word most memories share says little; a rare one says a lot.
   const docs = rows.map(row => new Set(termsOf(`${row.title} ${row.abstract} ${row.body}`)));
   const weight = new Map(about.map(term => [term, Math.log(1 + rows.length / (1 + docs.filter(doc => doc.has(term)).length))]));
@@ -54,10 +60,12 @@ export async function recall(tx: Tx, input: { turnId: string; kind: TurnKind; ag
     if (used + tokens(text) > budget) { if (depth === 'full') continue; break; }
     (depth === 'full' ? full : lines).push(text); items.push({ id: row.id, depth }); used += tokens(text);
   }
-  if (items.length === 0) return { text: '', items: [] };
-  await tx.insertInto('memory_injections').values(items.map(item => ({ turn_id: input.turnId, memory_id: item.id, depth: item.depth, created_at: input.now }))).execute();
-  await tx.updateTable('memories').set(eb => ({ hits: eb('hits', '+', 1), last_hit_at: input.now })).where('id', 'in', items.map(item => item.id)).execute();
-  const text = ['# What the team has learned that bears on this', 'Kept from earlier work on this project. Where one of these is wrong, or out of date, say so with knowledge.propose_memory.', ...full, ...(lines.length ? ['## More, in a line each (knowledge.search finds the rest)', ...lines] : [])].join('\n\n');
+  const pageLines: string[] = [];
+  for (const { row } of pages) { const line = `- ${row.title} (${row.path}, knowledge.read ${row.id}): ${clip(row.abstract || row.title, 240)}`; if (used + tokens(line) > budget) break; pageLines.push(line); used += tokens(line); }
+  if (items.length === 0 && pageLines.length === 0) return { text: '', items: [] };
+  if (items.length) await tx.insertInto('memory_injections').values(items.map(item => ({ turn_id: input.turnId, memory_id: item.id, depth: item.depth, created_at: input.now }))).execute();
+  if (items.length) await tx.updateTable('memories').set(eb => ({ hits: eb('hits', '+', 1), last_hit_at: input.now })).where('id', 'in', items.map(item => item.id)).execute();
+  const text = ['# What the team has learned that bears on this', 'Kept from earlier work on this project. Where one of these is wrong, or out of date, say so with knowledge.propose_memory.', ...full, ...(lines.length ? ['## More, in a line each (knowledge.search finds the rest)', ...lines] : []), ...(pageLines.length ? ['## Pages that bear on it', ...pageLines] : [])].join('\n\n');
   return { text, items };
 }
 

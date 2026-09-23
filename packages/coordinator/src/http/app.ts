@@ -41,7 +41,7 @@ import { createDeliberation } from '../runtime/deliberation.ts';
 import { createReviews } from '../runtime/reviews.ts';
 import { createRetro } from '../runtime/retro.ts';
 import { createMentions } from '../runtime/mentions.ts';
-import { createKnowledge, httpEmbedder, type Scope } from '../knowledge/knowledge.ts';
+import { createKnowledge, httpEmbedder, localEmbedder, type Scope } from '../knowledge/knowledge.ts';
 import { createCosts } from '../costs/costs.ts';
 import { createChecks } from '../checks/checks.ts';
 import { createCursors } from '../sync/cursors.ts';
@@ -69,7 +69,8 @@ export function createApp(context: Context) {
   let chased = 0;
   const retro = createRetro(context, turns);
   // Semantic search is on when an embeddings endpoint is named; otherwise search is lexical.
-  const knowledge = createKnowledge(context, process.env.AGENT_TEAM_EMBEDDINGS_URL ? httpEmbedder(process.env.AGENT_TEAM_EMBEDDINGS_URL, process.env.AGENT_TEAM_EMBEDDINGS_MODEL ?? 'nomic-embed-text') : null);
+  // Meaning is searched for wherever an embedding model can be reached: the one named, else one on this machine. Tests reach none.
+  const knowledge = createKnowledge(context, process.env.AGENT_TEAM_EMBEDDINGS_URL ? httpEmbedder(process.env.AGENT_TEAM_EMBEDDINGS_URL, process.env.AGENT_TEAM_EMBEDDINGS_MODEL ?? 'nomic-embed-text') : 'NODE_TEST_CONTEXT' in process.env ? null : localEmbedder(context.fetch));
   const costs = createCosts(context);
   const checks = createChecks(context);
   const proposals = createProposals(context, turns);
